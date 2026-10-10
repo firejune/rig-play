@@ -64,9 +64,17 @@ repository URL; nothing redirects an npm page.
   `compare` on the two tarballs the registry served — so what is held equal is
   the published bytes, not this tree's. A version not served in time is a red
   that says the confirmation was not taken; it does not un-publish anything.
-- **The alias never has its own version.** No step publishes `spine-html`
-  alone, and no version of it is made by hand: it is `rig-play`'s files at
-  `rig-play`'s version, or nothing. No lifecycle script runs on it, by design:
+- **The alias never has its own version.** No version of `spine-html` is made
+  by hand: it is `rig-play`'s files at `rig-play`'s version, or nothing. The
+  one step that publishes it alone is the `alias` job of `release.yml`, run by
+  hand (**Actions → release → Run workflow**, with the version) when a cut
+  published `rig-play` and the alias publish after it failed — the first cut,
+  v1.0.0, did exactly that, on a `spine-html` trusted-publisher form that still
+  named the repository's old name. The release job cannot be re-run for it
+  (its first publish is then refused as an existing version before the alias
+  step is reached), so that job takes the registry's own `rig-play@<version>`
+  tarball, never a rebuild, rewrites the name line and runs the same
+  confirmation. No lifecycle script runs on it, by design:
   `npm publish <tarball>` runs none, and the alias is the gated publish's files,
   held to them by the comparison before its path is printed.
 - **It is kept, not retired.** No `npm deprecate` — a banner on every install
