@@ -1,4 +1,4 @@
-import { type CompiledDocument, type LiveTrack, openTrack, poseRawSetup, type RawPose, underNoSkin, underSkin } from 'rig-c/core';
+import { type CompiledDocument, type LiveTrack, type LocalAdjust as CoreLocalAdjust, openTrack, poseRawSetup, type RawPose, underNoSkin, underSkin } from 'rig-c/core';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { DomRenderer, type MeshBackend } from './DomRenderer.js';
 import type { ModelAssets, ReadDocument } from './loadModel.js';
@@ -29,6 +29,8 @@ export interface RigPlayerOptions {
    * or constraints applied, every slot resolved through the default skin.
    */
   skin?: string;
+  /** The per-pose adjustment of bone locals (`player.adjust`), set from the first pose. */
+  adjust?: BoneAdjust | null;
   /** How the player draws (see `RenderMode`). Default `'dom'`. Can be changed later through `mode`. */
   mode?: RenderMode;
   /** The mesh tier's rasterizer (see `DomRenderer.meshBackend`) — the DOM mode only. */
@@ -62,6 +64,42 @@ type Listener<T> = (payload: T) => void;
  * requestAnimationFrame(function tick(now) { player.frame(dt); requestAnimationFrame(tick); });
  * ```
  */
+/**
+ * One bone's local values at a pose, read and written in place: the seven
+ * channels the runtime's bone has, in its units (degrees, world-unit
+ * translation, scale factors, shear in degrees). What `BoneAdjust` receives
+ * through `AdjustableBones.bone`.
+ */
+export interface BoneLocals {
+  rotation: number;
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
+  shearX: number;
+  shearY: number;
+}
+
+/** The bones of one pose, by name, as a `BoneAdjust` sees them. */
+export interface AdjustableBones {
+  /** The document's bones, in its order. */
+  readonly names: readonly string[];
+  /** One bone's locals, read and written in place; a name the document has no bone for is refused by name. */
+  bone(name: string): BoneLocals;
+}
+
+/**
+ * A caller's adjustment of a pose's bone locals — a breath's scale, a look's
+ * rotation, a mouth's `scaleY` — called once per pose after the animation's
+ * timelines and before the world transforms, constraints and physics (the
+ * core's `openTrack({ adjust })`, held to the Spine runtime at tolerance 0
+ * by rig-c). **A write lasts one pose**: the core poses every step from the
+ * setup pose, so a value the caller wants held is written again each pose,
+ * and nothing compounds. A non-finite value, an unknown bone, or an error the
+ * function throws refuses that step in the core's words.
+ */
+export type BoneAdjust = (bones: AdjustableBones) => void;
+
 /**
  * Where a bone is in the pose the player holds — world units, Y up, the
  * numbers `rig-c/core` posed (`RawBone`): the world matrix `a b c d`, the
@@ -118,6 +156,11 @@ export class RigPlayer {
   private paused = false;
   private pose: RawPose | null = null;
   private setup: RawPose | null = null;
+  private adjustFn: BoneAdjust | null = null;
+  /** Handed to every track the player opens; reads the current `adjust` so setting it later needs no reopen. */
+  private readonly adjustHook: CoreLocalAdjust = (locals) => {
+    if (this.adjustFn !== null) this.adjustFn(locals);
+  };
   private readonly listeners = {
     event: new Set<Listener<RigEvent>>(),
     complete: new Set<Listener<{ animation: string }>>(),
@@ -132,6 +175,7 @@ export class RigPlayer {
     this.root = root;
     this.assets = assets;
     this.meshBackend = options.meshBackend;
+    this.adjustFn = options.adjust ?? null;
     this.active = this.create(options.mode ?? 'dom');
   }
 
@@ -260,6 +304,36 @@ export class RigPlayer {
   }
 
   /**
+   * The per-pose adjustment of bone locals (`BoneAdjust`), or null for none.
+   * It is applied by every track the player opens — `play`, the reopen inside
+   * `seek` — and by the pose drawn again after `mode` changes, on every pose
+   * the animation is applied to, the first one included. Setting it re-poses
+   * the pose the player holds at once (`repose`), so a held or paused player
+   * shows the change on its next `draw` without a step.
+   */
+  get adjust(): BoneAdjust | null {
+    return this.adjustFn;
+  }
+
+  set adjust(fn: BoneAdjust | null) {
+    if (fn !== null && typeof fn !== 'function') throw new Error(`adjust must be a function or null, got ${typeof fn}`);
+    this.adjustFn = fn;
+    this.repose();
+  }
+
+  /**
+   * Poses the held pose again at the same track time, through the current
+   * `adjust`, without stepping, firing or drawing. A paused player and a zero
+   * step re-pose nothing, so a caller whose adjustment reads its own state
+   * (a mouth driven while the body is held) calls this when that state
+   * changed, then `draw`. Nothing before `play`.
+   */
+  repose(): void {
+    if (this.track === null || this.pose === null) return;
+    this.pose = this.track.step(0);
+  }
+
+  /**
    * Where `name` is in the pose the player holds — the pose of the last
    * `advance`/`frame`/`seek`, or the setup pose before `play`. Read off the
    * core's pose, so it is the same in `dom` and `canvas` mode and costs nothing
@@ -346,7 +420,7 @@ export class RigPlayer {
   }
 
   private open(): void {
-    this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation' });
+    this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation', adjust: this.adjustHook });
     this.pose = this.track.first;
   }
 

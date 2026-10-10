@@ -1,6 +1,7 @@
-import { type RawPose, regionPageUvs } from 'rig-c/core';
+import { type LiveTrack, openTrack, type RawPose, regionPageUvs, underNoSkin } from 'rig-c/core';
 
 import {
+  type AdjustableBones,
   loadModel,
   type ModelAssets,
   type PageLayout,
@@ -14,7 +15,7 @@ import { DomRenderer } from '../src/DomRenderer';
 import type { ReadDocument } from '../src/loadModel';
 import { getMeshGlBlitter, glContextCount } from '../src/MeshGlBlitter';
 import { straightAlphaDerivations, straightAlphaSource } from '../src/DomTexture';
-import type { PosedClip, PosedFrame, PosedSlot } from '../src/posedFrame';
+import { frameOf, frameSource, type PosedClip, type PosedFrame, type PosedSlot } from '../src/posedFrame';
 import { layoutRegions, parseAtlas, withPma } from './atlasLayout';
 import { frameAt, loadRig, poseAt, rigidOnly, scaledFrame } from './rigFrames';
 
@@ -230,6 +231,32 @@ export interface RigPlayHarness {
   pmaStage(options: PmaStageOptions): Promise<PmaStageResult>;
   canvasModeProbe(count: number): Promise<CanvasModeProbeResult>;
   boneBoundsProbe(): Promise<BoneBoundsProbeResult>;
+  adjustProbe(): Promise<AdjustProbeResult>;
+}
+
+export interface AdjustProbeResult {
+  /** A player with an adjust writing `hip.scaleY = 1.3`, seeked to 0.7 s, against the probe's own track opened with the same function: bones and frame geometry. */
+  adjustedBoneMismatches: string[];
+  adjustedFrameSame: boolean;
+  /** The adjusted pose differs from the unadjusted one (the hook reached the pose). */
+  adjustedDiffersFromPlain: boolean;
+  /** An adjust that writes nothing: every field of every bone and the frame equal to no adjust. */
+  noopBoneMismatches: string[];
+  noopFrameSame: boolean;
+  /** The first pose after `play` is adjusted (reset: 'animation'). */
+  firstPoseAdjusted: boolean;
+  /** `seek` and a `mode` change keep the adjustment. */
+  keptAcrossSeek: boolean;
+  keptAcrossMode: boolean;
+  /** Paused: setting `adjust` re-poses at once; a closure's state change shows after `repose()`, not before. */
+  pausedSetSeen: boolean;
+  closureBeforeRepose: number;
+  closureAfterRepose: number;
+  trackTimeAfterRepose: number;
+  /** rig-c's refusals, in its words. */
+  nanError: string;
+  unknownBoneError: string;
+  thrownError: string;
 }
 
 export interface BoneBoundsProbeResult {
@@ -4401,7 +4428,135 @@ async function boneBoundsProbe(): Promise<BoneBoundsProbeResult> {
   };
 }
 
+/**
+ * `RigPlayer.adjust` (#79): the core's bone-local hook passed through the
+ * player — held to the probe's own `openTrack({ adjust })` walk at tolerance
+ * 0, to a no-op hook changing nothing, and to the player's own rules for a
+ * held pose (`repose`).
+ */
+async function adjustProbe(): Promise<AdjustProbeResult> {
+  const assets = await loadRig('figure');
+  const read = assets.document as ReadDocument;
+  const view = underNoSkin(read.doc);
+  const root = document.getElementById('root');
+  if (!root) throw new Error('#root missing');
+  root.replaceChildren();
+  const time = 0.7;
+  const step = 1 / 60;
+  const walkTo = (track: LiveTrack): RawPose => {
+    let pose = track.first;
+    const steps = Math.floor(time / step);
+    for (let i = 0; i < steps; i++) pose = track.step(step);
+    const rest = time - track.trackTime;
+    if (rest > 0) pose = track.step(rest);
+    return pose;
+  };
+  const boneDiff = (player: RigPlayer, pose: RawPose): string[] => {
+    const out: string[] = [];
+    for (const bone of pose.bones) {
+      const r = player.bone(bone.name);
+      const pairs: Array<[string, number | boolean, number | boolean]> = [
+        ['active', r.active, bone.active], ['x', r.x, bone.worldX], ['y', r.y, bone.worldY],
+        ['a', r.a, bone.a], ['b', r.b, bone.b], ['c', r.c, bone.c], ['d', r.d, bone.d],
+        ['rotationX', r.rotationX, bone.rotationX], ['rotationY', r.rotationY, bone.rotationY],
+        ['scaleX', r.scaleX, bone.scaleX], ['scaleY', r.scaleY, bone.scaleY],
+      ];
+      for (const [f, got, want] of pairs) if (!Object.is(got, want)) out.push(`${bone.name}.${f}: ${String(got)} != ${String(want)}`);
+    }
+    return out;
+  };
+  const geometry = (frame: PosedFrame) => JSON.stringify(frame.order.map((s) => (s.kind === 'region' ? s.corners : s.vertices)));
+
+  const scaleHip = (bones: { bone(name: string): { scaleY: number } }) => {
+    bones.bone('hip').scaleY = 1.3;
+  };
+
+  // The adjusted walk against the probe's own.
+  const player = new RigPlayer(root, assets, { adjust: scaleHip });
+  player.play('walk');
+  const firstAdjusted = player.bone('hip');
+  const ownFirst = openTrack(view, 'walk', { loop: true, reset: 'animation', adjust: scaleHip }).first;
+  const firstPoseAdjusted = Object.is(firstAdjusted.scaleY, ownFirst.bones.find((b) => b.name === 'hip')?.scaleY ?? NaN)
+    && !Object.is(firstAdjusted.scaleY, openTrack(view, 'walk', { loop: true, reset: 'animation' }).first.bones.find((b) => b.name === 'hip')?.scaleY ?? NaN);
+  player.seek(time);
+  const own = walkTo(openTrack(view, 'walk', { loop: true, reset: 'animation', adjust: scaleHip }));
+  const adjustedBoneMismatches = boneDiff(player, own);
+  const adjustedFrameSame = geometry(player.posedFrame()) === geometry(frameOf(frameSource(view, read.parsed), own, player.color));
+  const plain = poseAt(assets, 'walk', time);
+  const adjustedDiffersFromPlain = geometry(player.posedFrame()) !== geometry(plain.frame);
+  const keptAcrossSeek = adjustedBoneMismatches.length === 0; // seek reopened the track with the hook
+  const domHip = player.bone('hip').scaleY;
+  player.mode = 'canvas';
+  const keptAcrossMode = Object.is(player.bone('hip').scaleY, domHip);
+  player.dispose();
+
+  // A hook that writes nothing.
+  const noop = new RigPlayer(root, assets, { adjust: () => {} });
+  noop.play('walk');
+  noop.seek(time);
+  const noopBoneMismatches = boneDiff(noop, plain.pose);
+  const noopFrameSame = geometry(noop.posedFrame()) === geometry(plain.frame);
+  noop.dispose();
+
+  // Held pose: the setter re-poses; a closure's state needs repose().
+  const held = new RigPlayer(root, assets);
+  held.play('walk');
+  held.seek(time);
+  held.pause();
+  held.frame(1); // paused: no step
+  held.adjust = scaleHip;
+  const pausedSetSeen = Object.is(held.bone('hip').scaleY, own.bones.find((b) => b.name === 'hip')?.scaleY ?? NaN);
+  let mouth = 1.1;
+  held.adjust = (bones) => {
+    bones.bone('hip').scaleY = mouth;
+  };
+  mouth = 1.7;
+  const closureBeforeRepose = held.bone('hip').scaleY;
+  held.repose();
+  const closureAfterRepose = held.bone('hip').scaleY;
+  const trackTimeAfterRepose = held.time;
+  held.dispose();
+
+  // Refusals, in rig-c's words.
+  const refusal = (fn: (bones: AdjustableBones) => void): string => {
+    const p = new RigPlayer(root, assets);
+    try {
+      p.adjust = fn;
+      p.play('walk');
+      p.frame(step);
+      return '';
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    } finally {
+      p.dispose();
+    }
+  };
+  const nanError = refusal((bones) => { bones.bone('hip').scaleY = NaN; });
+  const unknownBoneError = refusal((bones) => { bones.bone('no_such_bone').x = 1; });
+  const thrownError = refusal(() => { throw new Error('the caller\'s own failure'); });
+
+  assets.dispose();
+  return {
+    adjustedBoneMismatches,
+    adjustedFrameSame,
+    adjustedDiffersFromPlain,
+    noopBoneMismatches,
+    noopFrameSame,
+    firstPoseAdjusted,
+    keptAcrossSeek,
+    keptAcrossMode,
+    pausedSetSeen,
+    closureBeforeRepose,
+    closureAfterRepose,
+    trackTimeAfterRepose,
+    nanError,
+    unknownBoneError,
+    thrownError,
+  };
+}
+
 window.rigPlayHarness = {
+  adjustProbe,
   boneBoundsProbe,
   canvasModeProbe,
   unpackProbe,
