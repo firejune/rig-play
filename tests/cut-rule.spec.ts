@@ -9,11 +9,24 @@ import { expect, type Page, test } from '@playwright/test';
  * UVs describe — sample the fractional rect with interpolation — buys exact
  * placement with a resample of the whole bitmap. Which one lands closer to the
  * same pose drawn from the 1:1 page was measured rather than argued (#35), on
- * the `cutRuleStage` probe in harness.ts: rigid-only spineboy-ess, two frozen
- * poses, page scales 0.5 / 0.75 / 1.5 / 2, both projects, against a
- * deliberately wrong control (the shipped rule displaced one whole image
- * pixel) that scored 2.4–11× worse than either real rule and so proved the
- * instrument can see placement at all.
+ * the `cutRuleStage` probe in harness.ts: then a rigid-only Spine example
+ * export, two frozen poses, page scales 0.5 / 0.75 / 1.5 / 2, both projects,
+ * against a deliberately wrong control (the shipped rule displaced one whole
+ * image pixel) that scored 2.4–11× worse than either real rule and so proved
+ * the instrument can see placement at all.
+ *
+ * Since #63 the stage draws the rigid slots of the figure test rig's `--pack`
+ * build (tests/rigs/figure) in its `detail` animation. Two properties of that
+ * art are what make the comparison mean anything, and both were found by
+ * measuring their absence. Its parts are odd-sized, so the packer puts them at
+ * odd offsets and a 0.5× page has half-pixel edges for the two rules to
+ * disagree about — at even offsets they draw the same bytes and both counts
+ * are 0. And `detail` shows line-art armour (one-texel hairlines): on smooth
+ * striped parts alone the order *reverses* (edge 47 vs fractional 1, macOS
+ * chromium) — the displacement is all a shift-tolerant compare can see there —
+ * while on line art, which is what exported art is and what the Spine example
+ * export this was decided on is, the blur dominates. Measured on `detail`,
+ * macOS chromium: edge 538 vs fractional 798 (1.48×). WebKit runs in CI.
  *
  * The answer was mixed, which is why nothing changed in `planCut`: fractional
  * sampling lowers the raw difference and the peak channel delta, and raises the
@@ -27,8 +40,9 @@ import { expect, type Page, test } from '@playwright/test';
  * that repeated everywhere: at 0.5× — the common case, a half-resolution
  * texture build — the shipped rule is *closer* to the 1:1 reference than
  * fractional sampling by the parity suite's own shift-tolerant count. Margins
- * measured over both poses: 1.3× at the tightest (webkit 1443 vs 1888, 1580 vs
- * 2124) and 2.2× at the widest (chromium 638 vs 1238, 430 vs 948). It is
+ * measured over both poses of the Spine example export: 1.3× at the tightest
+ * (webkit 1443 vs 1888, 1580 vs 2124) and 2.2× at the widest (chromium 638 vs
+ * 1238, 430 vs 948); 1.48× on the figure's `detail` (above). It is
  * written as an inequality, never as a limit on either count: absolute counts
  * move with the raster — chromium's first document in a worker was measured in
  * two states ~30% apart on a loaded machine — while the ordering held in every
@@ -40,7 +54,7 @@ import { expect, type Page, test } from '@playwright/test';
  * unexercised rule.
  */
 
-const POSE = { animation: 'walk', time: 1.2 } as const;
+const POSE = { animation: 'detail', time: 1.2 } as const;
 /** The common case: a half-resolution texture build under an untouched atlas. */
 const PAGE_SCALE = 0.5;
 /** Same tolerance as the parity suite, so "bad" means there what it means here. */

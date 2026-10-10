@@ -1,0 +1,22 @@
+{
+  "spec": "rigc-rig/1",
+  "name": "turned",
+  "images": "art",
+  "skeleton": { "x": -4, "y": -4, "width": 8, "height": 8 },
+
+  "bones": [
+    { "name": "root" }
+  ],
+
+  "slots": [
+    { "name": "s", "bone": "root", "attachment": "s" },
+    { "name": "r", "bone": "root", "attachment": "r" }
+  ],
+
+  "skins": {
+    "default": {
+      "s": { "s": { "image": "s.png" } },
+      "r": { "r": { "image": "r.png" } }
+    }
+  }
+}

@@ -77,12 +77,13 @@ test('a region covering its whole page reuses the page image', async ({ page }) 
  * transform, which agrees with the code under test whichever way both are
  * wrong.
  *
- * So this is asserted against **spine-core's UVs** and nothing else. A rotated
+ * So this is asserted against **the region's corner UVs** and nothing else —
+ * `rig-c/core`'s `regionPageUvs`, the UVs the adapter hands the canvas mode and
+ * rigc holds to spine-core's `sequence.getUVs` in its own gate. A rotated
  * region's corners, in the rigid tier's order BL, UL, UR, BR, carry
  * `(u2, v2), (u, v2), (u, v), (u2, v)` — `tests/invariants.spec.ts` pins that
- * against whichever core is installed, on both supported generations — so a
- * point (s, t) of the artwork, s across and t down from its top-left corner,
- * samples the page at
+ * against a hand-written expectation on a rigc build — so a point (s, t) of the
+ * artwork, s across and t down from its top-left corner, samples the page at
  *
  *   UL + s·(UR − UL) + t·(BL − UL)  =  ( u + t·(u2 − u),  v2 + s·(v − v2) )
  *
@@ -100,7 +101,7 @@ interface Grid {
 
 const texel = (grid: Grid, x: number, y: number): string => grid.pixels[y * grid.width + x];
 
-test('a 90°-packed cut holds the page texels spine-core names for its corners', async ({
+test("a 90°-packed cut holds the page texels the region's UVs name for its corners", async ({
   page,
 }) => {
   const probe = await page.evaluate(() => window.rigPlayHarness.rotatedCutProbe());
@@ -117,12 +118,14 @@ test('a 90°-packed cut holds the page texels spine-core names for its corners',
     // The bitmap is the artwork upright — the transpose of its rect on the page.
     expect([cut.width, cut.height], where).toEqual([region.width, region.height]);
 
-    /** The page texel spine-core's UVs put under this pixel of the artwork. */
+    // The corners, by name, out of the BL, UL, UR, BR run.
+    const [blU, blV, ulU, ulV, urU, urV] = region.uvs;
+    /** The page texel the region's UVs put under this pixel of the artwork: UL + s·(UR − UL) + t·(BL − UL). */
     const fromPage = (cx: number, cy: number): string => {
       const s = (cx + 0.5) / cut.width;
       const t = (cy + 0.5) / cut.height;
-      const u = region.u + t * (region.u2 - region.u);
-      const v = region.v2 + s * (region.v - region.v2);
+      const u = ulU + s * (urU - ulU) + t * (blU - ulU);
+      const v = ulV + s * (urV - ulV) + t * (blV - ulV);
       return texel(pageGrid, Math.floor(u * pageGrid.width), Math.floor(v * pageGrid.height));
     };
 
@@ -199,14 +202,15 @@ test('region cuts encode concurrently, bounded by the backing budget', async ({ 
   expect(probe.small.cuts.callCount).toBe(6);
   expect(probe.small.cuts.peakInFlight).toBe(6);
 
-  // The real atlas: 40 regions, all cut, all in flight at once — and the
-  // canvases they hold while they are is a fraction of the budget, so nothing
-  // about the demo's own load is throttled by it.
-  expect(probe.spineboy.regionCount).toBe(40);
-  expect(probe.spineboy.cuts.callCount).toBe(40);
-  expect(probe.spineboy.cuts.peakInFlight).toBe(40);
-  expect(probe.spineboy.cuts.peakInFlightPixels).toBe(probe.spineboy.totalCutPixels);
-  expect(probe.spineboy.cuts.peakInFlightPixels).toBeLessThan(CUT_BACKING_BUDGET_PX);
+  // A real packed build (the figure test rig, `--pack`): 15 regions on one
+  // shared page, all cut, all in flight at once — and the canvases they hold
+  // while they are is a fraction of the budget, so nothing about a real load
+  // is throttled by it.
+  expect(probe.packed.regionCount).toBe(15);
+  expect(probe.packed.cuts.callCount).toBe(15);
+  expect(probe.packed.cuts.peakInFlight).toBe(15);
+  expect(probe.packed.cuts.peakInFlightPixels).toBe(probe.packed.totalCutPixels);
+  expect(probe.packed.cuts.peakInFlightPixels).toBeLessThan(CUT_BACKING_BUDGET_PX);
 
   // Six 1024×1024 cuts are 6.29 Mpx of backing — more than may be held at
   // once, so this is where the budget is observable rather than vacuous: still
@@ -445,11 +449,12 @@ test('neighbouring cuts tile the image on a boundary that falls mid-pixel', asyn
 test('a half-resolution page renders the same rigid boxes', async ({ page }) => {
   const probe = await page.evaluate(() => window.rigPlayHarness.halfResRenderProbe());
 
-  // (f) The premise: one atlas declaring 1024×256, rendered once against the
-  // page image that ships at that size and once against a 512×128 build of it.
-  expect(probe.declared).toEqual({ width: 1024, height: 256 });
-  expect(probe.fullPage).toEqual({ width: 1024, height: 256 });
-  expect(probe.halfPage).toEqual({ width: 512, height: 128 });
+  // (f) The premise: one packed page declaring 512×512 (the figure test rig
+  // built `--pack`), rendered once against the page image that ships at that
+  // size and once against a 256×256 build of it.
+  expect(probe.declared).toEqual({ width: 512, height: 512 });
+  expect(probe.fullPage).toEqual({ width: 512, height: 512 });
+  expect(probe.halfPage).toEqual({ width: 256, height: 256 });
 
   expect(probe.full.length).toBeGreaterThan(0);
   expect(probe.half.length).toBe(probe.full.length);

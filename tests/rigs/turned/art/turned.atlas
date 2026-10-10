@@ -1,0 +1,8 @@
+turned.png
+size: 8, 8
+filter: Linear, Linear
+s
+bounds: 4, 4, 2, 1
+r
+bounds: 1, 2, 2, 1
+rotate: 90

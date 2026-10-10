@@ -1,40 +1,22 @@
-import {
-  AnimationState,
-  AnimationStateData,
-  RegionAttachment,
-  Sequence,
-  Skeleton,
-  type SkeletonData,
-  TextureAtlas,
-  TextureRegion,
-} from '@esotericsoftware/spine-core';
+import { type RawPose, regionPageUvs } from 'rig-c/core';
+
 import {
   loadModel,
+  type ModelAssets,
+  type PageLayout,
   type RegionImage,
   revokeRegions,
   RigPlayer,
+  unpackRegions,
 } from '../src/index';
 import { CanvasRenderer } from '../src/CanvasRenderer';
+import { DomRenderer } from '../src/DomRenderer';
+import type { ReadDocument } from '../src/loadModel';
 import { getMeshGlBlitter, glContextCount } from '../src/MeshGlBlitter';
 import { straightAlphaDerivations, straightAlphaSource } from '../src/DomTexture';
-import type { PosedSlot } from '../src/posedFrame';
-import { advanceSkeleton } from './skeletonFrame';
-import {
-  DomTexture,
-  loadSkeletonJson,
-  loadSpineAssets,
-  SkeletonRenderer,
-  type SpineAssets,
-  unpackAtlas,
-} from './spineDom';
-// The pixel oracle's reference runtime. It is a separate module because it is
-// the one place `@esotericsoftware/spine-webgl` is named — keeping that import
-// findable, and out of this file's 4,000 lines of loading-path probes.
-import {
-  oracleStage,
-  type OracleStageOptions,
-  type OracleStageResult,
-} from './oracleStage';
+import type { PosedClip, PosedFrame, PosedSlot } from '../src/posedFrame';
+import { layoutRegions, parseAtlas, withPma } from './atlasLayout';
+import { frameAt, loadRig, poseAt, rigidOnly, scaledFrame } from './rigFrames';
 
 /**
  * Browser-side test harness (see harness.html).
@@ -199,39 +181,29 @@ export interface BackingProbeResult {
 }
 
 /**
- * The one probe that has to *construct* spine-core objects rather than read
- * them — where a region attachment's corner offsets and UVs come from, which
- * is the convention `src/DomTexture.ts` cuts a packed rect against and
- * `SkeletonRenderer` builds its CSS matrix from.
+ * Where a rigid slot's four corners and page UVs come from, read off the model
+ * side: the `turned` test rig (tests/rigs/turned) poses two 2 × 1 regions on
+ * its root at the identity, one packed straight and one turned 90° on its
+ * hand-packed page, built by `rigc build --atlas-in`. That is the convention
+ * the renderer builds its CSS matrix from (three of the four corners, in
+ * order) and the rigid cut turns a packed rect back against.
  *
- * It lives in the harness rather than node-side, where it began, for one
- * reason: **plain node cannot import spine-core 4.0 at all** (extensionless
- * relative specifiers, no `"type": "module"` — upstream's issue #16), and
- * Playwright loads spec files with node's own resolver, so a spec that names
- * the core at module scope does not skip in that column, it fails to load and
- * takes the run down. A bundler resolves those specifiers without noticing,
- * which is how these runtimes are consumed in the first place, so the guard
- * follows the code into the browser and keeps running on every generation —
- * including the one it now covers for the first time. The assertions stay in
- * `tests/invariants.spec.ts`; only the construction moved.
+ * Read twice for each region: `drawn` is rig-c's own `RawDrawn.vertices` off
+ * the pose (`Quad.world` in rigc states the order bl, ul, ur, br), and `frame`
+ * is what the package's adapter hands the renderer — its `corners` and `uvs`.
+ * The expectations are written by hand in `tests/invariants.spec.ts`, from the
+ * region sizes and the page placement in the rig's atlas, never from code.
  */
 export interface RegionGeometryProbeResult {
-  /** 4.3: the offsets and UVs are computed into caller arrays by `computeUVs`. */
-  poseCore: boolean;
-  /** 4.1 and later: `computeWorldVertices` takes the slot, and `updateRegion()`
-   *  replaced 4.0's `setRegion()` + `updateOffset()` pair. */
-  regionTakesSlot: boolean;
-  /** An unrotated 2×1 region: local corner offsets, UVs, and world corners. */
-  straight: { offset: number[]; uvs: number[]; world: number[] };
-  /** The same region stored `rotate: 90`: local corner offsets and UVs. */
-  rotated: { offset: number[]; uvs: number[] };
-  /** `ClippingAttachment.inverse` — 4.3 and later. A feature test, not a version. */
-  inverseClipping: boolean;
+  /** The region packed straight: `s`, at (4, 4) on an 8 × 8 page. */
+  straight: { drawn: number[]; corners: number[]; uvs: number[] };
+  /** The region packed turned: `r`, at (1, 2), occupying 1 × 2 on the page. */
+  rotated: { drawn: number[]; corners: number[]; uvs: number[] };
 }
 
 export interface RigPlayHarness {
   unpackProbe(): Promise<UnpackProbeResult>;
-  regionGeometryProbe(): RegionGeometryProbeResult;
+  regionGeometryProbe(): Promise<RegionGeometryProbeResult>;
   passThroughProbe(): Promise<PassThroughProbeResult>;
   rotatedCutProbe(): Promise<RotatedCutProbeResult>;
   unpackFailureProbe(): Promise<UnpackFailureProbeResult>;
@@ -256,7 +228,6 @@ export interface RigPlayHarness {
   pmaCutProbe(): Promise<PmaCutProbeResult>;
   pmaDerivationProbe(): Promise<PmaDerivationProbeResult>;
   pmaStage(options: PmaStageOptions): Promise<PmaStageResult>;
-  oracleStage(options: OracleStageOptions): Promise<OracleStageResult>;
   canvasModeProbe(count: number): Promise<CanvasModeProbeResult>;
 }
 
@@ -372,11 +343,10 @@ function entries(images: Map<string, RegionImage>): RegionEntry[] {
 
 async function unpackProbe(): Promise<UnpackProbeResult> {
   const page = await makePageImage(64, 32);
-  const atlas = new TextureAtlas(CUT_ATLAS);
-  for (const atlasPage of atlas.pages) atlasPage.setTexture(new DomTexture(page.image));
+  const layout = parseAtlas(CUT_ATLAS);
   const pageImages = new Map([['part.png', page.image]]);
 
-  const unpacked = await trackObjectUrls(() => unpackAtlas(atlas, pageImages));
+  const unpacked = await trackObjectUrls(() => unpackRegions(layout, pageImages));
   const regions = entries(unpacked.result);
   const urls = [page.url, ...regions.map((region) => region.url)];
   const aliveBefore = await alive(urls);
@@ -401,17 +371,13 @@ async function unpackProbe(): Promise<UnpackProbeResult> {
 async function passThroughProbe(): Promise<PassThroughProbeResult> {
   const part = await makePageImage(64, 32);
   const rot = await makePageImage(32, 64);
-  const atlas = new TextureAtlas(WHOLE_PAGE_ATLAS);
+  const layout = parseAtlas(WHOLE_PAGE_ATLAS);
   const pageImages = new Map([
     ['part.png', part.image],
     ['rot.png', rot.image],
   ]);
-  for (const atlasPage of atlas.pages) {
-    const image = pageImages.get(atlasPage.name);
-    if (image) atlasPage.setTexture(new DomTexture(image));
-  }
 
-  const unpacked = await trackObjectUrls(() => unpackAtlas(atlas, pageImages));
+  const unpacked = await trackObjectUrls(() => unpackRegions(layout, pageImages));
   const regions = entries(unpacked.result);
   revokeRegions(unpacked.result);
 
@@ -425,14 +391,12 @@ async function passThroughProbe(): Promise<PassThroughProbeResult> {
 
 async function unpackFailureProbe(): Promise<UnpackFailureProbeResult> {
   const page = await makePageImage(64, 32);
-  const atlas = new TextureAtlas(MISSING_PAGE_ATLAS);
+  const layout = parseAtlas(MISSING_PAGE_ATLAS);
   const pageImages = new Map([['part.png', page.image]]);
-  const first = atlas.pages[0];
-  if (first) first.setTexture(new DomTexture(page.image));
 
   const attempt = await trackObjectUrls(async () => {
     try {
-      await unpackAtlas(atlas, pageImages);
+      await unpackRegions(layout, pageImages);
       return '';
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
@@ -450,22 +414,25 @@ async function unpackFailureProbe(): Promise<UnpackFailureProbeResult> {
 /**
  * Orientation of a 90°-packed cut (#49).
  *
- * The packer stores such a region turned counter-clockwise, and spine-core is
- * what says so: `TextureAtlas` takes `u`/`v` from the packed rect's top-left
- * corner and, at `degrees === 90`, `u2`/`v2` from `x + height` / `y + width` —
- * the rect's far edges — and `RegionAttachment` then names the artwork's
- * corners, in the rigid tier's order BL, UL, UR, BR, as (u2, v2), (u, v2),
- * (u, v), (u2, v). So the artwork's top-left corner is the packed rect's
- * bottom-left. Every release up to 0.7.0 turned the rect the same way the
- * packer had, and the bitmap came out 180° round.
+ * The packer stores such a region turned counter-clockwise, and the runtime's
+ * UVs are what say so: `u`/`v` come from the packed rect's top-left corner and,
+ * at `degrees === 90`, `u2`/`v2` from `x + height` / `y + width` — the rect's
+ * far edges — and the artwork's corners, in the rigid tier's order BL, UL, UR,
+ * BR, carry (u2, v2), (u, v2), (u, v), (u2, v). So the artwork's top-left
+ * corner is the packed rect's bottom-left. Every release up to 0.7.0 turned the
+ * rect the same way the packer had, and the bitmap came out 180° round.
  *
  * Nothing in this probe rotates anything, which is the point: the rotated
  * fixtures that existed before it could not see that, because the only
  * reference they had for a turned bitmap reimplemented the cut's own transform
  * — and a reference that shares the convention agrees with the code under test
  * whichever way both are wrong. Here the page is painted as exact bytes, cut by
- * the shipped `unpackRegions`, and handed back whole beside the UVs spine-core
- * parsed; which page texel each UV names is derived in the spec, from the UVs.
+ * the shipped `unpackRegions`, and handed back whole beside the region's corner
+ * UVs as `rig-c/core` computes them (`regionPageUvs` — the UVs the package's
+ * adapter hands the canvas mode, which rigc holds to spine-core's
+ * `sequence.getUVs` in its own gate); which page texel each UV names is derived
+ * in the spec, from the UVs. `tests/invariants.spec.ts` pins those UVs against
+ * a hand-written expectation.
  *
  * Two fixtures, because "covers its page" and "is cut" are different questions:
  * a rotated region that covers its page must still be cut (the pass-through
@@ -502,7 +469,7 @@ export interface PixelGrid {
 }
 
 export interface RotatedCutSample {
-  /** The region as spine-core parsed it: packed bounds, rotation and UVs. */
+  /** The region as the atlas states it: packed bounds and rotation, and its corner UVs. */
   region: {
     name: string;
     x: number;
@@ -511,10 +478,8 @@ export interface RotatedCutSample {
     width: number;
     height: number;
     degrees: number;
-    u: number;
-    v: number;
-    u2: number;
-    v2: number;
+    /** `regionPageUvs`: u, v pairs at the corners BL, UL, UR, BR. */
+    uvs: number[];
   };
   page: PixelGrid;
   cut: PixelGrid;
@@ -592,13 +557,17 @@ async function rotatedCutSample(
 ): Promise<RotatedCutSample> {
   const pageUrl = pngUrl(packedGlyphPage(pageWidth, pageHeight, rect), pageWidth, pageHeight);
   const image = await loadImage(pageUrl);
-  const atlas = new TextureAtlas(atlasText);
-  for (const page of atlas.pages) page.setTexture(new DomTexture(image));
+  const layout = parseAtlas(atlasText);
 
-  const images = await unpackAtlas(atlas, new Map([[pageName, image]]));
-  const region = atlas.regions[0];
+  const images = await unpackRegions(layout, new Map([[pageName, image]]));
+  const page = layout[0];
+  const region = page.regions[0];
   const cut = images.get(region.name);
   if (!cut) throw new Error(`region ${region.name} missing from the unpack`);
+  const uvs = regionPageUvs(
+    { ...region, offsetX: 0, offsetY: 0, originalWidth: region.width, originalHeight: region.height },
+    page,
+  );
   const sample: RotatedCutSample = {
     region: {
       name: region.name,
@@ -607,10 +576,7 @@ async function rotatedCutSample(
       width: region.width,
       height: region.height,
       degrees: region.degrees,
-      u: region.u,
-      v: region.v,
-      u2: region.u2,
-      v2: region.v2,
+      uvs,
     },
     page: pixelGrid(image),
     cut: pixelGrid(await loadImage(cut.url)),
@@ -717,7 +683,8 @@ async function loaderFailureProbe(): Promise<LoaderFailureProbeResult> {
   const answer = (body: string, status = 200): typeof globalThis.fetch => () =>
     Promise.resolve(new Response(body, { status }));
   const spineJson = await failedLoad({ modelUrl: '/rigs/flex/skeleton.json' });
-  const spineSkel = await failedLoad({ modelUrl: '/spineboy/spineboy-pro.skel' });
+  // Refused by its name before any fetch, so no such file has to exist.
+  const spineSkel = await failedLoad({ modelUrl: '/rigs/flex/skeleton.skel' });
   const foreignSpec = await failedLoad({
     modelUrl: '/rigs/flex/skeleton.model.json',
     fetch: answer(JSON.stringify({ spec: 'rigc-compiled/9' })),
@@ -744,40 +711,32 @@ async function loaderFailureProbe(): Promise<LoaderFailureProbeResult> {
  * backing a renderer freshly given that ratio allocates, canvas by canvas. It
  * is an equality, so it needs no threshold and no platform-dependent number.
  *
- * The pose is the deterministic one loaderProbe uses (walk, t = 1.2), and the
- * counters are read right after the render they describe — render() resets
- * them on entry.
+ * The pose is the mesh probes' deterministic one (`MESH_RIG`, walk, t = 1.2),
+ * and the counters are read right after the render they describe — render()
+ * resets them on entry.
  */
 async function backingProbe(): Promise<BackingProbeResult> {
-  const assets = await loadSpineAssets({
-    atlasUrl: '/spineboy/spineboy.atlas',
-    skeletonUrl: '/spineboy/spineboy-pro.json',
-  });
-  const skeleton = new Skeleton(assets.data);
-  const state = new AnimationState(new AnimationStateData(assets.data));
-  state.setAnimation(0, 'walk', true);
-  state.update(1.2);
-  state.apply(skeleton);
-  advanceSkeleton(skeleton, 1.2);
+  const assets = await loadRig(MESH_RIG);
+  const frame = frameAt(assets, MESH_POSE.animation, MESH_POSE.time);
 
   const roots: HTMLElement[] = [];
-  const renderers: SkeletonRenderer[] = [];
+  const renderers: DomRenderer[] = [];
 
   /** A renderer with its own root element, ratio set before the first render. */
-  function open(ratio: number): { renderer: SkeletonRenderer; root: HTMLElement } {
+  function open(ratio: number): { renderer: DomRenderer; root: HTMLElement } {
     const root = document.createElement('div');
     root.style.position = 'absolute';
     root.style.left = '0';
     root.style.top = '0';
     document.body.appendChild(root);
-    const renderer = new SkeletonRenderer(root, assets.regionImages);
+    const renderer = new DomRenderer(root, assets.regionImages, assets.pageImages);
     renderer.pixelRatio = ratio;
     roots.push(root);
     renderers.push(renderer);
     return { renderer, root };
   }
 
-  function snapshot(renderer: SkeletonRenderer, root: HTMLElement): BackingSnapshot {
+  function snapshot(renderer: DomRenderer, root: HTMLElement): BackingSnapshot {
     const canvases = [...root.querySelectorAll('canvas')];
     return {
       backing: canvases.map((canvas) => ({ width: canvas.width, height: canvas.height })),
@@ -790,38 +749,35 @@ async function backingProbe(): Promise<BackingProbeResult> {
   // A ratio drop on a live renderer, then the same pose once more (the switch
   // must settle: no second reallocation).
   const live = open(2);
-  live.renderer.renderSkeleton(skeleton);
+  live.renderer.render(frame);
   const liveHigh = snapshot(live.renderer, live.root);
   live.renderer.pixelRatio = 0.5;
-  live.renderer.renderSkeleton(skeleton);
+  live.renderer.render(frame);
   const liveShrunk = snapshot(live.renderer, live.root);
-  live.renderer.renderSkeleton(skeleton);
+  live.renderer.render(frame);
   const liveShrunkAgain = snapshot(live.renderer, live.root);
 
   // The oracle: a renderer that never saw the high ratio.
   const fresh = open(0.5);
-  fresh.renderer.renderSkeleton(skeleton);
+  fresh.renderer.render(frame);
   const freshLow = snapshot(fresh.renderer, fresh.root);
 
   // The other direction, against its own fresh oracle.
   const grown = open(0.5);
-  grown.renderer.renderSkeleton(skeleton);
+  grown.renderer.render(frame);
   grown.renderer.pixelRatio = 2;
-  grown.renderer.renderSkeleton(skeleton);
+  grown.renderer.render(frame);
   const liveGrown = snapshot(grown.renderer, grown.root);
   const freshTwo = open(2);
-  freshTwo.renderer.renderSkeleton(skeleton);
+  freshTwo.renderer.render(frame);
   const freshHigh = snapshot(freshTwo.renderer, freshTwo.root);
 
-  // Grow-only control, last because it re-poses the skeleton: the ratio never
-  // moves and every mesh bbox shrinks, so the backing must not follow it down.
+  // Grow-only control: the ratio never moves and every mesh bbox shrinks (the
+  // same frame at half scale), so the backing must not follow it down.
   const hold = open(1);
-  hold.renderer.renderSkeleton(skeleton);
+  hold.renderer.render(frame);
   const holdBefore = snapshot(hold.renderer, hold.root);
-  skeleton.scaleX = 0.5;
-  skeleton.scaleY = 0.5;
-  advanceSkeleton(skeleton);
-  hold.renderer.renderSkeleton(skeleton);
+  hold.renderer.render(scaledFrame(frame, 0.5));
   const holdAfter = snapshot(hold.renderer, hold.root);
 
   const meshCanvasCount = live.root.querySelectorAll('canvas').length;
@@ -972,31 +928,23 @@ export interface ScaledStageProbeResult {
  * threshold, nothing platform-dependent. The residue and the not-laid-out and
  * unscaled controls are what stop that equality from passing vacuously.
  *
- * Pose: the deterministic one the other probes use (walk, t = 1.2).
+ * Pose: the mesh probes' deterministic one (`MESH_RIG`, walk, t = 1.2).
  */
 async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
-  const assets = await loadSpineAssets({
-    atlasUrl: '/spineboy/spineboy.atlas',
-    skeletonUrl: '/spineboy/spineboy-pro.json',
-  });
-  const skeleton = new Skeleton(assets.data);
-  const state = new AnimationState(new AnimationStateData(assets.data));
-  state.setAnimation(0, 'walk', true);
-  state.update(1.2);
-  state.apply(skeleton);
-  advanceSkeleton(skeleton, 1.2);
+  const assets = await loadRig(MESH_RIG);
+  const frame = frameAt(assets, MESH_POSE.animation, MESH_POSE.time);
 
   const ZOOM = 0.25;
   const PROBE_PX = 100;
   const wrappers: HTMLElement[] = [];
-  const renderers: SkeletonRenderer[] = [];
+  const renderers: DomRenderer[] = [];
 
   /**
    * A renderer on its own root, inside a wrapper carrying the CSS transform —
    * the shape a pan/zoom stage has: the renderer is handed the inner element
    * and never sees the scale.
    */
-  function open(transform: string, display = ''): { renderer: SkeletonRenderer; root: HTMLElement } {
+  function open(transform: string, display = ''): { renderer: DomRenderer; root: HTMLElement } {
     const wrapper = document.createElement('div');
     wrapper.style.position = 'absolute';
     wrapper.style.left = '0';
@@ -1010,7 +958,7 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
     root.style.top = '0';
     wrapper.appendChild(root);
     document.body.appendChild(wrapper);
-    const renderer = new SkeletonRenderer(root, assets.regionImages);
+    const renderer = new DomRenderer(root, assets.regionImages, assets.pageImages);
     wrappers.push(wrapper);
     renderers.push(renderer);
     return { renderer, root };
@@ -1035,7 +983,7 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
     return Math.max(rect.width, rect.height);
   }
 
-  function snapshot(renderer: SkeletonRenderer, root: HTMLElement): ScaledStageSnapshot {
+  function snapshot(renderer: DomRenderer, root: HTMLElement): ScaledStageSnapshot {
     const canvases = [...root.querySelectorAll('canvas')];
     const backing = canvases.map((canvas) => ({ width: canvas.width, height: canvas.height }));
     return {
@@ -1049,19 +997,19 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
   }
 
   /** Sync a ratio that must not move, then render once more. */
-  function held(renderer: SkeletonRenderer, root: HTMLElement): HeldRatioCase {
+  function held(renderer: DomRenderer, root: HTMLElement): HeldRatioCase {
     const ratioBefore = renderer.pixelRatio;
     const measuredPx = measurePx(root);
     const returned = renderer.syncPixelRatio();
     const ratioAfter = renderer.pixelRatio;
-    renderer.renderSkeleton(skeleton);
+    renderer.render(frame);
     return { ratioBefore, returned, ratioAfter, measuredPx, after: snapshot(renderer, root) };
   }
 
   // The stage: a renderer that knows nothing about the wrapper's scale, so its
   // first frame rasters at devicePixelRatio and oversamples by 1/ZOOM.
   const live = open(`scale(${ZOOM})`);
-  live.renderer.renderSkeleton(skeleton);
+  live.renderer.render(frame);
   const scaledDefault = snapshot(live.renderer, live.root);
   const scaledMeasuredPx = measurePx(live.root);
 
@@ -1080,35 +1028,35 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
   };
   const afterSync = snapshot(live.renderer, live.root);
 
-  live.renderer.renderSkeleton(skeleton);
+  live.renderer.render(frame);
   const scaledSynced = snapshot(live.renderer, live.root);
   const syncedRatioAgain = live.renderer.syncPixelRatio();
-  live.renderer.renderSkeleton(skeleton);
+  live.renderer.render(frame);
   const scaledSyncedAgain = snapshot(live.renderer, live.root);
 
   // The oracle: same scale, same pose, that ratio from the start.
   const fresh = open(`scale(${ZOOM})`);
   fresh.renderer.pixelRatio = syncedRatio;
-  fresh.renderer.renderSkeleton(skeleton);
+  fresh.renderer.render(frame);
   const freshScaled = snapshot(fresh.renderer, fresh.root);
 
   // Not laid out: the marker ratio is one nothing could measure, so a sync that
   // "measured" anything at all would overwrite it.
   const hiddenStage = open(`scale(${ZOOM})`, 'none');
   hiddenStage.renderer.pixelRatio = 3;
-  hiddenStage.renderer.renderSkeleton(skeleton);
+  hiddenStage.renderer.render(frame);
   const hidden = held(hiddenStage.renderer, hiddenStage.root);
 
   // Negative control: no transform above the root at all.
   const plain = open('');
-  plain.renderer.renderSkeleton(skeleton);
+  plain.renderer.render(frame);
   const unscaled = held(plain.renderer, plain.root);
 
   // Deadband: 0.04% off the measured ratio — a real difference, too small to
   // be worth recreating every GPU surface for.
   const near = open(`scale(${ZOOM})`);
   near.renderer.pixelRatio = syncedRatio * 1.0004;
-  near.renderer.renderSkeleton(skeleton);
+  near.renderer.render(frame);
   const deadband = held(near.renderer, near.root);
 
   const meshCanvasCount = live.root.querySelectorAll('canvas').length;
@@ -1146,12 +1094,12 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
  * observable from script — see tests/gl-textures.spec.ts for the assertions.
  */
 
-const GL_SKELETON = {
-  atlasUrl: '/spineboy/spineboy.atlas',
-  skeletonUrl: '/spineboy/spineboy-pro.json',
-};
-
-type LoadedAssets = SpineAssets;
+/**
+ * The mesh probes' rig and pose: the figure test rig built `--pack`, so its
+ * two meshes draw from one page (one GL texture), posed mid-walk.
+ */
+const MESH_RIG = 'figure-packed';
+const MESH_POSE = { animation: 'walk', time: 1.2 } as const;
 
 export interface GlCycleSample {
   before: number;
@@ -1218,15 +1166,9 @@ function liveGlTextures(): number {
   return getMeshGlBlitter()?.liveTextureCount ?? -1;
 }
 
-/** One deterministic pose — the same one the loader probe renders. */
-function posedSkeleton(assets: LoadedAssets): Skeleton {
-  const skeleton = new Skeleton(assets.data);
-  const state = new AnimationState(new AnimationStateData(assets.data));
-  state.setAnimation(0, 'walk', true);
-  state.update(1.2);
-  state.apply(skeleton);
-  advanceSkeleton(skeleton, 1.2);
-  return skeleton;
+/** One deterministic pose of the mesh rig. */
+function posedFrame(assets: ModelAssets): PosedFrame {
+  return frameAt(assets, MESH_POSE.animation, MESH_POSE.time);
 }
 
 /** A root per renderer: several are alive at once here, unlike #root. */
@@ -1275,11 +1217,11 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   const cycles: GlCycleSample[] = [];
   for (let cycle = 0; cycle < 3; cycle++) {
     const before = liveGlTextures();
-    const assets = await loadSpineAssets(GL_SKELETON);
+    const assets = await loadRig(MESH_RIG);
     const root = makeGlRoot();
-    const renderer = new SkeletonRenderer(root, assets.regionImages);
+    const renderer = new DomRenderer(root, assets.regionImages, assets.pageImages);
     renderer.meshBackend = 'webgl';
-    renderer.renderSkeleton(posedSkeleton(assets));
+    renderer.render(posedFrame(assets));
     const afterRender = liveGlTextures();
     const backendActive = renderer.meshBackendActive;
     const pixels = meshPixels(root);
@@ -1300,18 +1242,18 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
 
   // One load for everything below: sharing, idempotence and re-use all turn
   // on several renderers meeting on the same page image.
-  const assets = await loadSpineAssets(GL_SKELETON);
+  const assets = await loadRig(MESH_RIG);
 
   // Sharing: disposing one user must not take the page from the other.
   const rootA = makeGlRoot();
   const rootB = makeGlRoot();
-  const rendererA = new SkeletonRenderer(rootA, assets.regionImages);
-  const rendererB = new SkeletonRenderer(rootB, assets.regionImages);
+  const rendererA = new DomRenderer(rootA, assets.regionImages, assets.pageImages);
+  const rendererB = new DomRenderer(rootB, assets.regionImages, assets.pageImages);
   rendererA.meshBackend = 'webgl';
   rendererB.meshBackend = 'webgl';
-  const skeletonB = posedSkeleton(assets);
-  rendererA.renderSkeleton(posedSkeleton(assets));
-  rendererB.renderSkeleton(skeletonB);
+  const frameB = posedFrame(assets);
+  rendererA.render(posedFrame(assets));
+  rendererB.render(frameB);
   const sharingAfterBoth = liveGlTextures();
   const pixelsBeforeFirstDispose = meshPixels(rootB);
   rendererA.dispose();
@@ -1319,7 +1261,7 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   // Re-dirty every mesh first: reusing last frame's raster would prove
   // nothing about the texture still being there.
   rendererB.triangleExpand = 0;
-  rendererB.renderSkeleton(skeletonB);
+  rendererB.render(frameB);
   const meshesRedrawn = rendererB.meshCount;
   const pixelsAfterFirstDispose = meshPixels(rootB);
   const sharingAfterSecondRender = liveGlTextures();
@@ -1332,12 +1274,12 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   // without one, the second decrement would find nothing to delete anyway.
   const rootC = makeGlRoot();
   const rootD = makeGlRoot();
-  const rendererC = new SkeletonRenderer(rootC, assets.regionImages);
-  const rendererD = new SkeletonRenderer(rootD, assets.regionImages);
+  const rendererC = new DomRenderer(rootC, assets.regionImages, assets.pageImages);
+  const rendererD = new DomRenderer(rootD, assets.regionImages, assets.pageImages);
   rendererC.meshBackend = 'webgl';
   rendererD.meshBackend = 'webgl';
-  rendererC.renderSkeleton(posedSkeleton(assets));
-  rendererD.renderSkeleton(posedSkeleton(assets));
+  rendererC.render(posedFrame(assets));
+  rendererD.render(posedFrame(assets));
   const idemAfterBoth = liveGlTextures();
   rendererC.dispose();
   const idemAfterFirstDispose = liveGlTextures();
@@ -1349,9 +1291,9 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   rootD.remove();
 
   const rootE = makeGlRoot();
-  const rendererE = new SkeletonRenderer(rootE, assets.regionImages);
+  const rendererE = new DomRenderer(rootE, assets.regionImages, assets.pageImages);
   rendererE.meshBackend = 'webgl';
-  rendererE.renderSkeleton(posedSkeleton(assets));
+  rendererE.render(posedFrame(assets));
   const loneAfterRender = liveGlTextures();
   rendererE.dispose();
   rendererE.dispose();
@@ -1361,8 +1303,8 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   // A renderer that never leaves canvas2d retains and releases nothing.
   const canvas2dBefore = liveGlTextures();
   const rootF = makeGlRoot();
-  const rendererF = new SkeletonRenderer(rootF, assets.regionImages);
-  rendererF.renderSkeleton(posedSkeleton(assets));
+  const rendererF = new DomRenderer(rootF, assets.regionImages, assets.pageImages);
+  rendererF.render(posedFrame(assets));
   const canvas2dAfterRender = liveGlTextures();
   const canvas2dBackend = rendererF.meshBackendActive;
   const canvas2dPixels = meshPixels(rootF);
@@ -1374,9 +1316,9 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   // must simply upload it again and draw.
   const reuseBefore = liveGlTextures();
   const rootG = makeGlRoot();
-  const rendererG = new SkeletonRenderer(rootG, assets.regionImages);
+  const rendererG = new DomRenderer(rootG, assets.regionImages, assets.pageImages);
   rendererG.meshBackend = 'webgl';
-  rendererG.renderSkeleton(posedSkeleton(assets));
+  rendererG.render(posedFrame(assets));
   const reuseAfterRender = liveGlTextures();
   const reuseBackend = rendererG.meshBackendActive;
   const reusePixels = meshPixels(rootG);
@@ -1657,26 +1599,25 @@ function installCutTrap(delivery: CutDelivery): CutTrap {
   };
 }
 
-/** Builds a TextureAtlas whose every page is backed by one painted image. */
+/** Reads an atlas text into a page layout and paints one image per page. */
 async function paintAtlas(
   text: string,
   sizes: Record<string, { width: number; height: number }>,
 ): Promise<{
-  atlas: TextureAtlas;
+  layout: PageLayout[];
   pageImages: Map<string, HTMLImageElement>;
   pageUrls: string[];
 }> {
-  const atlas = new TextureAtlas(text);
+  const layout = parseAtlas(text);
   const pageImages = new Map<string, HTMLImageElement>();
   const pageUrls: string[] = [];
-  for (const page of atlas.pages) {
+  for (const page of layout) {
     const size = sizes[page.name] ?? { width: page.width, height: page.height };
     const painted = await makePageImage(size.width, size.height);
-    page.setTexture(new DomTexture(painted.image));
     pageImages.set(page.name, painted.image);
     pageUrls.push(painted.url);
   }
-  return { atlas, pageImages, pageUrls };
+  return { layout, pageImages, pageUrls };
 }
 
 export interface CutConcurrencySample {
@@ -1691,8 +1632,8 @@ export interface CutConcurrencyProbeResult {
   small: CutConcurrencySample;
   /** Six 1024×1024 cuts: more backing than the budget allows in flight. */
   budgeted: CutConcurrencySample;
-  /** The demo's own atlas, through loadAtlasAssets. */
-  spineboy: CutConcurrencySample;
+  /** A real packed build, through loadModel: the figure test rig's one shared page. */
+  packed: CutConcurrencySample;
 }
 
 /**
@@ -1714,7 +1655,7 @@ async function cutConcurrencyProbe(): Promise<CutConcurrencyProbeResult> {
     const trap = installCutTrap({ kind: 'immediate' });
     let images: Map<string, RegionImage>;
     try {
-      images = await unpackAtlas(painted.atlas, painted.pageImages);
+      images = await unpackRegions(painted.layout, painted.pageImages);
     } finally {
       trap.restore();
     }
@@ -1722,7 +1663,7 @@ async function cutConcurrencyProbe(): Promise<CutConcurrencyProbeResult> {
     for (const url of painted.pageUrls) URL.revokeObjectURL(url);
     const cuts = trap.snapshot();
     return {
-      regionCount: painted.atlas.regions.length,
+      regionCount: layoutRegions(painted.layout).length,
       cuts,
       totalCutPixels: cuts.callPixels.reduce((sum, pixels) => sum + pixels, 0),
     };
@@ -1731,23 +1672,23 @@ async function cutConcurrencyProbe(): Promise<CutConcurrencyProbeResult> {
   const small = await measure(CONCURRENT_ATLAS, {});
   const budgeted = await measure(BUDGET_ATLAS, {});
 
-  // The real thing: one 1024×256 page, 40 regions, all of them cut.
+  // The real thing: a rigc `--pack` build, one shared page, every region cut.
   const trap = installCutTrap({ kind: 'immediate' });
-  let assets: SpineAssets;
+  let assets: ModelAssets;
   try {
-    assets = await loadSpineAssets({ atlasUrl: '/spineboy/spineboy.atlas' });
+    assets = await loadRig(RIGID_RIG);
   } finally {
     trap.restore();
   }
-  const spineboyCuts = trap.snapshot();
-  const spineboy: CutConcurrencySample = {
-    regionCount: assets.atlas.regions.length,
-    cuts: spineboyCuts,
-    totalCutPixels: spineboyCuts.callPixels.reduce((sum, pixels) => sum + pixels, 0),
+  const packedCuts = trap.snapshot();
+  const packed: CutConcurrencySample = {
+    regionCount: layoutRegions(pageLayoutOf(assets)).length,
+    cuts: packedCuts,
+    totalCutPixels: packedCuts.callPixels.reduce((sum, pixels) => sum + pixels, 0),
   };
   assets.dispose();
 
-  return { small, budgeted, spineboy };
+  return { small, budgeted, packed };
 }
 
 export interface CutOrderProbeResult {
@@ -1792,12 +1733,12 @@ async function cutOrderProbe(): Promise<CutOrderProbeResult> {
     const trap = installCutTrap({ kind: 'reverse', expected, deadlineMs: 750 });
     let unpacked: { result: Map<string, RegionImage>; created: string[]; revoked: string[] };
     try {
-      unpacked = await trackObjectUrls(() => unpackAtlas(painted.atlas, painted.pageImages));
+      unpacked = await trackObjectUrls(() => unpackRegions(painted.layout, painted.pageImages));
     } finally {
       trap.restore();
     }
     return {
-      atlasNames: painted.atlas.regions.map((region) => region.name),
+      atlasNames: layoutRegions(painted.layout).map((region) => region.name),
       regions: entries(unpacked.result),
       report: trap.snapshot(),
       created: unpacked.created,
@@ -1870,7 +1811,7 @@ async function cutFlightFailureProbe(): Promise<CutFlightFailureProbeResult> {
   let attempt: { result: string; created: string[]; revoked: string[] };
   try {
     attempt = await trackObjectUrls(async () => {
-      const settled = unpackAtlas(painted.atlas, painted.pageImages).then(
+      const settled = unpackRegions(painted.layout, painted.pageImages).then(
         () => '',
         (error) => (error instanceof Error ? error.message : String(error)),
       );
@@ -2000,11 +1941,6 @@ export interface ScaledPageProbeResult {
  * one, so a bitmap that came out of the wrong rectangle cannot be excused as a
  * filtering artefact.
  *
- * The page's regions are handed in rather than read off `page.regions`: that
- * back-reference is 4.1 and later, while `TextureAtlas.regions` plus
- * `region.page` is the arrangement every supported generation has (4.0's page
- * carries no region list at all, and reading one there is a `TypeError` that
- * reddened eight cells the first time this ran on it).
  */
 async function paintScaledPage(
   page: { width: number; height: number },
@@ -2081,23 +2017,18 @@ async function readBitmap(
 
 async function scaledPageProbe(): Promise<ScaledPageProbeResult> {
   async function measure(scale: number): Promise<ScaledPageSample> {
-    const atlas = new TextureAtlas(SCALED_PAGE_ATLAS);
+    const layout = parseAtlas(SCALED_PAGE_ATLAS);
     const pageImages = new Map<string, HTMLImageElement>();
     const pageUrls: string[] = [];
     const pageSizes: Record<string, { width: number; height: number }> = {};
-    for (const page of atlas.pages) {
-      const painted = await paintScaledPage(
-        page,
-        atlas.regions.filter((region) => region.page === page),
-        scale,
-      );
-      page.setTexture(new DomTexture(painted.image));
+    for (const page of layout) {
+      const painted = await paintScaledPage(page, page.regions, scale);
       pageImages.set(page.name, painted.image);
       pageUrls.push(painted.url);
       pageSizes[page.name] = { width: painted.width, height: painted.height };
     }
 
-    const unpacked = await trackObjectUrls(() => unpackAtlas(atlas, pageImages));
+    const unpacked = await trackObjectUrls(() => unpackRegions(layout, pageImages));
     const pageUrlSet = new Set(pageUrls);
     const regions: ScaledCutEntry[] = [];
     for (const [name, region] of unpacked.result) {
@@ -2120,7 +2051,7 @@ async function scaledPageProbe(): Promise<ScaledPageProbeResult> {
   }
 
   const declared: Record<string, { width: number; height: number }> = {};
-  for (const page of new TextureAtlas(SCALED_PAGE_ATLAS).pages) {
+  for (const page of parseAtlas(SCALED_PAGE_ATLAS)) {
     declared[page.name] = { width: page.width, height: page.height };
   }
 
@@ -2156,15 +2087,17 @@ export interface HalfResRenderProbeResult {
  * The rigid tier through the public render path, against a page image shipped
  * at half the declared size.
  *
- * The demo's own atlas, its page repainted at 0.5× — the shape a project ships
- * when it exports textures at half resolution and leaves the atlas untouched.
+ * A packed rigc build (`RIGID_RIG`), its page repainted at 0.5× — the shape a
+ * project ships when it exports textures at half resolution and leaves the
+ * page's declared size untouched.
  * `renderRegion` writes `RegionImage.width/height` onto the <img> and divides
  * the world corners by them, so as long as those stay in atlas units the
  * layout box and the CSS matrix cannot move; only the bitmap inside them gets
  * smaller. That is the claim this measures, rather than assuming it.
  */
 async function halfResRenderProbe(): Promise<HalfResRenderProbeResult> {
-  const fullPage = await loadImage('/spineboy/spineboy.png');
+  const source = await rigidPageSource();
+  const fullPage = source.page;
   const halfCanvas = document.createElement('canvas');
   halfCanvas.width = Math.round(fullPage.naturalWidth / 2);
   halfCanvas.height = Math.round(fullPage.naturalHeight / 2);
@@ -2181,19 +2114,9 @@ async function halfResRenderProbe(): Promise<HalfResRenderProbeResult> {
   document.body.append(root);
 
   async function run(resolvePage?: () => string): Promise<RigidBox[]> {
-    const assets = await loadSpineAssets({
-      atlasUrl: '/spineboy/spineboy.atlas',
-      ...(resolvePage ? { resolvePage } : {}),
-    });
-    const data = await loadSkeletonJson(assets.atlas, '/spineboy/spineboy-ess.json');
-    const skeleton = new Skeleton(data);
-    const state = new AnimationState(new AnimationStateData(data));
-    state.setAnimation(0, 'walk', true);
-    state.update(1.2);
-    state.apply(skeleton);
-    advanceSkeleton(skeleton, 1.2);
-    const renderer = new SkeletonRenderer(root, assets.regionImages);
-    renderer.renderSkeleton(skeleton);
+    const assets = await loadRig(RIGID_RIG, resolvePage ? { resolvePage } : {});
+    const renderer = new DomRenderer(root, assets.regionImages, assets.pageImages);
+    renderer.render(rigidOnly(frameAt(assets, RIGID_POSE.animation, RIGID_POSE.time)));
 
     const images = [...root.querySelectorAll('img')];
     // naturalWidth is 0 until the blob decodes, and it is half of the point.
@@ -2227,8 +2150,7 @@ async function halfResRenderProbe(): Promise<HalfResRenderProbeResult> {
   root.remove();
   URL.revokeObjectURL(halfPageUrl);
 
-  const atlasPage = new TextureAtlas(await (await fetch('/spineboy/spineboy.atlas')).text())
-    .pages[0];
+  const atlasPage = source.layout[0];
 
   return {
     declared: { width: atlasPage?.width ?? 0, height: atlasPage?.height ?? 0 },
@@ -2277,7 +2199,7 @@ export interface CutRuleStageOptions {
   /** Page image resolution, as a multiple of the declared size. 1 = as shipped. */
   pageScale: number;
   rule: CutRule;
-  /** Frozen pose: an animation of spineboy-ess, seeked to `time`. */
+  /** Frozen pose: an animation of the rigid rig (`RIGID_RIG`, its rigid slots only), seeked to `time`. */
   animation: string;
   time: number;
 }
@@ -2305,8 +2227,48 @@ const CUT_RULE_STAGE = {
   background: '#14161a',
 };
 
-/** Fetched once: the atlas text and the page image as it ships. */
-let cutRuleSource: Promise<{ atlasText: string; page: HTMLImageElement }> | null = null;
+/**
+ * The rig the page-reading probes draw — the cut rules, the half-resolution
+ * page and the premultiplied twin: the figure test rig built `--pack`, so
+ * every region is cut from one shared page, with its meshes on the same page.
+ * Its rigid slots alone are the rigid-tier cells; the whole frame is the mesh
+ * cells.
+ */
+const RIGID_RIG = 'figure-packed';
+const RIGID_POSE = { animation: 'walk', time: 1.2 } as const;
+
+/** A loaded document's `pages` section — the layout `unpackRegions` cuts from. */
+function pageLayoutOf(assets: ModelAssets): PageLayout[] {
+  const pages = (assets.document as ReadDocument).doc.pages;
+  if (!pages) throw new Error('the document states no pages');
+  return pages.map((page) => ({ ...page, regions: page.regions }));
+}
+
+interface RigidPageSource {
+  assets: ModelAssets;
+  layout: PageLayout[];
+  /** The one page's name, and its image as the build wrote it. */
+  pageName: string;
+  page: HTMLImageElement;
+}
+
+/** Loaded once: the rigid rig, its page layout and its page image as it ships. */
+let rigidSource: Promise<RigidPageSource> | null = null;
+
+function rigidPageSource(): Promise<RigidPageSource> {
+  if (!rigidSource) {
+    rigidSource = (async () => {
+      const assets = await loadRig(RIGID_RIG);
+      const layout = pageLayoutOf(assets);
+      if (layout.length !== 1) throw new Error(`${RIGID_RIG} has ${layout.length} pages, the probes need one`);
+      const pageName = layout[0].name;
+      const page = assets.pageImages.get(pageName);
+      if (!page) throw new Error(`no image for page ${pageName}`);
+      return { assets, layout, pageName, page };
+    })();
+  }
+  return rigidSource;
+}
 
 /**
  * Page images by scale, minted once per document.
@@ -2319,24 +2281,14 @@ let cutRuleSource: Promise<{ atlasText: string; page: HTMLImageElement }> | null
 const cutRulePages = new Map<number, Promise<HTMLImageElement>>();
 
 /** What the stage is holding, to be torn down before the next render. */
-let cutRuleLive: { renderer: SkeletonRenderer; release: () => void } | null = null;
+let cutRuleLive: { renderer: DomRenderer; release: () => void } | null = null;
 let cutRuleStageEl: HTMLDivElement | null = null;
-
-function cutRuleAssets(): Promise<{ atlasText: string; page: HTMLImageElement }> {
-  if (!cutRuleSource) {
-    cutRuleSource = (async () => ({
-      atlasText: await (await fetch('/spineboy/spineboy.atlas')).text(),
-      page: await loadImage('/spineboy/spineboy.png'),
-    }))();
-  }
-  return cutRuleSource;
-}
 
 function cutRulePageImage(scale: number): Promise<HTMLImageElement> {
   const cached = cutRulePages.get(scale);
   if (cached) return cached;
   const built = (async () => {
-    const { page } = await cutRuleAssets();
+    const { page } = await rigidPageSource();
     if (scale === 1) return page;
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(page.naturalWidth * scale);
@@ -2370,14 +2322,15 @@ function cutRulePageImage(scale: number): Promise<HTMLImageElement> {
  * rotation restore is the shipped one.
  */
 async function cutRuleRegion(
-  region: TextureAtlas['regions'][number],
+  region: PageLayout['regions'][number],
+  page: PageLayout,
   image: HTMLImageElement,
   rule: 'fractional' | 'shifted',
 ): Promise<string> {
   const iw = image.naturalWidth;
   const ih = image.naturalHeight;
-  const pageW = region.page.width > 0 ? region.page.width : iw;
-  const pageH = region.page.height > 0 ? region.page.height : ih;
+  const pageW = page.width > 0 ? page.width : iw;
+  const pageH = page.height > 0 ? page.height : ih;
   const rotated = region.degrees === 90;
   const packedW = rotated ? region.height : region.width;
   const packedH = rotated ? region.width : region.height;
@@ -2415,13 +2368,12 @@ async function cutRuleRegion(
   ctx.imageSmoothingQuality = 'high';
   if (rotated) {
     // The shipped restore, so the only variable between the rules is the
-    // rounding: clockwise, because spine-core's UVs put the artwork's top-left
+    // rounding: clockwise, because the runtime's UVs put the artwork's top-left
     // at the packed rect's bottom-left (the derivation is in cutRegion). This
     // read `translate(0, canvas.height); rotate(−π/2)` until #49, matching the
     // cut it is measured against — which is why a rule comparison could not
-    // see that both were turning the rect the wrong way. On the 4.2 exports,
-    // whose packer rotated ten regions, leaving it would make this comparison
-    // about rotation instead of about rounding.
+    // see that both were turning the rect the wrong way. (rigc's packer never
+    // turns a region, so on the rig this draws the branch is not taken.)
     ctx.translate(canvas.width, 0);
     ctx.rotate(Math.PI / 2);
   }
@@ -2432,24 +2384,26 @@ async function cutRuleRegion(
   return URL.createObjectURL(blob);
 }
 
-/** Every region of `atlas` under `rule`, plus the way to free what it minted. */
+/** Every region of `layout` under `rule`, plus the way to free what it minted. */
 async function cutRuleRegions(
-  atlas: TextureAtlas,
+  layout: PageLayout[],
   pageImages: Map<string, HTMLImageElement>,
   rule: CutRule,
 ): Promise<{ images: Map<string, RegionImage>; release: () => void }> {
   if (rule === 'edge') {
-    const images = await unpackAtlas(atlas, pageImages);
+    const images = await unpackRegions(layout, pageImages);
     return { images, release: () => revokeRegions(images) };
   }
   const urls: string[] = [];
   const images = new Map<string, RegionImage>();
   const cuts = await Promise.all(
-    atlas.regions.map(async (region) => {
-      const image = pageImages.get(region.page.name);
-      if (!image) throw new Error(`Missing page image: ${region.page.name}`);
-      return { region, url: await cutRuleRegion(region, image, rule) };
-    }),
+    layout.flatMap((page) =>
+      page.regions.map(async (region) => {
+        const image = pageImages.get(page.name);
+        if (!image) throw new Error(`Missing page image: ${page.name}`);
+        return { region, url: await cutRuleRegion(region, page, image, rule) };
+      }),
+    ),
   );
   for (const cut of cuts) {
     urls.push(cut.url);
@@ -2489,16 +2443,10 @@ async function cutRuleStage(options: CutRuleStageOptions): Promise<CutRuleStageR
     cutRuleLive = null;
   }
 
-  const { atlasText } = await cutRuleAssets();
+  const source = await rigidPageSource();
   const image = await cutRulePageImage(options.pageScale);
-  const atlas = new TextureAtlas(atlasText);
-  const pageImages = new Map<string, HTMLImageElement>();
-  for (const page of atlas.pages) {
-    page.setTexture(new DomTexture(image));
-    pageImages.set(page.name, image);
-  }
-  const cut = await cutRuleRegions(atlas, pageImages, options.rule);
-  const data = await loadSkeletonJson(atlas, '/spineboy/spineboy-ess.json');
+  const pageImages = new Map([[source.pageName, image]]);
+  const cut = await cutRuleRegions(source.layout, pageImages, options.rule);
 
   const stage = cutRuleStageElement();
   stage.replaceChildren();
@@ -2508,14 +2456,8 @@ async function cutRuleStage(options: CutRuleStageOptions): Promise<CutRuleStageR
     `transform-origin: 0 0; transform: scale(${CUT_RULE_STAGE.scale});`;
   stage.append(root);
 
-  const skeleton = new Skeleton(data);
-  const state = new AnimationState(new AnimationStateData(data));
-  state.setAnimation(0, options.animation, true);
-  state.update(options.time);
-  state.apply(skeleton);
-  advanceSkeleton(skeleton, options.time);
-  const renderer = new SkeletonRenderer(root, cut.images);
-  renderer.renderSkeleton(skeleton);
+  const renderer = new DomRenderer(root, cut.images, pageImages);
+  renderer.render(rigidOnly(frameAt(source.assets, options.animation, options.time)));
   cutRuleLive = { renderer, release: cut.release };
 
   const images = [...root.querySelectorAll('img')];
@@ -2549,7 +2491,7 @@ async function cutRuleStage(options: CutRuleStageOptions): Promise<CutRuleStageR
   }
   const round = (value: number): number => Math.round(value * 100) / 100;
 
-  const declaredPage = atlas.pages[0];
+  const declaredPage = source.layout[0];
   return {
     declaredPage: { width: declaredPage?.width ?? 0, height: declaredPage?.height ?? 0 },
     pageSize: { width: image.naturalWidth, height: image.naturalHeight },
@@ -2578,28 +2520,14 @@ async function cutRuleStage(options: CutRuleStageOptions): Promise<CutRuleStageR
  * but `renderer.clipping`.
  */
 
-import {
-  ClippingAttachment,
-  type Slot,
-  type SlotData,
-} from '@esotericsoftware/spine-core';
-
-const CLIP_PRO = {
-  atlasUrl: '/spineboy/spineboy.atlas',
-  skeletonUrl: '/spineboy/spineboy-pro.json',
-};
-const CLIP_ESS = {
-  atlasUrl: '/spineboy/spineboy.atlas',
-  skeletonUrl: '/spineboy/spineboy-ess.json',
-};
 /** Root scale, capture box and root origin shared by every clipping capture. */
 const CLIP_SCALE = 0.4;
 const CLIP_BOX = { width: 420, height: 340, originX: 210, originY: 320 };
 /**
  * Capture boxes are left TRANSPARENT and screenshotted with `omitBackground`,
  * so "is there artwork at this pixel" is a question about alpha rather than
- * about how close a color is to a backdrop. Spineboy's outfit is nearly black,
- * and against an opaque dark box the two answers are not the same question.
+ * about how close a color is to a backdrop. Dark artwork against an opaque
+ * dark box would make those two different questions.
  */
 const CLIP_BG = 'transparent';
 
@@ -2701,7 +2629,7 @@ export interface ClipCounterStep {
   clipWriteCount: number;
   clipCount: number;
   clipSkipCount: number;
-  /** Clipping attachments the draw loop met and did not start (read off the skeleton, not the renderer). */
+  /** Clipping attachments the pose shows and the frame does not carry (read off the pose and the frame, not the renderer). */
   clipsIgnored: number;
   elementsWithClipPath: number;
   /** Slots whose clip-path string changed during this step. */
@@ -2729,6 +2657,8 @@ export interface ClipCountersProbeResult {
 }
 
 export interface ClipInverseProbeResult {
+  /** The frame's clip is inverse — the attachment's flag arrived through the adapter. */
+  inverse: boolean;
   /** The even-odd string the renderer wrote for a drawn element. */
   sampleClipPath: string;
   elementsWithClipPath: number;
@@ -2741,36 +2671,24 @@ export interface ClipInverseProbeResult {
 }
 
 /**
- * The clipping probes do not only read pose state, they WRITE it — they swap a
- * slot's attachment for a synthetic clip and nudge a bone. Where that state
- * lives moved in 4.3 (`slot.appliedPose`, `bone.appliedPose`,
- * `skeleton.drawOrder.appliedPose`), so these three go through the same seam
- * the renderer uses instead of naming one generation's layout. The seam picks
- * its shape from the live objects and holds no state, so calling it per probe
- * costs a property test.
+ * The clip probes draw the figure test rig (tests/rigs/figure), one animation
+ * per case. Its clips are authored in rigc's own format — clipping
+ * attachments in slot `clip` (and `clip_inner`) on the root bone, so each
+ * polygon's world coordinates are the ones written in its rig.json — and
+ * every case but `mask` is the setup pose, so the frames of two cases differ
+ * in exactly what the cases differ in: the polygon (`tilted` / `tilted_moved`),
+ * one leaf bone (`nudge`, which moves `badge` and nothing else), a second clip
+ * (`nested`). What the renderer is handed is what the package's adapter reads
+ * off the pose: which slots a clip covers, and one shared `PosedClip` per
+ * clip. Nothing here constructs a clip; the probes only choose which slots of
+ * a frame to draw.
  */
-function drawOrderOf(skeleton: Skeleton): Slot[] {
-  return skeleton.drawOrder.appliedPose;
-}
-
-function poseOf(_skeleton: Skeleton, slot: Slot): Slot['appliedPose'] {
-  return slot.appliedPose;
-}
-
-function bonePoseOf(_skeleton: Skeleton, slot: Slot): Slot['bone']['appliedPose'] {
-  return slot.bone.appliedPose;
-}
-
-/** One deterministic pose of a named animation. */
-function posedFor(assets: LoadedAssets, animation: string, time: number): Skeleton {
-  const skeleton = new Skeleton(assets.data);
-  const state = new AnimationState(new AnimationStateData(assets.data));
-  state.setAnimation(0, animation, true);
-  state.update(time);
-  state.apply(skeleton);
-  advanceSkeleton(skeleton, time);
-  return skeleton;
-}
+const CLIP_RIG = 'figure';
+/** Any time does for the setup-pose cases; `mask` walks, and is frozen at the walk's own t. */
+const CLIP_TIME = 0.5;
+const MASK_POSE = { animation: 'mask', time: 1.2 } as const;
+/** The leaf bone `nudge` moves: one drawn slot on it, no children. */
+const NUDGED_SLOT = 'badge';
 
 /** A capture box with a renderer root at a known origin and scale inside it. */
 function openClipCapture(id: string, top: number): {
@@ -2802,8 +2720,9 @@ function openClipCapture(id: string, top: number): {
 /**
  * A frame slot after every clip's range that draws nothing — its region has no
  * bitmap, so the renderer hides it. Appended by the probes that measure the
- * per-element path under a clip covering every drawn element (see
- * `SkeletonRenderer.trailing`).
+ * per-element path under a clip covering every drawn element: the renderer
+ * takes the whole-skeleton root path only for a clip that covers every slot
+ * of the frame, and this keeps such a clip on the per-element path.
  */
 const UNDRAWN_AFTER_CLIP: PosedSlot = {
   slot: '__after-clip',
@@ -2818,14 +2737,18 @@ const UNDRAWN_AFTER_CLIP: PosedSlot = {
   uvs: [0, 1, 0, 0, 1, 0, 1, 1],
 };
 
-function clipRenderer(root: HTMLElement, assets: LoadedAssets): SkeletonRenderer {
-  const renderer = new SkeletonRenderer(root, assets.regionImages);
+function withTrailing(frame: PosedFrame): PosedFrame {
+  return { order: [...frame.order, UNDRAWN_AFTER_CLIP] };
+}
+
+function clipRenderer(root: HTMLElement, assets: ModelAssets): DomRenderer {
+  const renderer = new DomRenderer(root, assets.regionImages, assets.pageImages);
   // The root is scaled, so fold that in rather than rastering meshes at 1:1.
   renderer.pixelRatio = CLIP_SCALE;
   return renderer;
 }
 
-function clipCounters(renderer: SkeletonRenderer): ClipCounters {
+function clipCounters(renderer: DomRenderer): ClipCounters {
   return {
     clipCount: renderer.clipCount,
     clipSkipCount: renderer.clipSkipCount,
@@ -2836,7 +2759,7 @@ function clipCounters(renderer: SkeletonRenderer): ClipCounters {
 /** The slot elements of one root, identified by the z-index the renderer wrote. */
 function clipElements(
   root: HTMLElement,
-  drawOrder: Slot[],
+  drawOrder: readonly string[],
   startIndex: number,
   endIndex: number,
 ): ClipElementReport[] {
@@ -2846,7 +2769,7 @@ function clipElements(
     const z = Number(el.style.zIndex);
     const slot = Number.isInteger(z) ? drawOrder[z] : undefined;
     out.push({
-      slot: slot ? slot.data.name : `z:${el.style.zIndex}`,
+      slot: slot ?? `z:${el.style.zIndex}`,
       tag: el instanceof HTMLImageElement ? 'img' : 'canvas',
       visible: el.style.display !== 'none',
       clipPath: el.style.clipPath,
@@ -2856,139 +2779,96 @@ function clipElements(
   return out;
 }
 
-/** The clip polygon in the root's CSS frame — the spec's oracle input. */
-function clipWorldPolygon(skeleton: Skeleton, slot: Slot, clip: ClippingAttachment): number[] {
-  const n = clip.worldVerticesLength;
-  const world = new Float32Array(n);
-  clip.computeWorldVertices(skeleton, slot, 0, n, world, 0, 2);
-  const polygon: number[] = [];
-  // Spine is Y-up, CSS is Y-down — the same negation the renderer applies.
-  for (let v = 0; v < n; v += 2) polygon.push(world[v], -world[v + 1]);
-  return polygon;
-}
-
 /**
- * A clip polygon is stored in its slot's bone space, and every spineboy slot
- * hangs off an animated bone — so these tests author the quad in world space
- * and carry it into the host bone's frame through the inverse of that bone's
- * applied transform. Where the clip lands is then a property of the test
- * rather than of the pose. (Spine's bone convention: X = a·vx + b·vy + worldX,
- * Y = c·vx + d·vy + worldY.)
+ * The clip in force in a case's frame, and where it starts and ends in the
+ * pose's draw order. The start is the clipping slot the pose shows first; the
+ * end is the slot its attachment names, or the last slot when it names its own
+ * slot (a clip that never ends). The clip object is the frame's — the one the
+ * renderer sees — so a polygon read from it is the polygon that was drawn.
  */
-function clipVerticesFromWorld(skeleton: Skeleton, slot: Slot, world: number[]): number[] {
-  const bone = bonePoseOf(skeleton, slot);
-  const det = bone.a * bone.d - bone.b * bone.c;
-  if (det === 0) throw new Error('clip host bone has a singular transform');
-  const inv = 1 / det;
-  const out: number[] = [];
-  for (let i = 0; i < world.length; i += 2) {
-    const dx = world[i] - bone.worldX;
-    const dy = world[i + 1] - bone.worldY;
-    out.push((bone.d * dx - bone.b * dy) * inv, (bone.a * dy - bone.c * dx) * inv);
-  }
-  return out;
+function clipRange(pose: RawPose, frame: PosedFrame): {
+  startIndex: number;
+  endIndex: number;
+  startSlot: string;
+  endSlot: string | null;
+  clip: PosedClip;
+} {
+  const first = pose.clips[0];
+  if (!first) throw new Error('the pose shows no clipping attachment');
+  const [startSlot, , endSlot] = first;
+  const startIndex = pose.drawOrder.indexOf(startSlot);
+  const ahead = endSlot === null ? -1 : pose.drawOrder.indexOf(endSlot);
+  const endIndex = ahead > startIndex ? ahead : pose.drawOrder.length - 1;
+  const clip = frame.order.find((slot) => slot.clip)?.clip;
+  if (!clip) throw new Error('no slot of the frame carries the clip');
+  return { startIndex, endIndex, startSlot, endSlot, clip };
 }
 
-function makeClip(
-  skeleton: Skeleton,
-  name: string,
-  slot: Slot,
-  worldVertices: number[],
-  endSlot: SlotData | null,
-): ClippingAttachment {
-  const clip = new ClippingAttachment(name);
-  clip.vertices = clipVerticesFromWorld(skeleton, slot, worldVertices);
-  clip.worldVerticesLength = clip.vertices.length;
-  clip.endSlot = endSlot;
-  return clip;
-}
-
-/** A quad, tilted so the rigid tier's inverse-matrix path has real work to do. */
-function tiltedQuad(
-  cx: number,
-  cy: number,
-  halfW: number,
-  halfH: number,
-  degrees: number,
-): number[] {
-  const t = (degrees * Math.PI) / 180;
-  const cos = Math.cos(t);
-  const sin = Math.sin(t);
+/** The clip polygon in the root's CSS frame — the spec's oracle input. Spine is Y-up, CSS Y-down. */
+function cssPolygon(clip: PosedClip): number[] {
   const out: number[] = [];
-  for (const [x, y] of [
-    [-halfW, -halfH],
-    [halfW, -halfH],
-    [halfW, halfH],
-    [-halfW, halfH],
-  ]) {
-    out.push(cx + x * cos - y * sin, cy + x * sin + y * cos);
-  }
+  for (let v = 0; v < clip.polygon.length; v += 2) out.push(clip.polygon[v], -clip.polygon[v + 1]);
   return out;
 }
 
 /**
- * The repository's own part mask: spineboy-pro's `portal` animation carries a
- * clipping attachment in the `clipping` slot that ends at `head-bb`, so it
- * covers the character and leaves the portal artwork around it alone.
+ * Clipping attachments the pose shows that no slot of the frame carries — the
+ * ones the draw loop met while another clip was in force and ignored. Counted
+ * where the frame is read, off the pose and the frame the adapter made of it.
+ */
+function clipsIgnored(pose: RawPose, frame: PosedFrame): number {
+  const carried = new Set(frame.order.map((slot) => slot.clip).filter((clip) => clip !== undefined));
+  return pose.clips.length - carried.size;
+}
+
+/**
+ * The rig's own part mask: in `mask`, slot `clip` shows a convex polygon that
+ * ends at `head`, so it covers the figure's back half and torso and leaves
+ * what is drawn after the head alone.
  *
- * The two captures hide everything OUT of that range, so the only difference
+ * The two captures draw only the slots IN that range, so the only difference
  * between them is the clip itself — which is what lets the spec mask one and
  * compare it to the other.
  */
 async function clipPartMaskProbe(): Promise<ClipPartMaskProbeResult> {
-  const assets = await loadSpineAssets(CLIP_PRO);
-  const skeleton = posedFor(assets, 'portal', 1.2);
-  const drawOrder = drawOrderOf(skeleton);
-  const startIndex = drawOrder.findIndex(
-    (slot) => poseOf(skeleton, slot).attachment instanceof ClippingAttachment,
-  );
-  if (startIndex < 0) throw new Error('the portal animation has no clipping attachment');
-  const startSlot = drawOrder[startIndex];
-  const clip = poseOf(skeleton, startSlot).attachment as ClippingAttachment;
-  const ahead = clip.endSlot
-    ? drawOrder.findIndex((slot, i) => i > startIndex && slot.data === clip.endSlot)
-    : -1;
-  const endIndex = ahead === -1 ? drawOrder.length - 1 : ahead;
+  const assets = await loadRig(CLIP_RIG);
+  const { pose, frame } = poseAt(assets, MASK_POSE.animation, MASK_POSE.time);
+  const range = clipRange(pose, frame);
+  const { startIndex, endIndex } = range;
 
   const inRangeSlots: string[] = [];
   const outOfRangeSlots: string[] = [];
-  drawOrder.forEach((slot, i) => {
+  pose.drawOrder.forEach((slot, i) => {
     if (i === startIndex) return;
-    (i > startIndex && i <= endIndex ? inRangeSlots : outOfRangeSlots).push(slot.data.name);
+    (i > startIndex && i <= endIndex ? inRangeSlots : outOfRangeSlots).push(slot);
   });
 
   // Full render first — the DOM report needs the out-of-range slots present.
   const full = openClipCapture('clip-part-full', CLIP_BOX.height * 2);
   const fullRenderer = clipRenderer(full.root, assets);
-  fullRenderer.renderSkeleton(skeleton);
-  const elements = clipElements(full.root, drawOrder, startIndex, endIndex);
+  fullRenderer.render(frame);
+  const elements = clipElements(full.root, pose.drawOrder, startIndex, endIndex);
   const rootClipPath = full.root.style.clipPath;
 
-  const polygon = clipWorldPolygon(skeleton, startSlot, clip);
-
-  // Now drop everything outside the clip's range, so the captures differ in
-  // nothing but the clip.
-  drawOrder.forEach((slot, i) => {
-    if (i !== startIndex && !(i > startIndex && i <= endIndex)) {
-      poseOf(skeleton, slot).attachment = null;
-    }
-  });
+  // Now only the slots in the clip's range, so the captures differ in nothing
+  // but the clip.
+  const inRange: PosedFrame = { order: frame.order.filter((slot) => slot.z > startIndex && slot.z <= endIndex) };
 
   const clipped = openClipCapture('clip-part-a', 0);
   const clippedRenderer = clipRenderer(clipped.root, assets);
-  clippedRenderer.renderSkeleton(skeleton);
+  clippedRenderer.render(inRange);
 
   const unclipped = openClipCapture('clip-part-b', CLIP_BOX.height);
   const unclippedRenderer = clipRenderer(unclipped.root, assets);
   unclippedRenderer.clipping = false;
-  unclippedRenderer.renderSkeleton(skeleton);
+  unclippedRenderer.render(inRange);
 
   return {
-    startSlot: startSlot.data.name,
-    endSlot: clip.endSlot ? clip.endSlot.name : null,
+    startSlot: range.startSlot,
+    endSlot: range.endSlot,
     inRangeSlots,
     outOfRangeSlots,
-    polygon,
+    polygon: cssPolygon(range.clip),
     counters: clipCounters(clippedRenderer),
     elements,
     rootClipPath,
@@ -2998,58 +2878,39 @@ async function clipPartMaskProbe(): Promise<ClipPartMaskProbeResult> {
 }
 
 /**
- * The rigid tier under a tilted clip: spineboy-ess is region attachments only,
- * so every element here is an `<img>` posed by a full matrix and every
- * clip-path has to come back through that matrix's inverse.
+ * The rigid tier under a tilted clip: the figure's rigid slots only, so every
+ * element here is an `<img>` posed by a full matrix — the figure's bones are
+ * turned at rest — and every clip-path has to come back through that matrix's
+ * inverse.
  *
- * The clip sits in the first slot and ends at the LAST one, so it covers every
- * drawn element (which is what makes the whole capture maskable), and a frame
- * slot past its range that draws nothing (`UNDRAWN_AFTER_CLIP`) keeps the root
- * fast path shut — the renderer takes it only for a clip over every slot.
+ * `tilted` starts in the first slot and ends at the LAST one, so it covers
+ * every drawn element (which is what makes the whole capture maskable), and a
+ * frame slot past its range that draws nothing (`UNDRAWN_AFTER_CLIP`) keeps the
+ * root fast path shut — the renderer takes it only for a clip over every slot.
  */
 async function clipRigidProbe(): Promise<ClipRigidProbeResult> {
-  const assets = await loadSpineAssets(CLIP_ESS);
-  const skeleton = posedFor(assets, 'walk', 1.2);
-  const drawOrder = drawOrderOf(skeleton);
-  const host = drawOrder[0];
-  const last = drawOrder[drawOrder.length - 1];
+  const assets = await loadRig(CLIP_RIG);
 
-  // The control first: clipped by a quad far larger than the skeleton, so
-  // every element carries a clip-path and none of them loses a pixel.
-  poseOf(skeleton, host).attachment = makeClip(
-    skeleton,
-    'probe-covering',
-    host,
-    tiltedQuad(0, 350, 20000, 20000, 0),
-    last.data,
-  );
+  // The control first: `cover`, a quad far larger than the figure over the
+  // same range, so every element carries a clip-path and none loses a pixel.
   const control = openClipCapture('clip-rigid-c', CLIP_BOX.height * 2);
   const controlRenderer = clipRenderer(control.root, assets);
-  controlRenderer.trailing = [UNDRAWN_AFTER_CLIP];
-  controlRenderer.renderSkeleton(skeleton);
+  controlRenderer.render(withTrailing(rigidOnly(frameAt(assets, 'cover', CLIP_TIME))));
 
-  const clip = makeClip(
-    skeleton,
-    'probe-tilted',
-    host,
-    tiltedQuad(40, 380, 200, 130, 22),
-    last.data,
-  );
-  poseOf(skeleton, host).attachment = clip;
-
-  const polygon = clipWorldPolygon(skeleton, host, clip);
+  const { pose, frame } = poseAt(assets, 'tilted', CLIP_TIME);
+  const range = clipRange(pose, frame);
+  const rigid = rigidOnly(frame);
 
   const clipped = openClipCapture('clip-rigid-a', 0);
   const clippedRenderer = clipRenderer(clipped.root, assets);
-  clippedRenderer.trailing = [UNDRAWN_AFTER_CLIP];
-  clippedRenderer.renderSkeleton(skeleton);
+  clippedRenderer.render(withTrailing(rigid));
 
   const unclipped = openClipCapture('clip-rigid-b', CLIP_BOX.height);
   const unclippedRenderer = clipRenderer(unclipped.root, assets);
   unclippedRenderer.clipping = false;
-  unclippedRenderer.renderSkeleton(skeleton);
+  unclippedRenderer.render(rigid);
 
-  const reports = clipElements(clipped.root, drawOrder, 0, drawOrder.length - 1);
+  const reports = clipElements(clipped.root, pose.drawOrder, 0, pose.drawOrder.length - 1);
   let rotatedOrScaled = 0;
   for (const el of Array.from(clipped.root.children)) {
     if (!(el instanceof HTMLImageElement) || el.style.display === 'none') continue;
@@ -3069,45 +2930,40 @@ async function clipRigidProbe(): Promise<ClipRigidProbeResult> {
     rotatedOrScaled,
     rootClipPath: clipped.root.style.clipPath,
     counters: clipCounters(clippedRenderer),
-    polygon,
+    polygon: cssPolygon(range.clip),
     clipped: clipped.capture,
     unclipped: unclipped.capture,
   };
 }
 
 /**
- * The whole-skeleton shape: an axis-aligned rectangle in the first slot whose
- * end slot is its OWN slot. The official draw loops never offer the starting
- * slot to clipEnd (they `continue` past it), so that clip never ends and
- * covers every element — which is the case the root fast path exists for.
+ * The whole-skeleton shape: `window`, an axis-aligned rectangle in the first
+ * slot whose end slot is its OWN slot. The official draw loops never offer
+ * the starting slot to clipEnd (they `continue` past it), so that clip never
+ * ends and covers every element — which is the case the root fast path
+ * exists for.
  *
  * The style contract gets its own throwaway root: the root is the caller's
  * element, so the inline clip-path found there has to come back.
  */
 async function clipRootProbe(): Promise<ClipRootProbeResult> {
-  const assets = await loadSpineAssets(CLIP_ESS);
-  const skeleton = posedFor(assets, 'walk', 1.2);
-  const drawOrder = drawOrderOf(skeleton);
-  const host = drawOrder[0];
-  const hostPose = poseOf(skeleton, host);
-  const original = hostPose.attachment;
-  // A screen-shaped window over the character, the consumer shape this serves.
-  const rect = [-120, 100, 220, 100, 220, 520, -120, 520];
-  const clip = makeClip(skeleton, 'probe-window', host, rect, host.data);
-  hostPose.attachment = clip;
-
-  const polygon = clipWorldPolygon(skeleton, host, clip);
+  const assets = await loadRig(CLIP_RIG);
+  const { pose, frame } = poseAt(assets, 'window', CLIP_TIME);
+  const range = clipRange(pose, frame);
+  const windowed = rigidOnly(frame);
+  // The same pose with no clip shown — the frame after the clip ends.
+  const bare = rigidOnly(frameAt(assets, 'bare', CLIP_TIME));
 
   const clipped = openClipCapture('clip-root-a', 0);
   const clippedRenderer = clipRenderer(clipped.root, assets);
-  clippedRenderer.renderSkeleton(skeleton);
+  clippedRenderer.render(windowed);
 
   const unclipped = openClipCapture('clip-root-b', CLIP_BOX.height);
   const unclippedRenderer = clipRenderer(unclipped.root, assets);
   unclippedRenderer.clipping = false;
-  unclippedRenderer.renderSkeleton(skeleton);
+  unclippedRenderer.render(windowed);
 
-  const reports = clipElements(clipped.root, drawOrder, 0, drawOrder.length);
+  const reports = clipElements(clipped.root, pose.drawOrder, 0, pose.drawOrder.length);
   const counters = clipCounters(clippedRenderer);
 
   // The borrowed-style contract, on a root that already carries one.
@@ -3117,13 +2973,11 @@ async function clipRootProbe(): Promise<ClipRootProbeResult> {
   // whatever the engine serialized, which is what the renderer saved.
   const before = contract.root.style.clipPath;
   const contractRenderer = clipRenderer(contract.root, assets);
-  contractRenderer.renderSkeleton(skeleton);
+  contractRenderer.render(windowed);
   const duringClip = contract.root.style.clipPath;
-  hostPose.attachment = original;
-  contractRenderer.renderSkeleton(skeleton);
+  contractRenderer.render(bare);
   const afterClipEnds = contract.root.style.clipPath;
-  hostPose.attachment = clip;
-  contractRenderer.renderSkeleton(skeleton);
+  contractRenderer.render(windowed);
   const duringSecondClip = contract.root.style.clipPath;
   contractRenderer.dispose();
   const afterDispose = contract.root.style.clipPath;
@@ -3134,7 +2988,7 @@ async function clipRootProbe(): Promise<ClipRootProbeResult> {
     drawnElements: reports.filter((r) => r.visible).length,
     counters,
     styleContract: { before, duringClip, afterClipEnds, duringSecondClip, afterDispose },
-    polygon,
+    polygon: cssPolygon(range.clip),
     clipped: clipped.capture,
     unclipped: unclipped.capture,
   };
@@ -3143,22 +2997,19 @@ async function clipRootProbe(): Promise<ClipRootProbeResult> {
 /**
  * Writes-on-change, the disable switch, and the nested-clip rule — all on one
  * renderer, because each step's meaning is "what changed since the last one".
- * No pixels here: every number below is a deterministic counter.
+ * No pixels here: every number below is a deterministic counter. The steps
+ * are frames of the cases in order: `tilted` twice, `tilted_moved` (the
+ * polygon moved), `nudge` (that polygon, and one leaf bone moved), the same
+ * frame with clipping off and on again, and `nested`.
  */
 async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
-  const assets = await loadSpineAssets(CLIP_ESS);
-  const skeleton = posedFor(assets, 'walk', 1.2);
-  const drawOrder = drawOrderOf(skeleton);
-  const host = drawOrder[0];
-  const last = drawOrder[drawOrder.length - 1];
-  const clip = makeClip(
-    skeleton,
-    'probe-counters',
-    host,
-    tiltedQuad(40, 380, 200, 130, 22),
-    last.data,
-  );
-  poseOf(skeleton, host).attachment = clip;
+  const assets = await loadRig(CLIP_RIG);
+  const moment = (animation: string): { pose: RawPose; frame: PosedFrame } => {
+    const { pose, frame } = poseAt(assets, animation, CLIP_TIME);
+    return { pose, frame: rigidOnly(frame) };
+  };
+  const tilted = moment('tilted');
+  const drawOrder = tilted.pose.drawOrder;
 
   const root = document.createElement('div');
   root.style.position = 'absolute';
@@ -3166,11 +3017,10 @@ async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
   root.style.top = '0';
   document.body.appendChild(root);
   const renderer = clipRenderer(root, assets);
-  renderer.trailing = [UNDRAWN_AFTER_CLIP];
 
   let previous = new Map<string, string>();
-  function step(): ClipCounterStep {
-    renderer.renderSkeleton(skeleton);
+  function step(at: { pose: RawPose; frame: PosedFrame }): ClipCounterStep {
+    renderer.render(withTrailing(at.frame));
     const reports = clipElements(root, drawOrder, 0, drawOrder.length - 1);
     const now = new Map(reports.map((r) => [r.slot, r.clipPath]));
     const changedSlots: string[] = [];
@@ -3182,60 +3032,41 @@ async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
       clipWriteCount: renderer.clipWriteCount,
       clipCount: renderer.clipCount,
       clipSkipCount: renderer.clipSkipCount,
-      clipsIgnored: renderer.clipsIgnored,
+      clipsIgnored: clipsIgnored(at.pose, at.frame),
       elementsWithClipPath: reports.filter((r) => r.clipPath !== '').length,
       changedSlots,
     };
   }
 
-  const firstRender = step();
+  const firstRender = step(tilted);
   const inRangeElements = firstRender.elementsWithClipPath;
-  const secondRender = step();
+  const secondRender = step(tilted);
 
-  // Move the polygon itself: every covered element's local polygon changes.
-  const moved = clip.vertices as number[];
-  for (let i = 0; i < moved.length; i++) moved[i] += 7;
-  const polygonMoved = step();
+  // The polygon itself moved: every covered element's local polygon changes.
+  const polygonMoved = step(moment('tilted_moved'));
 
-  // Nudge one bone's APPLIED world transform. Nothing recomputes the
-  // hierarchy afterwards, so no child bone follows and exactly the slots on
-  // that bone move — and this one is picked because it carries exactly one
-  // slot that is actually drawn (a bone whose only slot is undrawn would move
-  // nothing at all and make the assertion pass for the wrong reason).
-  const drawn = drawOrder.filter(
-    (slot) => slot !== host && previous.get(slot.data.name) !== undefined,
-  );
-  const movedSlot = drawn.find(
-    (slot) => drawn.filter((other) => other.bone === slot.bone).length === 1,
-  );
-  if (!movedSlot) throw new Error('no drawn slot is alone on its bone');
-  bonePoseOf(skeleton, movedSlot).worldX += 13;
-  const oneSlotMoved = step();
+  // One leaf bone moved under the moved polygon: exactly the one slot on that
+  // bone moves, and the bone has no child for anything else to follow it.
+  const nudged = moment('nudge');
+  const oneSlotMoved = step(nudged);
 
   renderer.clipping = false;
-  const disabled = step();
+  const disabled = step(nudged);
   renderer.clipping = true;
-  const reEnabled = step();
+  const reEnabled = step(nudged);
 
-  // A second clipping attachment while the first is still active: spine-core's
-  // clipStart ignores it, so the frame never carries it — the slots after it
-  // stay under the first clip, and it is counted where the frame is read.
-  const second = drawOrder[3];
-  poseOf(skeleton, second).attachment = makeClip(
-    skeleton,
-    'probe-second',
-    second,
-    tiltedQuad(0, 300, 120, 120, 0),
-    last.data,
-  );
-  const nested = step();
+  // A second clipping attachment while the first is still in force: the draw
+  // loop's clipStart ignores it, so the frame never carries it — the slots
+  // after it stay under the first clip, and it is counted where the frame is
+  // read.
+  const nested = step(moment('nested'));
 
   renderer.dispose();
   root.remove();
 
   return {
     inRangeElements,
-    movedSlot: movedSlot.data.name,
+    movedSlot: NUDGED_SLOT,
     firstRender,
     secondRender,
     polygonMoved,
@@ -3250,43 +3081,34 @@ async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
  * An inverse clip: everything OUTSIDE the polygon stays visible. CSS says that
  * with an even-odd polygon whose outer ring is the element's own box, so the
  * shape is expressible per element — and never on the root, which is a 0×0
- * origin element with no box to ring.
+ * origin element with no box to ring. `inverse` ends at its own slot, so it
+ * covers every element.
  */
 async function clipInverseProbe(): Promise<ClipInverseProbeResult> {
-  const assets = await loadSpineAssets(CLIP_ESS);
-  const skeleton = posedFor(assets, 'walk', 1.2);
-  const drawOrder = drawOrderOf(skeleton);
-  const host = drawOrder[0];
-  const clip = makeClip(
-    skeleton,
-    'probe-inverse',
-    host,
-    tiltedQuad(40, 380, 160, 110, 22),
-    host.data,
-  );
-  clip.inverse = true;
-  poseOf(skeleton, host).attachment = clip;
-
-  const polygon = clipWorldPolygon(skeleton, host, clip);
+  const assets = await loadRig(CLIP_RIG);
+  const { pose, frame } = poseAt(assets, 'inverse', CLIP_TIME);
+  const range = clipRange(pose, frame);
+  const rigid = rigidOnly(frame);
 
   const clipped = openClipCapture('clip-inverse-a', 0);
   const clippedRenderer = clipRenderer(clipped.root, assets);
-  clippedRenderer.renderSkeleton(skeleton);
+  clippedRenderer.render(rigid);
 
   const unclipped = openClipCapture('clip-inverse-b', CLIP_BOX.height);
   const unclippedRenderer = clipRenderer(unclipped.root, assets);
   unclippedRenderer.clipping = false;
-  unclippedRenderer.renderSkeleton(skeleton);
+  unclippedRenderer.render(rigid);
 
-  const reports = clipElements(clipped.root, drawOrder, 0, drawOrder.length);
+  const reports = clipElements(clipped.root, pose.drawOrder, 0, pose.drawOrder.length);
   const sample = reports.find((r) => r.visible && r.clipPath !== '');
 
   return {
+    inverse: range.clip.inverse,
     sampleClipPath: sample ? sample.clipPath : '',
     elementsWithClipPath: reports.filter((r) => r.clipPath !== '').length,
     rootClipPath: clipped.root.style.clipPath,
     counters: clipCounters(clippedRenderer),
-    polygon,
+    polygon: cssPolygon(range.clip),
     clipped: clipped.capture,
     unclipped: unclipped.capture,
   };
@@ -3435,14 +3257,9 @@ function premultiplied(pixels: Uint8ClampedArray): Uint8ClampedArray {
   return out;
 }
 
-/** The same atlas text, with its (single) page declared premultiplied. */
-function withPmaFlag(atlasText: string): string {
-  const lines = atlasText.split('\n');
-  const at = lines.findIndex((line) => /^\s*size\s*:/.test(line));
-  if (at === -1) throw new Error('atlas has no size: line to flag');
-  const indent = /^\s*/.exec(lines[at])?.[0] ?? '';
-  lines.splice(at + 1, 0, `${indent}pma: true`);
-  return lines.join('\n');
+/** A frame whose every slot declares its page premultiplied — what a `pma: true` document makes. */
+function withPmaSlots(frame: PosedFrame): PosedFrame {
+  return { order: frame.order.map((slot) => ({ ...slot, pma: true })) };
 }
 
 /**
@@ -4027,13 +3844,11 @@ async function pmaCutProbe(): Promise<PmaCutProbeResult> {
   }> {
     const pageUrl = sources[variant];
     const image = await loadImage(pageUrl);
-    const atlas = new TextureAtlas(
-      variant === 'pma' ? withPmaFlag(PMA_RAMP_ATLAS) : PMA_RAMP_ATLAS,
-    );
-    for (const page of atlas.pages) page.setTexture(new DomTexture(image));
+    const ramp = parseAtlas(PMA_RAMP_ATLAS);
+    const layout = variant === 'pma' ? withPma(ramp) : ramp;
     const pageImages = new Map([['ramp.png', image]]);
 
-    const unpacked = await trackObjectUrls(() => unpackAtlas(atlas, pageImages));
+    const unpacked = await trackObjectUrls(() => unpackRegions(layout, pageImages));
     const whole = unpacked.result.get('whole');
     const sub = unpacked.result.get('sub');
     if (!whole || !sub) throw new Error('regions missing from the unpack');
@@ -4156,7 +3971,7 @@ export interface PmaDerivationProbeResult {
  * probes ran before this one.
  */
 async function pmaDerivationProbe(): Promise<PmaDerivationProbeResult> {
-  const atlasText = await (await fetch('/spineboy/spineboy.atlas')).text();
+  const source = await rigidPageSource();
   const twin = await pmaTwinPage(1);
   const root = document.createElement('div');
   root.style.cssText = 'position: absolute; left: 0; top: 0; visibility: hidden';
@@ -4167,28 +3982,19 @@ async function pmaDerivationProbe(): Promise<PmaDerivationProbeResult> {
   async function run(variant: 'straight' | 'pma'): Promise<number> {
     // A fresh element: the cache is keyed by the image, so a page another probe
     // already derived would make this count nothing.
-    const image = await loadImage(variant === 'pma' ? twin.url : '/spineboy/spineboy.png');
-    const atlas = new TextureAtlas(variant === 'pma' ? withPmaFlag(atlasText) : atlasText);
-    const pageImages = new Map<string, HTMLImageElement>();
-    for (const page of atlas.pages) {
-      page.setTexture(new DomTexture(image));
-      pageImages.set(page.name, image);
-    }
+    const image = await loadImage(variant === 'pma' ? twin.url : source.page.src);
+    const layout = variant === 'pma' ? withPma(source.layout) : source.layout;
+    const pageImages = new Map([[source.pageName, image]]);
+    const posed = frameAt(source.assets, RIGID_POSE.animation, RIGID_POSE.time);
+    const frame = variant === 'pma' ? withPmaSlots(posed) : posed;
 
     const before = straightAlphaDerivations();
-    const regionImages = await unpackAtlas(atlas, pageImages);
-    const data = await loadSkeletonJson(atlas, '/spineboy/spineboy-pro.json');
-    const skeleton = new Skeleton(data);
-    const state = new AnimationState(new AnimationStateData(data));
-    state.setAnimation(0, 'walk', true);
-    state.update(1.2);
-    state.apply(skeleton);
-    advanceSkeleton(skeleton, 1.2);
+    const regionImages = await unpackRegions(layout, pageImages);
 
     const renderers = (['canvas2d', 'webgl'] as const).map((backend) => {
-      const renderer = new SkeletonRenderer(root, regionImages);
+      const renderer = new DomRenderer(root, regionImages, pageImages);
       renderer.meshBackend = backend;
-      renderer.renderSkeleton(skeleton);
+      renderer.render(frame);
       if (variant === 'pma') {
         backendsActive.push(renderer.meshBackendActive);
         meshesDrawn.push(renderer.meshCount);
@@ -4218,15 +4024,15 @@ async function pmaDerivationProbe(): Promise<PmaDerivationProbeResult> {
  * handled, the two captures are the same picture — every difference left is the
  * 8-bit un-premultiply at low alpha (see pmaFixtureProbe for its ceiling).
  *
- * `skeleton: 'ess'` is region attachments only, so it exercises the rigid tier
- * (cuts in <img>); `'pro'` carries the meshes, on whichever backend is asked
- * for. The specs screenshot `#pma-stage` between calls, so each call opens by
- * tearing down what the previous one left.
+ * `skeleton: 'ess'` draws the rig's rigid slots only, so it exercises the rigid
+ * tier (cuts in <img>); `'pro'` is the whole frame, meshes included, on
+ * whichever backend is asked for. The specs screenshot `#pma-stage` between
+ * calls, so each call opens by tearing down what the previous one left.
  */
 export interface PmaStageOptions {
   /** Which page: the one that ships, or its premultiplied twin + `pma: true`. */
   page: 'straight' | 'pma';
-  /** 'ess' = rigid tier only, 'pro' = mesh tier. */
+  /** 'ess' = the rigid slots only, 'pro' = the whole frame, mesh tier included. */
   skeleton: 'ess' | 'pro';
   backend: 'canvas2d' | 'webgl';
   animation: string;
@@ -4236,7 +4042,7 @@ export interface PmaStageOptions {
 }
 
 export interface PmaStageResult {
-  /** What the atlas parsed to — the flag has to have arrived. */
+  /** What the page layout declares — the flag has to have arrived. */
   pagePma: boolean;
   pageSize: { width: number; height: number };
   /** Rigid slots and mesh canvases in the root. */
@@ -4259,13 +4065,14 @@ const PMA_STAGE = {
 };
 
 let pmaStageEl: HTMLDivElement | null = null;
-let pmaLive: SkeletonRenderer | null = null;
+let pmaLive: DomRenderer | null = null;
 
-/** Atlas, region bitmaps and skeleton data for one page variant. */
+/** Page layout, page image and region bitmaps for one page variant. */
 interface PmaScene {
-  atlas: TextureAtlas;
+  layout: PageLayout[];
+  image: HTMLImageElement;
+  pageImages: Map<string, HTMLImageElement>;
   regionImages: Map<string, RegionImage>;
-  data: SkeletonData;
 }
 
 /**
@@ -4276,30 +4083,24 @@ interface PmaScene {
  * scaled image a frame or two after its first paint (the cut-rule stage
  * measures that at 23,612 pixels). Cold-against-warm is then a difference
  * between *captures*, not between pages. Kept for the document's lifetime on
- * purpose: the bitmaps are the cache — and re-reading the skeleton export per
- * capture was the rest of the wall clock.
+ * purpose: the bitmaps are the cache.
  */
 const pmaScenes = new Map<string, Promise<PmaScene>>();
 
 function pmaScene(options: PmaStageOptions): Promise<PmaScene> {
-  const key = `${options.page}@${options.pageScale}@${options.skeleton}`;
+  const key = `${options.page}@${options.pageScale}`;
   const cached = pmaScenes.get(key);
   if (cached) return cached;
   const built = (async (): Promise<PmaScene> => {
-    const { atlasText } = await cutRuleAssets();
+    const source = await rigidPageSource();
     const image =
       options.page === 'pma'
         ? (await pmaTwinPage(options.pageScale)).image
         : await cutRulePageImage(options.pageScale);
-    const atlas = new TextureAtlas(options.page === 'pma' ? withPmaFlag(atlasText) : atlasText);
-    const pageImages = new Map<string, HTMLImageElement>();
-    for (const page of atlas.pages) {
-      page.setTexture(new DomTexture(image));
-      pageImages.set(page.name, image);
-    }
-    const regionImages = await unpackAtlas(atlas, pageImages);
-    const data = await loadSkeletonJson(atlas, `/spineboy/spineboy-${options.skeleton}.json`);
-    return { atlas, regionImages, data };
+    const layout = options.page === 'pma' ? withPma(source.layout) : source.layout;
+    const pageImages = new Map([[source.pageName, image]]);
+    const regionImages = await unpackRegions(layout, pageImages);
+    return { layout, image, pageImages, regionImages };
   })();
   pmaScenes.set(key, built);
   return built;
@@ -4324,8 +4125,11 @@ async function pmaStage(options: PmaStageOptions): Promise<PmaStageResult> {
     pmaLive = null;
   }
 
-  const { atlas, regionImages, data } = await pmaScene(options);
-  const image = atlas.pages[0]?.texture?.getImage() as HTMLImageElement;
+  const source = await rigidPageSource();
+  const { layout, image, pageImages, regionImages } = await pmaScene(options);
+  const posed = frameAt(source.assets, options.animation, options.time);
+  const whole = options.page === 'pma' ? withPmaSlots(posed) : posed;
+  const frame = options.skeleton === 'ess' ? rigidOnly(whole) : whole;
 
   const stage = pmaStageElement();
   stage.replaceChildren();
@@ -4335,17 +4139,11 @@ async function pmaStage(options: PmaStageOptions): Promise<PmaStageResult> {
     `transform-origin: 0 0; transform: scale(${PMA_STAGE.scale});`;
   stage.append(root);
 
-  const skeleton = new Skeleton(data);
-  const state = new AnimationState(new AnimationStateData(data));
-  state.setAnimation(0, options.animation, true);
-  state.update(options.time);
-  state.apply(skeleton);
-  advanceSkeleton(skeleton, options.time);
-  const renderer = new SkeletonRenderer(root, regionImages);
+  const renderer = new DomRenderer(root, regionImages, pageImages);
   renderer.meshBackend = options.backend;
   // The stage is drawn at half scale, so raster at the resolution it shows at.
   renderer.pixelRatio = (window.devicePixelRatio || 1) * PMA_STAGE.scale;
-  renderer.renderSkeleton(skeleton);
+  renderer.render(frame);
   pmaLive = renderer;
 
   const images = [...root.querySelectorAll('img')];
@@ -4371,7 +4169,7 @@ async function pmaStage(options: PmaStageOptions): Promise<PmaStageResult> {
   const round = (value: number): number => Math.round(value * 100) / 100;
 
   return {
-    pagePma: atlas.pages[0]?.pma ?? false,
+    pagePma: layout[0]?.pma ?? false,
     pageSize: { width: image.naturalWidth, height: image.naturalHeight },
     imageCount: images.length,
     canvasCount: root.querySelectorAll('canvas').length,
@@ -4386,61 +4184,27 @@ async function pmaStage(options: PmaStageOptions): Promise<PmaStageResult> {
   };
 }
 
-/** A 2×1 texture region with the UV corners a caller chooses. */
-function probeRegion(u: number, v: number, u2: number, v2: number, degrees: number): TextureRegion {
-  const region = new TextureRegion();
-  region.u = u;
-  region.v = v;
-  region.u2 = u2;
-  region.v2 = v2;
-  region.width = 2;
-  region.height = 1;
-  region.originalWidth = 2;
-  region.originalHeight = 1;
-  region.offsetX = 0;
-  region.offsetY = 0;
-  region.degrees = degrees;
-  return region;
-}
-
-function regionGeometryProbe(): RegionGeometryProbeResult {
-  const poseCore = 'getOffsets' in RegionAttachment.prototype;
-  const regionTakesSlot = 'updateRegion' in RegionAttachment.prototype;
-  const world = new Float32Array(8);
-
-  // Distinct, asymmetric, and exact in f32 (the 4.3 path fills a
-  // Float32Array): u is told from u2, v from v2, and neither axis from the
-  // other, so a transposed or half-turned assignment cannot match by accident.
-  const straightRegion = probeRegion(0, 0, 1, 1, 0);
-  const rotatedRegion = probeRegion(0.125, 0.25, 0.5, 0.875, 90);
-
-  const offsets: number[] = new Array<number>(8).fill(0);
-  const uvs = new Float32Array(8);
-  RegionAttachment.computeUVs(straightRegion, 0, 0, 1, 1, 0, 2, 1, offsets, uvs);
-  // An identity bone pose must preserve that order through
-  // computeWorldVertices (which reads only slot.bone.appliedPose).
-  const attachment = new RegionAttachment('corner-probe', new Sequence(1, false));
-  attachment.computeWorldVertices(
-    { bone: { appliedPose: { worldX: 0, worldY: 0, a: 1, b: 0, c: 0, d: 1 } } } as unknown as Slot,
-    offsets,
-    world,
-    0,
-    2,
-  );
-  const straight = { offset: [...offsets], uvs: Array.from(uvs), world: Array.from(world) };
-
-  const rotatedOffsets: number[] = new Array<number>(8).fill(0);
-  const rotatedUvs = new Float32Array(8);
-  RegionAttachment.computeUVs(rotatedRegion, 0, 0, 1, 1, 0, 2, 1, rotatedOffsets, rotatedUvs);
-  const rotated = { offset: [...rotatedOffsets], uvs: Array.from(rotatedUvs) };
-
-  return {
-    poseCore,
-    regionTakesSlot,
-    straight,
-    rotated,
-    inverseClipping: 'inverse' in new ClippingAttachment('inverse-support-probe'),
-  };
+/**
+ * The corner order and the region UVs, off the model side (see
+ * `RegionGeometryProbeResult`): the `turned` rig's `hold` pose, its two
+ * regions on the root at the identity.
+ */
+async function regionGeometryProbe(): Promise<RegionGeometryProbeResult> {
+  const assets = await loadRig('turned');
+  try {
+    const { pose, frame } = poseAt(assets, 'hold', 0);
+    const read = (slot: string): { drawn: number[]; corners: number[]; uvs: number[] } => {
+      const drawn = pose.drawn.find((d) => d.slot === slot);
+      const posed = frame.order.find((s) => s.slot === slot);
+      if (!drawn || drawn.kind !== 'region' || !posed || posed.kind !== 'region') {
+        throw new Error(`slot ${slot} did not draw a region`);
+      }
+      return { drawn: [...drawn.vertices], corners: [...posed.corners], uvs: [...posed.uvs] };
+    };
+    return { straight: read('s'), rotated: read('r') };
+  } finally {
+    assets.dispose();
+  }
 }
 
 /**
@@ -4560,5 +4324,4 @@ window.rigPlayHarness = {
   pmaCutProbe,
   pmaDerivationProbe,
   pmaStage,
-  oracleStage,
 };

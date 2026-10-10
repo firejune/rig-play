@@ -43,7 +43,7 @@ import { expect, test } from '@playwright/test';
  * devDependency that no consumer has installed and no node would load from
  * `node_modules` if they had. So the build (`scripts/build-lib.mjs`) bundles
  * that closure into one `index.js`, and the sandbox below installs the built
- * package and **nothing else**: no rig-c, no spine-core. Every assertion that
+ * package and **nothing else**: no rig-c, no peer. Every assertion that
  * imports or typechecks the package by name is therefore also the assertion
  * that it needs nothing beside it.
  */
@@ -237,28 +237,15 @@ test('the library build emits those modules and nothing else', () => {
 
 test('nothing the package ships names a Spine runtime', () => {
   /**
-   * The package reads no Spine runtime: it poses through `rig-c/core`. But
-   * `@esotericsoftware/spine-core` and `spine-webgl` are both still installed
-   * here — the oracle, the frame gate and the renderer specs read Spine
-   * exports — and either would ride into the bundle on one import written in
-   * `src/` by mistake, with no other signature: vite would inline it into
-   * `index.js` and the emitted file set would not change. So the assertion is
-   * on the shipped bytes, every module and every `.d.ts`, comments stripped.
-   *
-   * `@esotericsoftware/spine-webgl` is a **development** dependency: the pixel
-   * oracle draws the same skeleton with it and diffs the two pictures
-   * (tests/oracle.spec.ts), and the benchmark page puts them side by side. A
-   * consumer must never carry it — it is a second full runtime, under the Spine
-   * Runtimes License, and it is not in `dependencies` or `peerDependencies`.
-   *
-   * What makes that worth a machine rather than a review note is where the
-   * reference code sits: `tests/` imports from `src/`, and one import written
-   * the other way round would put a whole runtime into `dist/` with no other
-   * signature — `tsconfig.build.json` compiles all of `src/`, and the emitted
-   * file set above would not change, because the specifier would ride inside a
-   * file that is already on the list. So the assertion is on the shipped bytes
-   * themselves, every emitted module and every emitted `.d.ts`, comments
-   * stripped so a mention in prose is not a false red.
+   * The package reads no Spine runtime: it poses through `rig-c/core`, and
+   * since #63 neither does the repository — no package of Esoteric Software's
+   * scope is a dependency of any kind, and nothing under `tests/` or `bench/`
+   * imports one. So nothing could put a runtime into `dist/` today. The assertion
+   * stays anyway, because it is the claim the package makes and it costs one
+   * read per emitted file: an import of a runtime written into `src/` would
+   * ride into `index.js` with no other signature — vite inlines it, and the
+   * emitted file set above does not change. Every module and every `.d.ts`,
+   * comments stripped so a mention in prose is not a false red.
    */
   const emitted = readdirSync(pkgDist, { recursive: true })
     .map((entry) => String(entry).split(sep).join('/'))
@@ -273,21 +260,29 @@ test('nothing the package ships names a Spine runtime', () => {
     /\bSkeletonJson\b|\bAnimationStateData\b/.test(stripComments(readFileSync(resolve(pkgDist, file), 'utf8'))),
   );
   expect(runtimeCode).toEqual([]);
+});
 
-  // Control: it is installed and resolvable here, so the assertion above means
-  // "kept out of the package", not "absent from the machine".
-  expect(existsSync(resolve(repoRoot, 'node_modules', '@esotericsoftware', 'spine-webgl'))).toBe(
-    true,
-  );
-  expect(existsSync(resolve(repoRoot, 'node_modules', '@esotericsoftware', 'spine-core'))).toBe(true);
-
-  // And it is declared in neither of the two fields a consumer installs from.
+test('the manifest declares no Spine runtime and no peer, and pins rig-c exactly', () => {
   const manifest = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8'));
-  expect(Object.keys(manifest.dependencies ?? {})).not.toContain('@esotericsoftware/spine-webgl');
-  expect(Object.keys(manifest.peerDependencies ?? {})).not.toContain(
-    '@esotericsoftware/spine-webgl',
-  );
-  expect(Object.keys(manifest.devDependencies ?? {})).toContain('@esotericsoftware/spine-webgl');
+  // No peer at all: the package needs nothing installed beside it (the
+  // sandbox above installs it alone), so a consumer is told to install nothing.
+  expect(manifest.peerDependencies).toBeUndefined();
+  // No Esoteric package in any field a consumer or a clone installs from.
+  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+    expect(
+      Object.keys(manifest[field] ?? {}).filter((name) => name.startsWith('@esotericsoftware/')),
+      field,
+    ).toEqual([]);
+  }
+  // And none resolved into the lockfile, transitively or otherwise: a clone's
+  // `bun install --frozen-lockfile` links nothing from Esoteric Software.
+  expect(readFileSync(resolve(repoRoot, 'bun.lock'), 'utf8')).not.toContain('@esotericsoftware/');
+  // The poser is rig-c, bundled into `index.js` at the version this names — a
+  // bare version, never a range, so a build is a function of one rig-c and a
+  // pose doubt is a rigc issue against that version.
+  expect(typeof manifest.devDependencies?.['rig-c']).toBe('string');
+  expect(manifest.devDependencies['rig-c']).toMatch(/^\d+\.\d+\.\d+$/);
+  expect(Object.keys(manifest.dependencies ?? {})).not.toContain('rig-c');
 });
 
 /** Strips `//` and `/* *\/` comments without eating string or template contents. */

@@ -6,8 +6,6 @@ playwright-report/
 # Benchmark output: numbers belong in a PR with their conditions, never
 # committed as a file (scripts/bench.mjs).
 bench-results/
-# Spine example assets are fetched, not redistributed — see NOTICE.md
-public/spineboy/
 .DS_Store
-# rigc gallery builds — built from a pinned rigc tag by scripts/fetch-assets.sh
+# rigc builds — the gallery from a pinned rigc tag and tests/rigs/, by scripts/fetch-assets.sh
 public/rigs/

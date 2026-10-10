@@ -88,17 +88,13 @@
         background: linear-gradient(#14161a 96%, #2a2e37 96%) 0 0 / 100% 100%;
       }
       /*
-        The embedding. Each rig is drawn inside a box that covers exactly the
-        rect the reference's canvas covers for that rig — its own cell when the
-        reference has a canvas per player, the whole pane when it shares one —
-        so the two sides show the same visible area. Without it the DOM rigs
-        composite over their neighbours while the reference's viewport throws
-        the same pixels away for free, which is half of what made the first
-        runs of this page unfair (#39). `overflow: hidden` and nothing more:
-        paint containment clips to the same edge this already does, and what it
-        adds past the clip — a stacking context, a containing block, an
-        independent formatting context — changes how this side is composited
-        and buys the comparison nothing. See bench/bench.ts.
+        The embedding. Each rig is drawn inside a box — the whole pane for a
+        grid of rigs, its own cell for `many` — and both panes use the same
+        boxes, so the two modes show the same visible area. `overflow: hidden`
+        and nothing more: paint containment clips to the same edge this already
+        does, and what it adds past the clip — a stacking context, a containing
+        block, an independent formatting context — changes how a side is
+        composited and buys the comparison nothing. See bench/bench.ts.
       */
       .cell-clip {
         position: absolute;
@@ -117,36 +113,35 @@
   </head>
   <body>
     <!--
-      Not the demo and not the library: a human-facing comparison page. It is a
-      separate vite project (bench/vite.config.ts) so `bun run build` keeps
-      emitting exactly what it emitted before — the reference runtime is a
-      development dependency and has no business in the demo's bundle.
+      Not the demo and not the library: a human-facing comparison page of this
+      package's two render modes. It is a separate vite project
+      (bench/vite.config.ts), so `bun run build` emits what the deploy needs and
+      nothing else.
 
       Query string: ?scene=mesh|held|rigid|many &count=N &backend=canvas2d|webgl
-      &runtime=both|dom|canvas|reference &dpr=N &timescale=N. See bench/bench.ts —
-      which also carries why the reference has two shapes (one shared canvas
-      for a grid of rigs, one context per player for `many`) and why each rig
-      is clipped to the rect its reference canvas covers.
+      &runtime=both|dom|canvas &rig=NAME &model=URL &anim=NAME &dpr=N
+      &timescale=N. See bench/bench.ts — which also carries why each rig is
+      clipped to the same rect on both sides.
     -->
     <header>
-      <h1>spine-html vs spine-webgl</h1>
+      <h1>DOM mode vs canvas mode</h1>
       <div class="scene" id="scene">loading…</div>
       <div class="warn" id="warn"></div>
     </header>
     <div id="panes">
       <div class="pane">
         <div class="pane-head">
-          <h2 id="dom-title">spine-html (DOM)</h2>
+          <h2 id="dom-title">DOM mode</h2>
           <div class="stats" id="dom-stats">—</div>
         </div>
         <div class="stage" id="dom-stage"></div>
       </div>
       <div class="pane">
         <div class="pane-head">
-          <h2 id="ref-title">spine-webgl (reference)</h2>
-          <div class="stats" id="ref-stats">—</div>
+          <h2 id="canvas-title">canvas mode</h2>
+          <div class="stats" id="canvas-stats">—</div>
         </div>
-        <div class="stage" id="ref-stage"></div>
+        <div class="stage" id="canvas-stage"></div>
       </div>
     </div>
     <script type="module" src="./bench.ts"></script>

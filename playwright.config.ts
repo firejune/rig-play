@@ -26,22 +26,8 @@ import { defineConfig } from '@playwright/test';
  *   falling back to 4321 on a typo is exactly the failure this avoids.
  * - Unset, everything is as it was: port 4321, reuse unless CI. CI runs one
  *   checkout per machine and sees no change.
- *
- * Typecheck policy (`SPINE_CORE_MINOR`):
- *
- * - `src/` reads no Spine runtime since #60; `tests/` and `bench/` do — the
- *   reference side (the oracle, the frame gate, the renderer specs) — and are
- *   typed against spine-core 4.3, the generation the rigc gallery builds are
- *   exported in. `SPINE_CORE_MINOR` names the minor a run is against (CI sets
- *   it, to 4.3 only now); anything other than the typed minor builds the pages
- *   without the typecheck. Unset — every ordinary local run — is the typed
- *   path. The knob goes with the matrix in #63.
- * - What npm ships is typechecked by `tests/package.spec.ts` regardless: it
- *   compiles a consumer against the built `dist/` with nothing else installed.
  */
 const DEFAULT_PORT = 4321;
-/** The spine-core minor `tests/` is typed against (`src/` reads none). */
-const TYPED_CORE_MINOR = '4.3';
 
 function resolveTestPort(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_PORT;
@@ -55,16 +41,6 @@ function resolveTestPort(raw: string | undefined): number {
 }
 
 const port = resolveTestPort(process.env.TEST_PORT);
-
-/**
- * True when this run is against a spine-core other than the one `tests/` is
- * typed against, so a type *check* would report a generation difference
- * rather than a defect.
- */
-const UNTYPED_CORE =
-  !!process.env.SPINE_CORE_MINOR && process.env.SPINE_CORE_MINOR !== TYPED_CORE_MINOR;
-
-const buildScript = UNTYPED_CORE ? 'build:pages' : 'build';
 
 export default defineConfig({
   testDir: './tests',
@@ -86,9 +62,9 @@ export default defineConfig({
     { name: 'webkit', use: { browserName: 'webkit' } },
   ],
   webServer: {
-    // Both build scripts carry the fetch-assets hook (idempotent), so a fresh
+    // The build script carries the fetch-assets hook (idempotent), so a fresh
     // checkout works end-to-end with `bun run test`.
-    command: `bun run ${buildScript} && bunx vite preview --port ${port} --strictPort`,
+    command: `bun run build && bunx vite preview --port ${port} --strictPort`,
     port,
     // A checkout that asked for its own port never wants someone else's
     // server on it — see the port policy above.

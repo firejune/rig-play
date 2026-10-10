@@ -1,0 +1,140 @@
+{
+  "spec": "rigc-rig/1",
+  "name": "figure",
+  "images": "parts",
+  "skeleton": { "x": -260, "y": 0, "width": 520, "height": 620 },
+
+  "bones": [
+    { "name": "root" },
+
+    { "name": "hip", "parent": "root", "x": 0, "y": 210 },
+    { "name": "leg_b", "parent": "hip", "x": -26, "y": 0, "rotation": 6 },
+    { "name": "leg_f", "parent": "hip", "x": 26, "y": 0, "rotation": -5 },
+    { "name": "torso", "parent": "hip", "x": 0, "y": 0, "rotation": 2 },
+    { "name": "belt", "parent": "torso", "x": 0, "y": 12 },
+    { "name": "badge", "parent": "torso", "x": 36, "y": 124, "rotation": 10 },
+    { "name": "chest", "parent": "torso", "x": 0, "y": 170 },
+    { "name": "cape", "parent": "chest", "x": 0, "y": -128, "rotation": -3 },
+    { "name": "arm_b_up", "parent": "chest", "x": -74, "y": -4, "rotation": 14 },
+    { "name": "arm_b_lo", "parent": "arm_b_up", "x": 0, "y": -104, "rotation": -10 },
+    { "name": "hand_b", "parent": "arm_b_lo", "x": 0, "y": -98 },
+    { "name": "arm_f_up", "parent": "chest", "x": 74, "y": -4, "rotation": -18 },
+    { "name": "arm_f_lo", "parent": "arm_f_up", "x": 0, "y": -104, "rotation": 12 },
+    { "name": "hand_f", "parent": "arm_f_lo", "x": 0, "y": -98 },
+    { "name": "neck", "parent": "chest", "x": 0, "y": 10 },
+    { "name": "head", "parent": "neck", "x": 0, "y": 0, "rotation": -4 },
+    { "name": "hair", "parent": "head", "x": 0, "y": 128 },
+    { "name": "eye_l", "parent": "head", "x": -32, "y": 84, "rotation": 3 },
+    { "name": "eye_r", "parent": "head", "x": 32, "y": 84, "rotation": -3 }
+  ],
+
+  "invariants": { "meshSlots": 2, "meshTriangles": 64 },
+
+  "slots": [
+    { "name": "clip", "bone": "root", "attachment": null },
+    { "name": "shadow", "bone": "root", "attachment": "shadow" },
+    { "name": "cape", "bone": "cape", "attachment": "cape" },
+    { "name": "clip_inner", "bone": "root", "attachment": null },
+    { "name": "leg_b", "bone": "leg_b", "attachment": "leg" },
+    { "name": "arm_b_up", "bone": "arm_b_up", "attachment": "arm_up" },
+    { "name": "arm_b_lo", "bone": "arm_b_lo", "attachment": "arm_lo" },
+    { "name": "hand_b", "bone": "hand_b", "attachment": "hand" },
+    { "name": "leg_f", "bone": "leg_f", "attachment": "leg" },
+    { "name": "greave", "bone": "leg_f", "attachment": null },
+    { "name": "torso", "bone": "torso", "attachment": "torso" },
+    { "name": "belt", "bone": "belt", "attachment": "belt" },
+    { "name": "plate", "bone": "torso", "attachment": null },
+    { "name": "badge", "bone": "badge", "attachment": "badge" },
+    { "name": "head", "bone": "head", "attachment": "head" },
+    { "name": "hair", "bone": "hair", "attachment": "hair" },
+    { "name": "visor", "bone": "head", "attachment": null },
+    { "name": "eye_l", "bone": "eye_l", "attachment": "eye" },
+    { "name": "eye_r", "bone": "eye_r", "attachment": "eye" },
+    { "name": "arm_f_up", "bone": "arm_f_up", "attachment": "arm_up" },
+    { "name": "arm_f_lo", "bone": "arm_f_lo", "attachment": "arm_lo" },
+    { "name": "hand_f", "bone": "hand_f", "attachment": "hand" }
+  ],
+
+  "skins": {
+    "default": {
+      "clip": {
+        "mask": {
+          "type": "clipping",
+          "vertexCount": 6,
+          "vertices": [-100, 170, 100, 170, 140, 330, 100, 500, -100, 500, -140, 330],
+          "end": "head",
+          "convex": true
+        },
+        "tilted": {
+          "type": "clipping",
+          "vertexCount": 4,
+          "vertices": [-89.812, 134.638, 234.702, 265.75, 129.812, 525.362, -194.702, 394.25],
+          "end": "hand_f",
+          "convex": true
+        },
+        "tilted_moved": {
+          "type": "clipping",
+          "vertexCount": 4,
+          "vertices": [-82.812, 141.638, 241.702, 272.75, 136.812, 532.362, -187.702, 401.25],
+          "end": "hand_f",
+          "convex": true
+        },
+        "cover": {
+          "type": "clipping",
+          "vertexCount": 4,
+          "vertices": [-20000, -19650, 20000, -19650, 20000, 20350, -20000, 20350],
+          "end": "hand_f",
+          "convex": true
+        },
+        "window": {
+          "type": "clipping",
+          "vertexCount": 4,
+          "vertices": [-110, 140, 160, 140, 160, 520, -110, 520],
+          "end": "clip",
+          "convex": true
+        },
+        "inverse": {
+          "type": "clipping",
+          "vertexCount": 4,
+          "vertices": [-52.022, 214.619, 151.959, 297.032, 92.022, 445.381, -111.959, 362.968],
+          "end": "clip",
+          "inverse": true
+        }
+      },
+      "clip_inner": {
+        "inner": {
+          "type": "clipping",
+          "vertexCount": 4,
+          "vertices": [-120, 180, 120, 180, 120, 420, -120, 420],
+          "end": "hand_f",
+          "convex": true
+        }
+      },
+
+      "shadow": { "shadow": { "image": "shadow.png", "y": 8 } },
+      "cape": {
+        "cape": { "type": "mesh", "image": "cape.png", "generator": { "kind": "grid", "cols": 4, "rows": 6 } }
+      },
+      "leg_b": { "leg": { "image": "leg.png", "y": -100 } },
+      "leg_f": { "leg": { "image": "leg.png", "y": -100 } },
+      "arm_b_up": { "arm_up": { "image": "arm_up.png", "y": -52 } },
+      "arm_b_lo": { "arm_lo": { "image": "arm_lo.png", "y": -46 } },
+      "hand_b": { "hand": { "image": "hand.png" } },
+      "torso": { "torso": { "image": "torso.png", "y": 92 } },
+      "belt": { "belt": { "image": "belt.png" } },
+      "badge": { "badge": { "image": "badge.png" } },
+      "head": { "head": { "image": "head.png", "y": 72 } },
+      "hair": {
+        "hair": { "type": "mesh", "image": "hair.png", "generator": { "kind": "grid", "cols": 5, "rows": 3 } }
+      },
+      "eye_l": { "eye": { "image": "eye.png" } },
+      "eye_r": { "eye": { "image": "eye.png" } },
+      "arm_f_up": { "arm_up": { "image": "arm_up.png", "y": -52 } },
+      "arm_f_lo": { "arm_lo": { "image": "arm_lo.png", "y": -46 } },
+      "hand_f": { "hand": { "image": "hand.png" } },
+      "plate": { "plate": { "image": "plate.png", "y": 100 } },
+      "greave": { "greave": { "image": "greave.png", "y": -122 } },
+      "visor": { "visor": { "image": "visor.png", "y": 86 } }
+    }
+  }
+}

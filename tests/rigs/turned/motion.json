@@ -1,0 +1,16 @@
+{
+  "spec": "rigc-motion/1",
+  "archetype": "turned",
+  "cut": "test-turned",
+  "easings": {},
+  "animations": {
+    "hold": {
+      "duration": 1,
+      "loop": true,
+      "note": "Nothing moves: both regions sit on the root at the identity, which is what lets their corners and page UVs be written down by hand.",
+      "tracks": [
+        { "slot": "s", "property": "attachment", "keys": [{ "t": 0, "v": "s" }, { "t": 1, "v": "s" }] }
+      ]
+    }
+  }
+}

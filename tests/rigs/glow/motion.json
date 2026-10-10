@@ -1,0 +1,76 @@
+{
+  "spec": "rigc-motion/1",
+  "archetype": "glow",
+  "cut": "test-glow",
+  "easings": { "flicker": [0.37, 0, 0.63, 1] },
+  "animations": {
+    "burn": {
+      "duration": 1,
+      "loop": true,
+      "note": "The flame chain bends one way at its middle and the other at its tip, so the weighted meshes shear triangle by triangle; the additive halo pulses its alpha and the sparks rise. The pose the renderer specs freeze is t = 1.2 (0.2 into the second cycle).",
+      "tracks": [
+        {
+          "bone": "flame_1",
+          "property": "rotate",
+          "keys": [
+            { "t": 0, "v": [12], "ease": "flicker" },
+            { "t": 0.5, "v": [-12], "ease": "flicker" },
+            { "t": 1, "v": [12] }
+          ]
+        },
+        {
+          "bone": "flame_2",
+          "property": "rotate",
+          "keys": [
+            { "t": 0, "v": [-18], "ease": "flicker" },
+            { "t": 0.5, "v": [18], "ease": "flicker" },
+            { "t": 1, "v": [-18] }
+          ]
+        },
+        {
+          "bone": "flame_0",
+          "property": "scale",
+          "keys": [
+            { "t": 0, "v": [1, 1], "ease": "flicker" },
+            { "t": 0.25, "v": [1.12, 0.9], "ease": "flicker" },
+            { "t": 0.75, "v": [0.94, 1.06], "ease": "flicker" },
+            { "t": 1, "v": [1, 1] }
+          ]
+        },
+        {
+          "slot": "halo",
+          "property": "rgba",
+          "keys": [
+            { "t": 0, "v": [1, 0.75, 0.5, 0.75], "ease": "flicker" },
+            { "t": 0.5, "v": [1, 0.75, 0.5, 1], "ease": "flicker" },
+            { "t": 1, "v": [1, 0.75, 0.5, 0.75] }
+          ]
+        },
+        {
+          "bone": "spark_a",
+          "property": "translate",
+          "keys": [
+            { "t": 0, "v": [0, 0], "ease": "flicker" },
+            { "t": 1, "v": [-10, 60] }
+          ]
+        },
+        {
+          "bone": "spark_b",
+          "property": "translate",
+          "keys": [
+            { "t": 0, "v": [0, 0], "ease": "flicker" },
+            { "t": 1, "v": [8, 48] }
+          ]
+        }
+      ]
+    },
+    "canary": {
+      "duration": 1,
+      "loop": true,
+      "note": "The setup pose with `plate` shown: a grid mesh whose hull sits well inside its opaque art, so drawing a triangle past its edges reveals texels the hull leaves out. That is what the parity suite's seam and overdraw canaries measure, and the reason it is kept out of `burn` — the canvas2d backend's half-pixel overdraw paints those texels on every hull edge, which the backend and mode parity cells would then count.",
+      "tracks": [
+        { "slot": "plate", "property": "attachment", "keys": [{ "t": 0, "v": "plate" }, { "t": 1, "v": "plate" }] }
+      ]
+    }
+  }
+}
