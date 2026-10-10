@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/firejune/rig-play/compare/v1.0.0...v1.1.0) (2026-10-10)
+
+
+### Features
+
+* **player:** read a bone's world transform by name and the bounds of the pose the player holds ([#75](https://github.com/firejune/rig-play/issues/75)) ([c41fd7f](https://github.com/firejune/rig-play/commit/c41fd7f675e8c5231f1a38b7b3a9dbd8047e3ff3)), closes [#73](https://github.com/firejune/rig-play/issues/73)
+
+
+### Bug Fixes
+
+* **docs:** a table from spine-html 0.8 to rig-play 1.0, and what 1.0.0 has no counterpart for ([#76](https://github.com/firejune/rig-play/issues/76)) ([f0b6ce4](https://github.com/firejune/rig-play/commit/f0b6ce47941f8e8ef8056884506e5c7a313af9d4))
+
 ## [1.0.0](https://github.com/firejune/rig-play/compare/v0.8.0...v1.0.0) (2026-10-10)
 
 
