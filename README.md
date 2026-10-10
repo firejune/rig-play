@@ -569,6 +569,8 @@ name, and unloading is still elements first, bitmaps second.
 | tint: skeleton × slot × attachment colour | `player.color` × slot × attachment | `player.color` is `[r, g, b, a]` and takes the place of the skeleton's colour. The product arrives as `tint` on each `PosedSlot`. |
 | dark (two-colour) tint: unsupported | `DomRenderer`: unsupported. `CanvasRenderer`: drawn | Carried as `dark` on a `PosedSlot`. The canvas mode's canvas2d fallback draws alpha only. |
 | `renderer.dispose()` | `player.dispose()` | Then `assets.dispose()`, as before. `DomRenderer.dispose()` and `CanvasRenderer.dispose()` exist for a renderer you constructed yourself. |
+| `skeleton.findBone('head').worldX`, `.worldY`, `.a` … `.d` | `player.bone('head')` | `{ x, y, a, b, c, d, rotationX, rotationY, scaleX, scaleY, active }`, the core's world transform for the pose the player holds (the setup pose before `play`). An unknown name is refused by name. Since 1.1.0. |
+| `skeleton.getBounds(offset, size)` | `player.bounds()` | `{ x, y, width, height }` or null, world units, Y up: the box of every drawn region's corners and mesh's vertices, a slot under a clip counted inside the clip's own box. `ModelAssets.stage` remains the declared framing, not this box. Since 1.1.0. |
 
 ### No counterpart in 1.0.0
 
@@ -586,13 +588,9 @@ export, for which 1.0.0 declares nothing:
   load, several players.
 - **More than one track, mixing between animations, or queueing one after another.**
   `RigPlayer` declares one track; `play` reopens it at the animation's first pose.
-- **Reading or writing a bone.** No bone is exposed: nothing sets a bone's local values
-  between the step and the draw, and nothing returns a bone's world transform. What is
-  readable is the posed slots: `player.posedFrame()` carries each drawn slot's world
-  `corners` or `vertices`.
-- **A bounds query for the current pose.** None is declared. `ModelAssets.stage` is the
-  stage the document states (or null), which is the rig's declared framing and not the
-  box of the pose being drawn.
+- **Writing a bone.** Nothing sets a bone's local values between the step and the draw.
+  Reading one is `player.bone(name)` since 1.1.0 (the table above), and the posed slots
+  are on `player.posedFrame()` as each drawn slot's world `corners` or `vertices`.
 - **Changing the skin after construction.** `skin` is a `RigPlayerOptions` field and
   `RigPlayer` declares no way to change it later; a second player over the same assets
   is the declared route.
