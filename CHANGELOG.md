@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/firejune/rig-play/compare/v1.1.0...v1.2.0) (2026-10-10)
+
+
+### Features
+
+* **player:** pass rig-c's bone-local adjust hook through RigPlayer, and re-pose a held pose on demand ([#80](https://github.com/firejune/rig-play/issues/80)) ([fbc4ae2](https://github.com/firejune/rig-play/commit/fbc4ae2579f593eff8a954947bbcd557168d13c7)), closes [#79](https://github.com/firejune/rig-play/issues/79)
+
 ## [1.1.0](https://github.com/firejune/rig-play/compare/v1.0.0...v1.1.0) (2026-10-10)
 
 
