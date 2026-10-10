@@ -1,20 +1,36 @@
-import {
-  Texture,
-  TextureAtlas,
-  TextureAtlasRegion,
-  type TextureFilter,
-  type TextureWrap,
-} from '@esotericsoftware/spine-core';
+/**
+ * Where one region sits on its page — the fields of a model document's
+ * `pages[].regions[]` entry (`ModelPageRegion` in rig-c) that a cut reads.
+ * `width` and `height` are the artwork's own, unrotated: a region packed at
+ * `degrees: 90` occupies a `height × width` rect on the page.
+ */
+export interface PageRegion {
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  degrees: number;
+}
 
 /**
- * Minimal Texture implementation for the DOM renderer. spine-core only needs
- * it as a handle attached to atlas pages; filtering/wrapping are GPU concepts
- * with no DOM equivalent, so they are no-ops.
+ * One page of the layout `unpackRegions` cuts from — a model document's
+ * `pages[]` entry. `width`/`height` are the page's *declared* size (the atlas
+ * `size:` line the build wrote), not necessarily the image's.
  */
-export class DomTexture extends Texture {
-  setFilters(_minFilter: TextureFilter, _magFilter: TextureFilter): void {}
-  setWraps(_uWrap: TextureWrap, _vWrap: TextureWrap): void {}
-  dispose(): void {}
+export interface PageLayout {
+  name: string;
+  width: number;
+  height: number;
+  /** Whether the page's texels are premultiplied by their alpha (absent: false). */
+  pma?: boolean;
+  regions: readonly PageRegion[];
+}
+
+/** One region with its page, in the order the layout lists them. */
+interface PlacedRegion {
+  region: PageRegion;
+  page: PageLayout;
 }
 
 export interface RegionImage {
@@ -70,7 +86,7 @@ export type PageSource = HTMLImageElement | HTMLCanvasElement;
  * straight alpha by definition, so they multiply by alpha again and every
  * semi-transparent texel comes out darker than it was authored (#37). Both
  * consumers of that convention here — the region cuts below and the canvas2d
- * mesh raster in SpineHtmlRenderer — therefore read this derivation instead of
+ * mesh raster in DomRenderer — therefore read this derivation instead of
  * the page, and it is *shared*: deriving per consumer would pay for the same
  * page once per renderer and once again for the load.
  *
@@ -281,14 +297,14 @@ interface CutPlan {
  * being no fractional part to disagree about, so an @2x page never had a
  * question to answer. `tests/cut-rule.spec.ts` holds the 0.5× half of this.
  */
-function planCut(region: TextureAtlasRegion, image: HTMLImageElement): CutPlan {
+function planCut({ region, page }: PlacedRegion, image: HTMLImageElement): CutPlan {
   const iw = image.naturalWidth;
   const ih = image.naturalHeight;
   // A page with no `size:` line (or a malformed one) declares nothing, so the
   // image is taken to be its own declared size — which is what this did for
   // every page before the frame above existed.
-  const pageW = region.page.width > 0 ? region.page.width : iw;
-  const pageH = region.page.height > 0 ? region.page.height : ih;
+  const pageW = page.width > 0 ? page.width : iw;
+  const pageH = page.height > 0 ? page.height : ih;
 
   const rotated = region.degrees === 90;
   const packedW = rotated ? region.height : region.width;
@@ -313,7 +329,7 @@ function planCut(region: TextureAtlasRegion, image: HTMLImageElement): CutPlan {
   // region is cut like any other — from the straight-alpha derivation — and the
   // blob it mints is owned and revoked like any other.
   if (
-    !region.page.pma &&
+    !page.pma &&
     !rotated &&
     region.x === 0 &&
     region.y === 0 &&
@@ -343,14 +359,14 @@ function planCut(region: TextureAtlasRegion, image: HTMLImageElement): CutPlan {
 
 /** Backing pixels one cut allocates — the charge against the budget above. */
 function cutBackingPixels(
-  region: TextureAtlasRegion,
-  pageImages: Map<string, HTMLImageElement>,
+  placed: PlacedRegion,
+  pageImages: ReadonlyMap<string, HTMLImageElement>,
 ): number {
-  const image = pageImages.get(region.page.name);
+  const image = pageImages.get(placed.page.name);
   // No image: this region is about to fail in the cut. Charging its atlas
   // units keeps the walk moving until it does.
-  if (!image) return region.width * region.height;
-  const plan = planCut(region, image);
+  if (!image) return placed.region.width * placed.region.height;
+  const plan = planCut(placed, image);
   return plan.cw * plan.ch;
 }
 
@@ -370,15 +386,16 @@ function cutBackingPixels(
  * browser before control comes back.
  */
 async function cutRegion(
-  region: TextureAtlasRegion,
-  pageImages: Map<string, HTMLImageElement>,
+  placed: PlacedRegion,
+  pageImages: ReadonlyMap<string, HTMLImageElement>,
 ): Promise<RegionImage> {
-  const image = pageImages.get(region.page.name);
-  if (!image) throw new Error(`Missing page image: ${region.page.name}`);
+  const { region, page } = placed;
+  const image = pageImages.get(page.name);
+  if (!image) throw new Error(`Missing page image: ${page.name}`);
 
   const w = region.width;
   const h = region.height;
-  const plan = planCut(region, image);
+  const plan = planCut(placed, image);
   if (plan.passThrough) return { url: image.src, width: w, height: h };
 
   const canvas = document.createElement('canvas');
@@ -427,7 +444,7 @@ async function cutRegion(
   // and shown in an <img>. The rect was planned against the image, and the
   // derivation is that image's own size, so the coordinates carry over
   // unchanged — including on a page that ships at another resolution.
-  const source = straightAlphaSource(image, region.page.pma);
+  const source = straightAlphaSource(image, page.pma === true);
   ctx.drawImage(source, plan.sx, plan.sy, plan.sw, plan.sh, 0, 0, plan.sw, plan.sh);
 
   const blob = await new Promise<Blob>((resolve, reject) => {
@@ -439,9 +456,12 @@ async function cutRegion(
 }
 
 /**
- * Cuts every atlas region out of the page image into its own bitmap once at
- * load time, restoring 90° packing rotation, so the per-frame path never
- * touches a canvas. Returns image URLs keyed by region name.
+ * Cuts every region of a page layout — a model document's `pages` section —
+ * out of its page image into its own bitmap once at load time, restoring 90°
+ * packing rotation, so the per-frame path never touches a canvas. Returns
+ * image URLs keyed by region name. `pageImages` is keyed by page name.
+ * `loadModel` calls this; it is exported for callers whose page images do not
+ * come from a URL.
  *
  * This is a loading-pipeline step, not a rendering step: after this runs,
  * rendering is pure DOM (one <img> per slot, one CSS matrix write per frame).
@@ -475,8 +495,9 @@ async function cutRegion(
  *
  * Concurrency changes nothing a caller can observe:
  *
- * - **Order.** The returned map is keyed in `atlas.regions` order whatever
- *   order the blobs arrive in — the map is built after the cuts settle, from
+ * - **Order.** The returned map is keyed in layout order — pages in order,
+ *   each page's regions in order, which is the atlas's own order — whatever
+ *   order the blobs arrive in: the map is built after the cuts settle, from
  *   the region list, not from the arrivals.
  * - **Duplicate names.** The last region of a given name in atlas order wins,
  *   and the shadowed URL is revoked (and dropped from the ledger) rather than
@@ -496,10 +517,10 @@ async function cutRegion(
  * page lifetime can ignore it.
  */
 export async function unpackRegions(
-  atlas: TextureAtlas,
-  pageImages: Map<string, HTMLImageElement>,
+  pages: readonly PageLayout[],
+  pageImages: ReadonlyMap<string, HTMLImageElement>,
 ): Promise<Map<string, RegionImage>> {
-  const regions: TextureAtlasRegion[] = atlas.regions;
+  const regions: PlacedRegion[] = pages.flatMap((page) => page.regions.map((region) => ({ region, page })));
   const cuts = new Array<RegionImage | undefined>(regions.length);
 
   // The earliest-in-atlas-order failure is the one that propagates, so that a
@@ -561,15 +582,15 @@ export async function unpackRegions(
 
   const result = new Map<string, RegionImage>();
   for (let index = 0; index < regions.length; index++) {
-    const region = regions[index];
+    const placed = regions[index];
     const cut = cuts[index];
-    if (!region || !cut) continue;
+    if (!placed || !cut) continue;
     // Duplicate region names would otherwise strand the shadowed URL in the
     // ledger with nothing left pointing at it. Map.set keeps the key where it
     // first appeared, so atlas order survives the overwrite.
-    const shadowed = result.get(region.name);
+    const shadowed = result.get(placed.region.name);
     if (shadowed) revokeOwned(shadowed.url);
-    result.set(region.name, cut);
+    result.set(placed.region.name, cut);
   }
   return result;
 }

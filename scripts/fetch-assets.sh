@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Downloads the official Spine example skeleton (spineboy) from the
-# spine-runtimes repository. These assets are owned by Esoteric Software
-# and are NOT redistributed with this repository — see NOTICE.md.
+# Two halves. The first downloads the official Spine example skeleton
+# (spineboy) from the spine-runtimes repository — the reference side of the
+# test suite (the pixel oracle, the spineboy stage, the renderer specs). These
+# assets are owned by Esoteric Software and are NOT redistributed with this
+# repository — see NOTICE.md. The second builds rigc's gallery rigs (below).
 #
-# SPINE_ASSETS_BRANCH picks which spine-runtimes branch to take them from, and
-# therefore which editor version exported them. It defaults to 4.3, so a plain
-# run is byte-identical to what this script always did. The CI matrix sets it
-# per column: a runtime only reads data its own generation exported (see
-# src/coreCompat.ts), so "4.2 is supported" means the 4.2 runtime rendering
-# 4.2's own exports, and the column has to fetch them.
+# SPINE_ASSETS_BRANCH picks which spine-runtimes branch to take spineboy from,
+# and therefore which editor version exported it. It defaults to 4.3, so a
+# plain run is byte-identical to what this script always did: a runtime only
+# reads data its own generation exported, so the reference side runs the 4.3
+# runtime over the 4.3 exports.
 #
 # The files land where the demo already looks for them (`public/spineboy`),
 # whichever branch they came from — nothing downstream is told which one it is.
@@ -67,3 +68,83 @@ for f in spineboy-ess.json spineboy-pro.json spineboy-pro.skel spineboy.atlas sp
   fi
 done
 echo "assets ready (spine-runtimes $BRANCH) → $DEST"
+
+# --- the rigc gallery builds -------------------------------------------------
+#
+# The demo, the parity and oracle cells over the model path, and the frame gate
+# (tests/frames.spec.ts) read rigc's own example rigs, built by `rigc build`.
+# The rigs are rigc's procedural art (each one's make_parts.ts draws it), so
+# nothing licence-bound is fetched for this half. Each build lands in
+# `public/rigs/<name>/` with everything side by side: `skeleton.model.json`
+# (what the player loads), `skeleton.json` + `skeleton.atlas` (the Spine pair
+# the reference side and the frame gate load) and the pages under `parts/`,
+# whose paths the build writes relative to that directory.
+#
+# Every rig is built twice: as the gallery ships it, one page per part
+# (`<name>/`), and with `--pack`, every part on shared pages (`<name>-packed/`).
+# The second is what makes region cuts mint blobs and puts page UVs that are
+# not the identity in front of the mesh tier and the frame gate.
+#
+# Pinned twice, on purpose: the sources come from the rigc tag below and the
+# build is run by the rig-c devDependency of the same version, so a fixture is
+# a function of one version and is rebuilt when it moves.
+RIGC_TAG="v2.35.0"
+RIGS="walk flex squash portrait nod look ride"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RIGS_DEST="$ROOT/public/rigs"
+RIGS_STAMP="$RIGS_DEST/.rigc"
+
+if [ -d "$RIGS_DEST" ] && [ "$(cat "$RIGS_STAMP" 2>/dev/null || true)" != "$RIGC_TAG" ]; then
+  echo "rigc gallery $(cat "$RIGS_STAMP" 2>/dev/null || echo unstamped) → $RIGC_TAG, rebuilding"
+  rm -rf "$RIGS_DEST"
+fi
+
+BUILDS=""
+for rig in $RIGS; do BUILDS="$BUILDS $rig $rig-packed"; done
+
+MISSING=""
+for rig in $BUILDS; do
+  if [ -s "$RIGS_DEST/$rig/skeleton.model.json" ] && [ -s "$RIGS_DEST/$rig/skeleton.json" ] \
+     && [ -s "$RIGS_DEST/$rig/skeleton.atlas" ]; then
+    echo "have rig $rig"
+  else
+    MISSING="$MISSING $rig"
+  fi
+done
+
+if [ -n "$MISSING" ]; then
+  RIGC="$ROOT/node_modules/.bin/rigc"
+  if [ ! -x "$RIGC" ]; then
+    echo "rig-c is not installed (node_modules/.bin/rigc) — run bun install first" >&2
+    exit 1
+  fi
+  mkdir -p "$RIGS_DEST"
+  printf '%s' "$RIGC_TAG" > "$RIGS_STAMP"
+  SRC="$(mktemp -d)"
+  trap 'rm -rf "$SRC"' EXIT
+  echo "fetching rigc $RIGC_TAG gallery"
+  curl -fsSL "https://codeload.github.com/firejune/rigc/tar.gz/refs/tags/$RIGC_TAG" \
+    | tar -xz -C "$SRC" --strip-components=1 "rigc-${RIGC_TAG#v}/gallery"
+  for build in $MISSING; do
+    rig="${build%-packed}"
+    pack=""
+    if [ "$rig" != "$build" ]; then pack="--pack"; fi
+    echo "building rig $build"
+    out="$RIGS_DEST/$build"
+    rm -rf "$out"
+    mkdir -p "$out"
+    cp "$SRC/gallery/$rig/rig.json" "$SRC/gallery/$rig/motion.json" "$out/"
+    cp -R "$SRC/gallery/$rig/parts" "$out/parts"
+    # Built in place, so every page name in the atlas and the model document
+    # is relative to the build directory: `parts/<file>.png` one page per
+    # part, the packed pages' own names under --pack.
+    if ! (cd "$out" && "$RIGC" build --rig rig.json --motion motion.json --out . $pack > build.log 2>&1); then
+      cat "$out/build.log" >&2
+      exit 1
+    fi
+    rm -f "$out/rig.json" "$out/motion.json" "$out/build.log"
+    # A packed build draws from its own pages; the loose parts are not its.
+    if [ -n "$pack" ]; then rm -rf "$out/parts"; fi
+  done
+fi
+echo "rigs ready (rigc $RIGC_TAG) → $RIGS_DEST"

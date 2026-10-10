@@ -11,11 +11,11 @@ import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 });
 
 test('revokeRegions frees every unpacked URL and nothing else', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.unpackProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.unpackProbe());
 
   expect(probe.regions.map((region) => region.name)).toEqual(['half-left', 'half-right']);
   const regionUrls = probe.regions.map((region) => region.url);
@@ -35,7 +35,7 @@ test('revokeRegions frees every unpacked URL and nothing else', async ({ page })
 });
 
 test('a region covering its whole page reuses the page image', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.passThroughProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.passThroughProbe());
   const region = (name: string) => probe.regions.find((entry) => entry.name === name);
 
   // One part per page: the cut would reproduce the page pixel for pixel, so
@@ -103,7 +103,7 @@ const texel = (grid: Grid, x: number, y: number): string => grid.pixels[y * grid
 test('a 90°-packed cut holds the page texels spine-core names for its corners', async ({
   page,
 }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.rotatedCutProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.rotatedCutProbe());
 
   for (const [where, sample] of Object.entries(probe)) {
     const { region, cut } = sample;
@@ -163,7 +163,7 @@ test('a 90°-packed cut holds the page texels spine-core names for its corners',
 });
 
 test('a failed unpack revokes what it already minted', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.unpackFailureProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.unpackFailureProbe());
 
   expect(probe.message).toContain('Missing page image: missing.png');
   // The first page unpacked before the second one threw.
@@ -193,7 +193,7 @@ test('a failed unpack revokes what it already minted', async ({ page }) => {
 const CUT_BACKING_BUDGET_PX = 4 * 1024 * 1024;
 
 test('region cuts encode concurrently, bounded by the backing budget', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.cutConcurrencyProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.cutConcurrencyProbe());
 
   // The defect, as a counter: awaited one at a time this peak is exactly 1.
   expect(probe.small.cuts.callCount).toBe(6);
@@ -219,7 +219,7 @@ test('region cuts encode concurrently, bounded by the backing budget', async ({ 
 });
 
 test('the map keeps atlas order when the blobs come back backwards', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.cutOrderProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.cutOrderProbe());
 
   // Not vacuous: the trap held all six blobs and handed them back last-first.
   expect(probe.order.deadlineHit).toBe(false);
@@ -240,7 +240,7 @@ test('the map keeps atlas order when the blobs come back backwards', async ({ pa
 });
 
 test('a duplicate name resolves to the last region in atlas order', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.cutOrderProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.cutOrderProbe());
 
   expect(probe.dupOrder.deadlineHit).toBe(false);
   expect(probe.dupOrder.deliveryOrder).toEqual([2, 1, 0]);
@@ -337,7 +337,7 @@ const CUT_PIXELS: Record<string, Record<string, [number, number]>> = {
 const RESOLUTIONS = ['half', 'natural', 'double'] as const;
 
 test('a page may ship at a resolution the atlas does not declare', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.scaledPageProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.scaledPageProbe());
 
   // The premise: one declared size, three different images painted for it.
   expect(probe.declared).toEqual({
@@ -382,7 +382,7 @@ test('a page may ship at a resolution the atlas does not declare', async ({ page
 });
 
 test('a rotated region comes out upright at every page resolution', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.scaledPageProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.scaledPageProbe());
 
   // (d) `rot` is packed on its side: a 32×16 rect on the page holding 16×32 of
   // artwork. The cut has to be the transpose of the rect, scaled — swapping
@@ -404,7 +404,7 @@ test('a rotated region comes out upright at every page resolution', async ({ pag
 });
 
 test('a whole-page region passes through at every page resolution', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.scaledPageProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.scaledPageProbe());
 
   // (e) "Whole page" is a statement about the declared size, so it holds at
   // any image resolution: the URL is the page's own and nothing is minted for
@@ -422,7 +422,7 @@ test('a whole-page region passes through at every page resolution', async ({ pag
 });
 
 test('neighbouring cuts tile the image on a boundary that falls mid-pixel', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.scaledPageProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.scaledPageProbe());
 
   // odd.png is split at x = 31 of 64 declared, which is x = 15.5 on the
   // half-resolution image. Each edge is rounded to the nearest pixel, so the
@@ -443,7 +443,7 @@ test('neighbouring cuts tile the image on a boundary that falls mid-pixel', asyn
 });
 
 test('a half-resolution page renders the same rigid boxes', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.halfResRenderProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.halfResRenderProbe());
 
   // (f) The premise: one atlas declaring 1024×256, rendered once against the
   // page image that ships at that size and once against a 512×128 build of it.
@@ -478,7 +478,7 @@ test('a half-resolution page renders the same rigid boxes', async ({ page }) => 
 });
 
 test('a cut that fails with others in flight strands none of them', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.cutFlightFailureProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.cutFlightFailureProbe());
 
   expect(probe.message).toContain('toBlob failed');
   // Not vacuous: three encodes were still outstanding when the failure landed,

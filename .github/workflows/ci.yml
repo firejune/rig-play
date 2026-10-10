@@ -1,47 +1,31 @@
-# CI: the playwright suite (chromium + webkit), once per supported spine-core.
+# CI: the playwright suite (chromium + webkit), against spine-core 4.3.
 #
 # The visual tests are A/B within one run and one engine (no golden files),
 # so they are platform-independent by design — ubuntu results are valid even
 # though local dev is macOS. Headless numbers are never performance
 # evidence; nothing here asserts timing.
 #
-# ## Why there is a matrix
+# ## Why there is one column
 #
-# A Spine runtime reads only the data its own generation exported, so a
-# consumer installs the spine-core that matches their editor and this package
-# has to draw from either (the seam is `src/coreCompat.ts`). "Supported" is not
-# a claim in the README, it is a column here that is green against *that
-# version's own example exports* — which is why each column also refetches the
-# matching spine-runtimes branch. `peerDependencies` in package.json is exactly
-# the set of minors listed below; widening one without the other is the bug
-# this file exists to prevent.
+# The package used to read spine-core itself, through a generation seam, and
+# this file ran the suite once per supported minor (4.3, 4.2, 4.1, 4.0), each
+# column against that version's own example exports. Since #60 the package
+# reads no Spine runtime: it poses a rig's compiled model document through
+# `rig-c/core` (a devDependency bundled into the build), and nothing under
+# `src/` imports `@esotericsoftware/*` — `tests/package.spec.ts` holds that on
+# the shipped bytes. What spine-core still does here is the *reference* side:
+# the pixel oracle draws with spine-webgl, the frame gate (tests/frames.spec.ts)
+# poses each rigc gallery build's Spine pair with spine-core and holds the
+# model path to it at tolerance 0, and the renderer specs read spineboy. The
+# gallery builds are 4.3 exports (`rigc build` writes Spine 4.3 data), and a
+# runtime reads only its own generation's data, so the reference runs 4.3 and
+# only 4.3. The matrix keeps its shape — one column — until #63 removes the
+# peer dependency and the matrix machinery with it.
 #
-# The column's core is installed over the lockfile's with `bun add --no-save`,
-# which writes node_modules and leaves package.json and bun.lock alone
-# (verified by the guard step). The repository keeps ONE spine-core
-# devDependency; nothing here commits a second.
-#
-# A column may also be green with *fewer* tests than another, and when it is,
-# the reason is always a fact about the installed peer that this repository
-# measures in the run rather than a version listed here. Today that is
-# tests/package.spec.ts: plain node cannot import spine-core 4.0 (extensionless
-# relative specifiers, no `"type": "module"`), and spine-core 4.1's own `.d.ts`
-# does not typecheck under `nodenext` (one extensionless specifier in
-# SkeletonData.d.ts). Both are upstream defects, both are invisible to every
-# bundler and to esm.sh — which is how those runtimes are actually consumed —
-# and the spec probes the peer *by itself* before skipping the one assertion
-# each takes away. See that file's header.
-#
-# The pixel oracle (tests/oracle.spec.ts) draws the same skeleton with
-# `@esotericsoftware/spine-webgl` and diffs the two pictures, so a column needs
-# its reference of the *same* generation — a 4.3 reference over 4.2 data would
-# be comparing against a runtime that cannot read it. spine-webgl pins
-# spine-core to its own exact version, so the pair is installed in ONE command:
-# asking for `@4.2` twice in sequence could resolve a different patch each time
-# and leave a nested second copy of spine-core under spine-webgl, which is the
-# one shape that would quietly give the oracle's two sides different maths
-# while every version line still read correctly. The guard step checks for that
-# copy as well as for the versions.
+# The pixel oracle (tests/oracle.spec.ts) needs spine-webgl of the *same*
+# generation as spine-core; the lockfile pins the pair, and the guard step
+# checks there is no nested second copy of spine-core under spine-webgl, the
+# one shape that would quietly give the oracle's two sides different maths.
 name: ci
 
 on:
@@ -70,30 +54,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
-      # Every column's result is wanted: "4.2 broke" and "4.3 broke" are
-      # different facts, and cancelling the rest would hide one of them.
+      # One column (see the header); kept a matrix until #63 removes it.
       fail-fast: false
       matrix:
-        # The typed column first. `typed` marks the one minor `src/` and
-        # `tests/` are written against — see playwright.config.ts.
         include:
           - core: '4.3'
             typed: true
-          - core: '4.2'
-            typed: false
-          # 4.1 and 4.0 are #53. They were left out of #40 for packaging
-          # reasons and not rendering ones, and both are still true of them:
-          # `Physics` is absent from their root entry (so every page here
-          # reaches it through the namespace and feature-tests it), plain node
-          # cannot import 4.0, and 4.1's own `.d.ts` fails a nodenext consumer
-          # typecheck. Those last two are upstream's, and tests/package.spec.ts
-          # skips exactly the two assertions that need them — by probing the
-          # installed peer alone, never by naming a version, and never by
-          # loosening anything in the columns above.
-          - core: '4.1'
-            typed: false
-          - core: '4.0'
-            typed: false
     env:
       # Which minor this run is against: turns off `tsc --noEmit` outside the
       # typed column (playwright.config.ts) and picks the matching exports

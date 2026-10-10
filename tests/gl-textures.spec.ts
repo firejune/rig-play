@@ -18,11 +18,11 @@ import { expect, type Page, test } from '@playwright/test';
  * non-transparent pixels on its mesh canvases. No milliseconds, no bytes.
  */
 
-type GlProbe = Awaited<ReturnType<Window['spineHtmlHarness']['glTextureProbe']>>;
+type GlProbe = Awaited<ReturnType<Window['rigPlayHarness']['glTextureProbe']>>;
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 });
 
 /**
@@ -31,7 +31,7 @@ test.beforeEach(async ({ page }) => {
  * the wrong reason. The project is skipped with the reason instead.
  */
 async function glProbe(page: Page, projectName: string): Promise<GlProbe> {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.glTextureProbe());
+  const probe = await page.evaluate(() => window.rigPlayHarness.glTextureProbe());
   test.skip(
     !probe.webglAvailable,
     `${projectName}: no shared WebGL context here, so the mesh webgl backend cannot run`,

@@ -1,33 +1,31 @@
-// Every name here is on the root entry of all four supported spine-core
-// minors (checked), so these stay ordinary named imports. The ones that are
-// not — `Physics`, `Sequence` — live behind `src/coreOptional.ts`, because a
-// named import of an export a core does not have is a link error that would
-// take this whole file down in that column.
 import {
   AnimationState,
   AnimationStateData,
-  DeformTimeline,
   RegionAttachment,
+  Sequence,
   Skeleton,
+  type SkeletonData,
   TextureAtlas,
   TextureRegion,
 } from '@esotericsoftware/spine-core';
 import {
-  DomTexture,
-  loadAtlasAssets,
-  loadSkeletonAssets,
-  loadSkeletonJson,
+  loadModel,
   type RegionImage,
   revokeRegions,
-  SpineHtmlRenderer,
-  unpackRegions,
+  RigPlayer,
 } from '../src/index';
-import type { SkeletonData } from '@esotericsoftware/spine-core';
-import { loadSkeletonBinary } from '../src/binary';
 import { getMeshGlBlitter } from '../src/MeshGlBlitter';
-import { type BonePoseView, coreCompatFor, type SlotPoseView } from '../src/coreCompat';
-import { advanceSkeleton, OPTIONAL_SEQUENCE } from '../src/coreOptional';
 import { straightAlphaDerivations, straightAlphaSource } from '../src/DomTexture';
+import type { PosedSlot } from '../src/posedFrame';
+import { advanceSkeleton } from './skeletonFrame';
+import {
+  DomTexture,
+  loadSkeletonJson,
+  loadSpineAssets,
+  SkeletonRenderer,
+  type SpineAssets,
+  unpackAtlas,
+} from './spineDom';
 // The pixel oracle's reference runtime. It is a separate module because it is
 // the one place `@esotericsoftware/spine-webgl` is named — keeping that import
 // findable, and out of this file's 4,000 lines of loading-path probes.
@@ -40,7 +38,7 @@ import {
 /**
  * Browser-side test harness (see harness.html).
  *
- * The specs drive the library through `window.spineHtmlHarness` instead of
+ * The specs drive the library through `window.rigPlayHarness` instead of
  * reading the demo's stats line, because the loading path — blob URL
  * ownership above all — is not observable from a rendered frame. Each probe
  * returns a plain JSON-serializable result; the assertions live in the specs.
@@ -122,6 +120,7 @@ export interface UnpackFailureProbeResult {
 }
 
 export interface LoaderProbeResult {
+  spec: string;
   animations: string[];
   pageCount: number;
   regionCount: number;
@@ -131,15 +130,44 @@ export interface LoaderProbeResult {
   /** Elements the renderer put in the root for one rendered frame. */
   imageCount: number;
   canvasCount: number;
-  /** Root children left after renderer.dispose(). */
+  /** Root children left after player.dispose(). */
   rootChildrenAfterDispose: number;
   aliveAfter: Record<string, boolean>;
 }
 
-export interface LoaderFailureProbeResult {
+export interface LoaderFailure {
   message: string;
   createdUrls: string[];
   revokedUrls: string[];
+  /** Every URL the load asked its fetch for, in order. */
+  fetched: string[];
+}
+
+export interface LoaderFailureProbeResult {
+  spineJson: LoaderFailure;
+  spineSkel: LoaderFailure;
+  foreignSpec: LoaderFailure;
+  http: LoaderFailure;
+  missingPage: LoaderFailure;
+}
+
+export interface SharedAssetsProbeResult {
+  /** Object URLs minted while the one load ran. */
+  createdUrls: string[];
+  /** Object URLs minted while two players were built and drawn from it: players own no bitmaps. */
+  playerCreatedUrls: string[];
+  regionCount: number;
+  /** <img>/<canvas> each player put in its own root for one frame. */
+  firstElementCount: number;
+  secondElementCount: number;
+  secondCanvasCount: number;
+  /** Sampled after the first player was disposed: the assets are the caller's. */
+  aliveAfterFirstDispose: Record<string, boolean>;
+  /** The survivor's elements after the first player went. */
+  secondElementsAfterFirstDispose: number;
+  /** Object URLs revoked by assets.dispose(), which is called twice. */
+  revokedUrls: string[];
+  aliveAfter: Record<string, boolean>;
 }
 
 /** Mesh-canvas backing sizes and counters read right after one render(). */
@@ -170,44 +198,10 @@ export interface BackingProbeResult {
 }
 
 /**
- * What the export on disk declares about bone inheritance and mesh deform, and
- * what the installed spine-core actually built out of it.
- *
- * The two halves are the point. An export read by a runtime of another
- * generation parses cleanly, counts the same constraints and renders without an
- * error while silently dropping whatever the format renamed — 4.0 and 4.1 write
- * a bone's `transform` where 4.2 reads only `inherit`, and 4.0 writes an
- * animation's `deform` where 4.1 and later read only `attachments`. So a parse
- * is not evidence; the key the file uses landing in the parsed data is.
- * Everything here is keyed off the key the *file* carries, never off a version,
- * so one assertion holds in every column.
- */
-export interface GenerationProbeResult {
-  /** The `skeleton.spine` string the exporter stamped — reported, never keyed on. */
-  exportedBy: string;
-  /** Which seam `src/coreCompat.ts` picked from the live objects. */
-  coreShape: string;
-  /** The key this export uses for bone inheritance: `transform`, `inherit`, or ''. */
-  inheritKey: string;
-  /** Bones the file gives a non-default inheritance mode, name → the file's word. */
-  fileInherit: Record<string, string>;
-  /** The same bones as the installed runtime loaded them, name → numeric mode. */
-  loadedInherit: Record<string, number>;
-  /** Bones the runtime loaded at a mode other than Normal — the total, all bones. */
-  loadedNonNormalBones: number;
-  /** Which key this export uses for mesh deform: `deform`, `attachments`, or ''. */
-  deformKey: string;
-  /** Deform timelines the file declares, per animation that has any. */
-  fileDeform: Record<string, number>;
-  /** Deform timelines the installed runtime built, per animation that has any. */
-  loadedDeform: Record<string, number>;
-}
-
-/**
  * The one probe that has to *construct* spine-core objects rather than read
  * them — where a region attachment's corner offsets and UVs come from, which
  * is the convention `src/DomTexture.ts` cuts a packed rect against and
- * `SpineHtmlRenderer` builds its CSS matrix from.
+ * `SkeletonRenderer` builds its CSS matrix from.
  *
  * It lives in the harness rather than node-side, where it began, for one
  * reason: **plain node cannot import spine-core 4.0 at all** (extensionless
@@ -234,9 +228,8 @@ export interface RegionGeometryProbeResult {
   inverseClipping: boolean;
 }
 
-export interface SpineHtmlHarness {
+export interface RigPlayHarness {
   unpackProbe(): Promise<UnpackProbeResult>;
-  generationProbe(): Promise<GenerationProbeResult>;
   regionGeometryProbe(): RegionGeometryProbeResult;
   passThroughProbe(): Promise<PassThroughProbeResult>;
   rotatedCutProbe(): Promise<RotatedCutProbeResult>;
@@ -246,9 +239,7 @@ export interface SpineHtmlHarness {
   glTextureProbe(): Promise<GlTextureProbeResult>;
   backingProbe(): Promise<BackingProbeResult>;
   scaledStageProbe(): Promise<ScaledStageProbeResult>;
-  loaderHttpFailureProbe(): Promise<LoaderHttpFailureProbeResult>;
-  sharedAtlasProbe(): Promise<SharedAtlasProbeResult>;
-  binaryProbe(): Promise<BinaryProbeResult>;
+  sharedAssetsProbe(): Promise<SharedAssetsProbeResult>;
   cutConcurrencyProbe(): Promise<CutConcurrencyProbeResult>;
   cutOrderProbe(): Promise<CutOrderProbeResult>;
   cutFlightFailureProbe(): Promise<CutFlightFailureProbeResult>;
@@ -269,7 +260,7 @@ export interface SpineHtmlHarness {
 
 declare global {
   interface Window {
-    spineHtmlHarness: SpineHtmlHarness;
+    rigPlayHarness: RigPlayHarness;
   }
 }
 
@@ -361,7 +352,7 @@ async function unpackProbe(): Promise<UnpackProbeResult> {
   for (const atlasPage of atlas.pages) atlasPage.setTexture(new DomTexture(page.image));
   const pageImages = new Map([['part.png', page.image]]);
 
-  const unpacked = await trackObjectUrls(() => unpackRegions(atlas, pageImages));
+  const unpacked = await trackObjectUrls(() => unpackAtlas(atlas, pageImages));
   const regions = entries(unpacked.result);
   const urls = [page.url, ...regions.map((region) => region.url)];
   const aliveBefore = await alive(urls);
@@ -396,7 +387,7 @@ async function passThroughProbe(): Promise<PassThroughProbeResult> {
     if (image) atlasPage.setTexture(new DomTexture(image));
   }
 
-  const unpacked = await trackObjectUrls(() => unpackRegions(atlas, pageImages));
+  const unpacked = await trackObjectUrls(() => unpackAtlas(atlas, pageImages));
   const regions = entries(unpacked.result);
   revokeRegions(unpacked.result);
 
@@ -417,7 +408,7 @@ async function unpackFailureProbe(): Promise<UnpackFailureProbeResult> {
 
   const attempt = await trackObjectUrls(async () => {
     try {
-      await unpackRegions(atlas, pageImages);
+      await unpackAtlas(atlas, pageImages);
       return '';
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
@@ -580,7 +571,7 @@ async function rotatedCutSample(
   const atlas = new TextureAtlas(atlasText);
   for (const page of atlas.pages) page.setTexture(new DomTexture(image));
 
-  const images = await unpackRegions(atlas, new Map([[pageName, image]]));
+  const images = await unpackAtlas(atlas, new Map([[pageName, image]]));
   const region = atlas.regions[0];
   const cut = images.get(region.name);
   if (!cut) throw new Error(`region ${region.name} missing from the unpack`);
@@ -623,33 +614,28 @@ async function rotatedCutProbe(): Promise<RotatedCutProbeResult> {
   };
 }
 
-/** End-to-end: the convenience loader against the real spineboy export. */
+/**
+ * End-to-end: the loader against a real `rigc build` output — the packed
+ * build, so every region is cut from a shared page and mints a blob URL.
+ */
+const LOADER_RIG = '/rigs/flex-packed/skeleton.model.json';
+
 async function loaderProbe(): Promise<LoaderProbeResult> {
-  const load = await trackObjectUrls(() =>
-    loadSkeletonAssets({
-      atlasUrl: '/spineboy/spineboy.atlas',
-      skeletonUrl: '/spineboy/spineboy-pro.json',
-    }),
-  );
+  const load = await trackObjectUrls(() => loadModel({ modelUrl: LOADER_RIG }));
   const assets = load.result;
 
   // One rendered frame proves the pieces are wired to each other, not just
-  // present: page textures on the atlas (mesh tier) and region images on the
-  // renderer (rigid tier).
+  // present: page images on the mesh tier and region bitmaps on the rigid one.
   const root = document.getElementById('root');
   if (!root) throw new Error('#root missing');
   root.replaceChildren();
-  const skeleton = new Skeleton(assets.data);
-  const state = new AnimationState(new AnimationStateData(assets.data));
-  state.setAnimation(0, 'walk', true);
-  state.update(1.2);
-  state.apply(skeleton);
-  advanceSkeleton(skeleton, 1.2);
-  const renderer = new SpineHtmlRenderer(root, assets.regionImages);
-  renderer.render(skeleton);
+  const player = new RigPlayer(root, assets);
+  player.play(assets.animations[0].name);
+  player.seek(1.2);
+  player.draw();
   const imageCount = root.querySelectorAll('img').length;
   const canvasCount = root.querySelectorAll('canvas').length;
-  renderer.dispose();
+  player.dispose();
 
   // Twice: dispose() is documented as idempotent.
   const release = await trackObjectUrls(async () => {
@@ -658,8 +644,9 @@ async function loaderProbe(): Promise<LoaderProbeResult> {
   });
 
   return {
-    animations: assets.data.animations.map((animation) => animation.name),
-    pageCount: assets.atlas.pages.length,
+    spec: assets.spec,
+    animations: assets.animations.map((animation) => animation.name),
+    pageCount: assets.pageImages.size,
     regionCount: assets.regionImages.size,
     createdUrls: load.created,
     revokedUrls: release.revoked,
@@ -670,25 +657,57 @@ async function loaderProbe(): Promise<LoaderProbeResult> {
   };
 }
 
-/** The skeleton URL is not JSON, so the read throws after the unpack. */
-async function loaderFailureProbe(): Promise<LoaderFailureProbeResult> {
+/** Runs a load that must fail, and reports what it left behind and what it fetched. */
+async function failedLoad(
+  options: Parameters<typeof loadModel>[0],
+): Promise<LoaderFailure> {
+  const fetched: string[] = [];
+  const inner = options.fetch ?? fetch;
+  const counting: typeof globalThis.fetch = (input, init) => {
+    fetched.push(String(input instanceof Request ? input.url : input));
+    return inner(input, init);
+  };
   const attempt = await trackObjectUrls(async () => {
     try {
-      await loadSkeletonAssets({
-        atlasUrl: '/spineboy/spineboy.atlas',
-        skeletonUrl: '/spineboy/spineboy.atlas',
-      });
+      await loadModel({ ...options, fetch: counting });
       return '';
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
   });
-
   return {
     message: attempt.result,
     createdUrls: attempt.created,
     revokedUrls: attempt.revoked,
+    fetched,
   };
+}
+
+/**
+ * The ways a load is refused, and what each leaves behind: a Spine export
+ * (refused by name before anything is fetched), a document of a spec the core
+ * does not read, a document that never arrives, and a page image that never
+ * arrives — the last after the document was read and before anything was cut.
+ */
+async function loaderFailureProbe(): Promise<LoaderFailureProbeResult> {
+  const answer = (body: string, status = 200): typeof globalThis.fetch => () =>
+    Promise.resolve(new Response(body, { status }));
+  const spineJson = await failedLoad({ modelUrl: '/rigs/flex/skeleton.json' });
+  const spineSkel = await failedLoad({ modelUrl: '/spineboy/spineboy-pro.skel' });
+  const foreignSpec = await failedLoad({
+    modelUrl: '/rigs/flex/skeleton.model.json',
+    fetch: answer(JSON.stringify({ spec: 'rigc-compiled/9' })),
+  });
+  const http = await failedLoad({
+    modelUrl: '/rigs/flex/skeleton.model.json',
+    fetch: answer('', 404),
+  });
+  const missingPage = await failedLoad({
+    modelUrl: LOADER_RIG,
+    resolvePage: (name, modelUrl) =>
+      new URL(`missing-${name}`, new URL(modelUrl, document.baseURI)).href,
+  });
+  return { spineJson, spineSkel, foreignSpec, http, missingPage };
 }
 
 /**
@@ -706,7 +725,7 @@ async function loaderFailureProbe(): Promise<LoaderFailureProbeResult> {
  * them on entry.
  */
 async function backingProbe(): Promise<BackingProbeResult> {
-  const assets = await loadSkeletonAssets({
+  const assets = await loadSpineAssets({
     atlasUrl: '/spineboy/spineboy.atlas',
     skeletonUrl: '/spineboy/spineboy-pro.json',
   });
@@ -718,23 +737,23 @@ async function backingProbe(): Promise<BackingProbeResult> {
   advanceSkeleton(skeleton, 1.2);
 
   const roots: HTMLElement[] = [];
-  const renderers: SpineHtmlRenderer[] = [];
+  const renderers: SkeletonRenderer[] = [];
 
   /** A renderer with its own root element, ratio set before the first render. */
-  function open(ratio: number): { renderer: SpineHtmlRenderer; root: HTMLElement } {
+  function open(ratio: number): { renderer: SkeletonRenderer; root: HTMLElement } {
     const root = document.createElement('div');
     root.style.position = 'absolute';
     root.style.left = '0';
     root.style.top = '0';
     document.body.appendChild(root);
-    const renderer = new SpineHtmlRenderer(root, assets.regionImages);
+    const renderer = new SkeletonRenderer(root, assets.regionImages);
     renderer.pixelRatio = ratio;
     roots.push(root);
     renderers.push(renderer);
     return { renderer, root };
   }
 
-  function snapshot(renderer: SpineHtmlRenderer, root: HTMLElement): BackingSnapshot {
+  function snapshot(renderer: SkeletonRenderer, root: HTMLElement): BackingSnapshot {
     const canvases = [...root.querySelectorAll('canvas')];
     return {
       backing: canvases.map((canvas) => ({ width: canvas.width, height: canvas.height })),
@@ -747,38 +766,38 @@ async function backingProbe(): Promise<BackingProbeResult> {
   // A ratio drop on a live renderer, then the same pose once more (the switch
   // must settle: no second reallocation).
   const live = open(2);
-  live.renderer.render(skeleton);
+  live.renderer.renderSkeleton(skeleton);
   const liveHigh = snapshot(live.renderer, live.root);
   live.renderer.pixelRatio = 0.5;
-  live.renderer.render(skeleton);
+  live.renderer.renderSkeleton(skeleton);
   const liveShrunk = snapshot(live.renderer, live.root);
-  live.renderer.render(skeleton);
+  live.renderer.renderSkeleton(skeleton);
   const liveShrunkAgain = snapshot(live.renderer, live.root);
 
   // The oracle: a renderer that never saw the high ratio.
   const fresh = open(0.5);
-  fresh.renderer.render(skeleton);
+  fresh.renderer.renderSkeleton(skeleton);
   const freshLow = snapshot(fresh.renderer, fresh.root);
 
   // The other direction, against its own fresh oracle.
   const grown = open(0.5);
-  grown.renderer.render(skeleton);
+  grown.renderer.renderSkeleton(skeleton);
   grown.renderer.pixelRatio = 2;
-  grown.renderer.render(skeleton);
+  grown.renderer.renderSkeleton(skeleton);
   const liveGrown = snapshot(grown.renderer, grown.root);
   const freshTwo = open(2);
-  freshTwo.renderer.render(skeleton);
+  freshTwo.renderer.renderSkeleton(skeleton);
   const freshHigh = snapshot(freshTwo.renderer, freshTwo.root);
 
   // Grow-only control, last because it re-poses the skeleton: the ratio never
   // moves and every mesh bbox shrinks, so the backing must not follow it down.
   const hold = open(1);
-  hold.renderer.render(skeleton);
+  hold.renderer.renderSkeleton(skeleton);
   const holdBefore = snapshot(hold.renderer, hold.root);
   skeleton.scaleX = 0.5;
   skeleton.scaleY = 0.5;
   advanceSkeleton(skeleton);
-  hold.renderer.render(skeleton);
+  hold.renderer.renderSkeleton(skeleton);
   const holdAfter = snapshot(hold.renderer, hold.root);
 
   const meshCanvasCount = live.root.querySelectorAll('canvas').length;
@@ -799,206 +818,66 @@ async function backingProbe(): Promise<BackingProbeResult> {
   };
 }
 
-export interface LoaderHttpFailureProbeResult {
-  /** What the static server actually answers a missing path with. */
-  status: number;
-  /** Attempt 1 — the missing URL, exactly as this server answers it. */
-  missingMessage: string;
-  missingCreatedUrls: string[];
-  missingRevokedUrls: string[];
-  missingAliveAfter: Record<string, boolean>;
-  /** URLs attempt 2's fetch double was asked for, in the order it was asked. */
-  fetchOrder: string[];
-  /** Attempt 2 — a fetch double answering the skeleton URL with 404. */
-  httpMessage: string;
-  httpCreatedUrls: string[];
-  httpRevokedUrls: string[];
-  httpAliveAfter: Record<string, boolean>;
-}
-
-export interface SharedAtlasProbeResult {
-  /** Object URLs minted while loadAtlasAssets ran — one atlas, cut once. */
-  createdUrls: string[];
-  /** Object URLs minted while the two skeletons were read against it. */
-  skeletonCreatedUrls: string[];
-  regionCount: number;
-  /** Animation names from each skeleton, proving both actually parsed. */
-  essAnimations: string[];
-  proAnimations: string[];
-  /** <img>/<canvas> each renderer put in its own root for one frame. */
-  essElementCount: number;
-  proElementCount: number;
-  essCanvasCount: number;
-  proCanvasCount: number;
-  /** Message from a read that fails against the shared assets ('' if it did not). */
-  badReadMessage: string;
-  /** What that failed read revoked — the caller's assets, so: nothing. */
-  badReadRevokedUrls: string[];
-  /** Object URLs revoked by shared.dispose(), which is called twice. */
-  revokedUrls: string[];
-  aliveBefore: Record<string, boolean>;
-  aliveAfter: Record<string, boolean>;
-}
-
-/** Runs a load that must fail, and reports what it left behind. */
-async function failedLoad(
-  skeletonUrl: string,
-  fetchImpl?: typeof globalThis.fetch,
-): Promise<{ message: string; created: string[]; revoked: string[] }> {
-  const attempt = await trackObjectUrls(async () => {
-    try {
-      await loadSkeletonAssets({
-        atlasUrl: '/spineboy/spineboy.atlas',
-        skeletonUrl,
-        fetch: fetchImpl,
-      });
-      return '';
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error);
-    }
-  });
-  return { message: attempt.result, created: attempt.created, revoked: attempt.revoked };
-}
-
 /**
- * A skeleton that never arrives, in both shapes the web has: the URL a static
- * server cannot resolve, and a real HTTP error.
- *
- * Which of the two a missing path produces is the server's choice, not the
- * library's — a preview server with an SPA fallback answers 200 with an HTML
- * body, which reaches the JSON read rather than the status check. So the
- * status is reported, and the error branch is reached deterministically with a
- * fetch double instead of by guessing at the server.
- *
- * Either way the regions are already unpacked when the skeleton half fails,
- * which is the one moment a load can strand them.
+ * One load, two players: the regions are cut once, both players draw from the
+ * one map, and disposing a player disposes nothing of the assets — the shape
+ * a page showing one rig several times has.
  */
-async function loaderHttpFailureProbe(): Promise<LoaderHttpFailureProbeResult> {
-  const status = (await fetch('/spineboy/does-not-exist.json')).status;
-  const missing = await failedLoad('/spineboy/does-not-exist.json');
-
-  // The double also records the order it is called in. The skeleton URL being
-  // asked for before the atlas URL is what "both halves are in flight" looks
-  // like from outside: a loader that read the atlas first would ask for it
-  // first.
-  const fetchOrder: string[] = [];
-  const notFound: typeof globalThis.fetch = (input, init) => {
-    const url = String(input instanceof Request ? input.url : input);
-    fetchOrder.push(url);
-    if (url.endsWith('.json')) {
-      return Promise.resolve(new Response('', { status: 404, statusText: 'Not Found' }));
-    }
-    return fetch(input, init);
-  };
-  const http = await failedLoad('/spineboy/spineboy-pro.json', notFound);
-
-  return {
-    status,
-    fetchOrder,
-    missingMessage: missing.message,
-    missingCreatedUrls: missing.created,
-    missingRevokedUrls: missing.revoked,
-    missingAliveAfter: await alive(missing.created),
-    httpMessage: http.message,
-    httpCreatedUrls: http.created,
-    httpRevokedUrls: http.revoked,
-    httpAliveAfter: await alive(http.created),
-  };
-}
-
-/** Poses a skeleton for one frame into `root` and reports what landed there. */
-function renderOnce(
-  root: HTMLElement,
-  skeleton: Skeleton,
-  regionImages: Map<string, RegionImage>,
-): { elementCount: number; canvasCount: number } {
-  const state = new AnimationState(new AnimationStateData(skeleton.data));
-  state.setAnimation(0, 'walk', true);
-  state.update(1.2);
-  state.apply(skeleton);
-  advanceSkeleton(skeleton, 1.2);
-  const renderer = new SpineHtmlRenderer(root, regionImages);
-  renderer.render(skeleton);
-  const counts = {
-    elementCount: root.querySelectorAll('img, canvas').length,
-    canvasCount: root.querySelectorAll('canvas').length,
-  };
-  renderer.dispose();
-  return counts;
-}
-
-/**
- * One atlas, two skeletons: loadAtlasAssets once, loadSkeletonJson per
- * skeleton. What is under test is that the regions are cut exactly once and
- * that the one map backs both renderers — the shape calling loadSkeletonAssets
- * twice cannot have.
- */
-async function sharedAtlasProbe(): Promise<SharedAtlasProbeResult> {
-  const load = await trackObjectUrls(() =>
-    loadAtlasAssets({ atlasUrl: '/spineboy/spineboy.atlas' }),
-  );
-  const shared = load.result;
-
-  // Reading a skeleton owns nothing, so these two must mint no URL at all.
-  const read = await trackObjectUrls(() =>
-    Promise.all([
-      loadSkeletonJson(shared, '/spineboy/spineboy-ess.json'),
-      loadSkeletonJson(shared, '/spineboy/spineboy-pro.json'),
-    ]),
-  );
-  const [essData, proData] = read.result;
+async function sharedAssetsProbe(): Promise<SharedAssetsProbeResult> {
+  const load = await trackObjectUrls(() => loadModel({ modelUrl: LOADER_RIG }));
+  const assets = load.result;
 
   const root = document.getElementById('root');
   if (!root) throw new Error('#root missing');
   root.replaceChildren();
-  // The second root is created here rather than in harness.html: it belongs to
-  // this probe, and every other probe must still see the page it knows.
+  // The second root belongs to this probe; every other probe must still see
+  // the page it knows.
   const secondRoot = document.createElement('div');
   secondRoot.style.cssText = 'position: absolute; left: 0; top: 0';
   document.body.append(secondRoot);
 
-  const ess = renderOnce(root, new Skeleton(essData), shared.regionImages);
-  const pro = renderOnce(secondRoot, new Skeleton(proData), shared.regionImages);
+  const built = await trackObjectUrls(async () => {
+    const first = new RigPlayer(root, assets);
+    const second = new RigPlayer(secondRoot, assets, { skin: assets.skins[0] });
+    for (const player of [first, second]) {
+      player.play(assets.animations[0].name);
+      player.seek(0.5);
+      player.draw();
+    }
+    return { first, second };
+  });
+  const { first, second } = built.result;
+  const firstElementCount = root.querySelectorAll('img, canvas').length;
+  const secondElementCount = secondRoot.querySelectorAll('img, canvas').length;
+  const secondCanvasCount = secondRoot.querySelectorAll('canvas').length;
+
+  first.dispose();
+  const aliveAfterFirstDispose = await alive(load.created);
+  second.frame(1 / 60);
+  const secondElementsAfterFirstDispose = secondRoot.querySelectorAll('img, canvas').length;
+  second.dispose();
   secondRoot.remove();
 
-  // Ownership: the assets are the caller's, so a read that throws must not
-  // take them with it — the skeletons already read from them are still using
-  // them. The alive sample below is taken after this failure, not before it.
-  const badRead = await trackObjectUrls(async () => {
-    try {
-      await loadSkeletonJson(shared, '/spineboy/spineboy.atlas');
-      return '';
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error);
-    }
-  });
-
-  const aliveBefore = await alive(load.created);
   // Twice: dispose() is documented as idempotent.
   const release = await trackObjectUrls(async () => {
-    shared.dispose();
-    shared.dispose();
+    assets.dispose();
+    assets.dispose();
   });
 
   return {
     createdUrls: load.created,
-    skeletonCreatedUrls: read.created,
-    regionCount: shared.regionImages.size,
-    essAnimations: essData.animations.map((animation) => animation.name),
-    proAnimations: proData.animations.map((animation) => animation.name),
-    essElementCount: ess.elementCount,
-    proElementCount: pro.elementCount,
-    essCanvasCount: ess.canvasCount,
-    proCanvasCount: pro.canvasCount,
-    badReadMessage: badRead.result,
-    badReadRevokedUrls: badRead.revoked,
+    playerCreatedUrls: built.created,
+    regionCount: assets.regionImages.size,
+    firstElementCount,
+    secondElementCount,
+    secondCanvasCount,
+    aliveAfterFirstDispose,
+    secondElementsAfterFirstDispose,
     revokedUrls: release.revoked,
-    aliveBefore,
     aliveAfter: await alive(load.created),
   };
 }
 
-/** Mesh-canvas backing and ratio state read right after one render(). */
 export interface ScaledStageSnapshot {
   /** Backing store of each mesh canvas, in root child (draw) order. */
   backing: Array<{ width: number; height: number }>;
@@ -1072,7 +951,7 @@ export interface ScaledStageProbeResult {
  * Pose: the deterministic one the other probes use (walk, t = 1.2).
  */
 async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
-  const assets = await loadSkeletonAssets({
+  const assets = await loadSpineAssets({
     atlasUrl: '/spineboy/spineboy.atlas',
     skeletonUrl: '/spineboy/spineboy-pro.json',
   });
@@ -1086,14 +965,14 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
   const ZOOM = 0.25;
   const PROBE_PX = 100;
   const wrappers: HTMLElement[] = [];
-  const renderers: SpineHtmlRenderer[] = [];
+  const renderers: SkeletonRenderer[] = [];
 
   /**
    * A renderer on its own root, inside a wrapper carrying the CSS transform —
    * the shape a pan/zoom stage has: the renderer is handed the inner element
    * and never sees the scale.
    */
-  function open(transform: string, display = ''): { renderer: SpineHtmlRenderer; root: HTMLElement } {
+  function open(transform: string, display = ''): { renderer: SkeletonRenderer; root: HTMLElement } {
     const wrapper = document.createElement('div');
     wrapper.style.position = 'absolute';
     wrapper.style.left = '0';
@@ -1107,7 +986,7 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
     root.style.top = '0';
     wrapper.appendChild(root);
     document.body.appendChild(wrapper);
-    const renderer = new SpineHtmlRenderer(root, assets.regionImages);
+    const renderer = new SkeletonRenderer(root, assets.regionImages);
     wrappers.push(wrapper);
     renderers.push(renderer);
     return { renderer, root };
@@ -1132,7 +1011,7 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
     return Math.max(rect.width, rect.height);
   }
 
-  function snapshot(renderer: SpineHtmlRenderer, root: HTMLElement): ScaledStageSnapshot {
+  function snapshot(renderer: SkeletonRenderer, root: HTMLElement): ScaledStageSnapshot {
     const canvases = [...root.querySelectorAll('canvas')];
     const backing = canvases.map((canvas) => ({ width: canvas.width, height: canvas.height }));
     return {
@@ -1146,19 +1025,19 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
   }
 
   /** Sync a ratio that must not move, then render once more. */
-  function held(renderer: SpineHtmlRenderer, root: HTMLElement): HeldRatioCase {
+  function held(renderer: SkeletonRenderer, root: HTMLElement): HeldRatioCase {
     const ratioBefore = renderer.pixelRatio;
     const measuredPx = measurePx(root);
     const returned = renderer.syncPixelRatio();
     const ratioAfter = renderer.pixelRatio;
-    renderer.render(skeleton);
+    renderer.renderSkeleton(skeleton);
     return { ratioBefore, returned, ratioAfter, measuredPx, after: snapshot(renderer, root) };
   }
 
   // The stage: a renderer that knows nothing about the wrapper's scale, so its
   // first frame rasters at devicePixelRatio and oversamples by 1/ZOOM.
   const live = open(`scale(${ZOOM})`);
-  live.renderer.render(skeleton);
+  live.renderer.renderSkeleton(skeleton);
   const scaledDefault = snapshot(live.renderer, live.root);
   const scaledMeasuredPx = measurePx(live.root);
 
@@ -1177,35 +1056,35 @@ async function scaledStageProbe(): Promise<ScaledStageProbeResult> {
   };
   const afterSync = snapshot(live.renderer, live.root);
 
-  live.renderer.render(skeleton);
+  live.renderer.renderSkeleton(skeleton);
   const scaledSynced = snapshot(live.renderer, live.root);
   const syncedRatioAgain = live.renderer.syncPixelRatio();
-  live.renderer.render(skeleton);
+  live.renderer.renderSkeleton(skeleton);
   const scaledSyncedAgain = snapshot(live.renderer, live.root);
 
   // The oracle: same scale, same pose, that ratio from the start.
   const fresh = open(`scale(${ZOOM})`);
   fresh.renderer.pixelRatio = syncedRatio;
-  fresh.renderer.render(skeleton);
+  fresh.renderer.renderSkeleton(skeleton);
   const freshScaled = snapshot(fresh.renderer, fresh.root);
 
   // Not laid out: the marker ratio is one nothing could measure, so a sync that
   // "measured" anything at all would overwrite it.
   const hiddenStage = open(`scale(${ZOOM})`, 'none');
   hiddenStage.renderer.pixelRatio = 3;
-  hiddenStage.renderer.render(skeleton);
+  hiddenStage.renderer.renderSkeleton(skeleton);
   const hidden = held(hiddenStage.renderer, hiddenStage.root);
 
   // Negative control: no transform above the root at all.
   const plain = open('');
-  plain.renderer.render(skeleton);
+  plain.renderer.renderSkeleton(skeleton);
   const unscaled = held(plain.renderer, plain.root);
 
   // Deadband: 0.04% off the measured ratio — a real difference, too small to
   // be worth recreating every GPU surface for.
   const near = open(`scale(${ZOOM})`);
   near.renderer.pixelRatio = syncedRatio * 1.0004;
-  near.renderer.render(skeleton);
+  near.renderer.renderSkeleton(skeleton);
   const deadband = held(near.renderer, near.root);
 
   const meshCanvasCount = live.root.querySelectorAll('canvas').length;
@@ -1248,7 +1127,7 @@ const GL_SKELETON = {
   skeletonUrl: '/spineboy/spineboy-pro.json',
 };
 
-type LoadedAssets = Awaited<ReturnType<typeof loadSkeletonAssets>>;
+type LoadedAssets = SpineAssets;
 
 export interface GlCycleSample {
   before: number;
@@ -1372,11 +1251,11 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   const cycles: GlCycleSample[] = [];
   for (let cycle = 0; cycle < 3; cycle++) {
     const before = liveGlTextures();
-    const assets = await loadSkeletonAssets(GL_SKELETON);
+    const assets = await loadSpineAssets(GL_SKELETON);
     const root = makeGlRoot();
-    const renderer = new SpineHtmlRenderer(root, assets.regionImages);
+    const renderer = new SkeletonRenderer(root, assets.regionImages);
     renderer.meshBackend = 'webgl';
-    renderer.render(posedSkeleton(assets));
+    renderer.renderSkeleton(posedSkeleton(assets));
     const afterRender = liveGlTextures();
     const backendActive = renderer.meshBackendActive;
     const pixels = meshPixels(root);
@@ -1397,18 +1276,18 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
 
   // One load for everything below: sharing, idempotence and re-use all turn
   // on several renderers meeting on the same page image.
-  const assets = await loadSkeletonAssets(GL_SKELETON);
+  const assets = await loadSpineAssets(GL_SKELETON);
 
   // Sharing: disposing one user must not take the page from the other.
   const rootA = makeGlRoot();
   const rootB = makeGlRoot();
-  const rendererA = new SpineHtmlRenderer(rootA, assets.regionImages);
-  const rendererB = new SpineHtmlRenderer(rootB, assets.regionImages);
+  const rendererA = new SkeletonRenderer(rootA, assets.regionImages);
+  const rendererB = new SkeletonRenderer(rootB, assets.regionImages);
   rendererA.meshBackend = 'webgl';
   rendererB.meshBackend = 'webgl';
   const skeletonB = posedSkeleton(assets);
-  rendererA.render(posedSkeleton(assets));
-  rendererB.render(skeletonB);
+  rendererA.renderSkeleton(posedSkeleton(assets));
+  rendererB.renderSkeleton(skeletonB);
   const sharingAfterBoth = liveGlTextures();
   const pixelsBeforeFirstDispose = meshPixels(rootB);
   rendererA.dispose();
@@ -1416,7 +1295,7 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   // Re-dirty every mesh first: reusing last frame's raster would prove
   // nothing about the texture still being there.
   rendererB.triangleExpand = 0;
-  rendererB.render(skeletonB);
+  rendererB.renderSkeleton(skeletonB);
   const meshesRedrawn = rendererB.meshCount;
   const pixelsAfterFirstDispose = meshPixels(rootB);
   const sharingAfterSecondRender = liveGlTextures();
@@ -1429,12 +1308,12 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   // without one, the second decrement would find nothing to delete anyway.
   const rootC = makeGlRoot();
   const rootD = makeGlRoot();
-  const rendererC = new SpineHtmlRenderer(rootC, assets.regionImages);
-  const rendererD = new SpineHtmlRenderer(rootD, assets.regionImages);
+  const rendererC = new SkeletonRenderer(rootC, assets.regionImages);
+  const rendererD = new SkeletonRenderer(rootD, assets.regionImages);
   rendererC.meshBackend = 'webgl';
   rendererD.meshBackend = 'webgl';
-  rendererC.render(posedSkeleton(assets));
-  rendererD.render(posedSkeleton(assets));
+  rendererC.renderSkeleton(posedSkeleton(assets));
+  rendererD.renderSkeleton(posedSkeleton(assets));
   const idemAfterBoth = liveGlTextures();
   rendererC.dispose();
   const idemAfterFirstDispose = liveGlTextures();
@@ -1446,9 +1325,9 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   rootD.remove();
 
   const rootE = makeGlRoot();
-  const rendererE = new SpineHtmlRenderer(rootE, assets.regionImages);
+  const rendererE = new SkeletonRenderer(rootE, assets.regionImages);
   rendererE.meshBackend = 'webgl';
-  rendererE.render(posedSkeleton(assets));
+  rendererE.renderSkeleton(posedSkeleton(assets));
   const loneAfterRender = liveGlTextures();
   rendererE.dispose();
   rendererE.dispose();
@@ -1458,8 +1337,8 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   // A renderer that never leaves canvas2d retains and releases nothing.
   const canvas2dBefore = liveGlTextures();
   const rootF = makeGlRoot();
-  const rendererF = new SpineHtmlRenderer(rootF, assets.regionImages);
-  rendererF.render(posedSkeleton(assets));
+  const rendererF = new SkeletonRenderer(rootF, assets.regionImages);
+  rendererF.renderSkeleton(posedSkeleton(assets));
   const canvas2dAfterRender = liveGlTextures();
   const canvas2dBackend = rendererF.meshBackendActive;
   const canvas2dPixels = meshPixels(rootF);
@@ -1471,9 +1350,9 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   // must simply upload it again and draw.
   const reuseBefore = liveGlTextures();
   const rootG = makeGlRoot();
-  const rendererG = new SpineHtmlRenderer(rootG, assets.regionImages);
+  const rendererG = new SkeletonRenderer(rootG, assets.regionImages);
   rendererG.meshBackend = 'webgl';
-  rendererG.render(posedSkeleton(assets));
+  rendererG.renderSkeleton(posedSkeleton(assets));
   const reuseAfterRender = liveGlTextures();
   const reuseBackend = rendererG.meshBackendActive;
   const reusePixels = meshPixels(rootG);
@@ -1519,173 +1398,6 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
       meshPixels: reusePixels,
     },
     final: liveGlTextures(),
-  };
-}
-
-/** One skeleton read, described in the terms both formats must agree on. */
-export interface BinaryReadSummary {
-  /** Animation names, sorted — order is a format detail, the set is not. */
-  animations: string[];
-  boneCount: number;
-  slotCount: number;
-  /** Skin names, sorted. */
-  skins: string[];
-  /** <img>/<canvas> one frame of the deterministic pose put in its own root. */
-  imageCount: number;
-  canvasCount: number;
-}
-
-export interface BinaryProbeResult {
-  /** Object URLs minted while loadAtlasAssets ran — the atlas half, cut once. */
-  createdUrls: string[];
-  /** Object URLs minted while the two skeletons were read: reading owns none. */
-  skeletonCreatedUrls: string[];
-  regionCount: number;
-  /** The A/B pair: the same export read from .skel and from .json. */
-  binary: BinaryReadSummary;
-  json: BinaryReadSummary;
-  /** Bone whose setup length carries the scale check, and what it measured. */
-  scaleBone: string;
-  scaleFactor: number;
-  unscaledBoneLength: number;
-  scaledBoneLength: number;
-  /** A read whose body is not a .skel: it must reject and revoke nothing. */
-  badReadMessage: string;
-  badReadRevokedUrls: string[];
-  /** The same, through a fetch double answering the skeleton URL with 404. */
-  httpMessage: string;
-  httpCreatedUrls: string[];
-  httpRevokedUrls: string[];
-  /** Sampled after both failed reads, so a read that disposed shows up here. */
-  aliveBefore: Record<string, boolean>;
-  /** Object URLs revoked by shared.dispose(), which is called twice. */
-  revokedUrls: string[];
-  aliveAfter: Record<string, boolean>;
-}
-
-/**
- * Binary (.skel) exports through the separate `spine-html/binary` entry.
- *
- * The oracle is A/B inside one run: the JSON read of the *same* export, against
- * the *same* atlas assets. A binary reader that parsed something subtly
- * different would still produce a plausible skeleton on its own, so nothing
- * here is compared against a recorded number — every claim is an equality
- * between the two formats, except the scale check, which is an equality
- * against the unscaled read of the binary itself.
- *
- * The pose is the deterministic one the other probes use (walk, t = 1.2).
- */
-async function binaryProbe(): Promise<BinaryProbeResult> {
-  const load = await trackObjectUrls(() =>
-    loadAtlasAssets({ atlasUrl: '/spineboy/spineboy.atlas' }),
-  );
-  const shared = load.result;
-
-  // Reading a skeleton owns no bitmaps, in either format: these mint nothing.
-  const read = await trackObjectUrls(() =>
-    Promise.all([
-      loadSkeletonBinary(shared, '/spineboy/spineboy-pro.skel'),
-      loadSkeletonJson(shared, '/spineboy/spineboy-pro.json'),
-    ]),
-  );
-  const [binaryData, jsonData] = read.result;
-
-  /** Poses the data for one frame in a root of its own and describes both. */
-  function summarize(data: SkeletonData): BinaryReadSummary {
-    const root = document.createElement('div');
-    root.style.cssText = 'position: absolute; left: 0; top: 0';
-    document.body.append(root);
-    const skeleton = new Skeleton(data);
-    const state = new AnimationState(new AnimationStateData(data));
-    state.setAnimation(0, 'walk', true);
-    state.update(1.2);
-    state.apply(skeleton);
-    advanceSkeleton(skeleton, 1.2);
-    const renderer = new SpineHtmlRenderer(root, shared.regionImages);
-    renderer.render(skeleton);
-    const summary = {
-      animations: data.animations.map((animation) => animation.name).sort(),
-      boneCount: data.bones.length,
-      slotCount: data.slots.length,
-      skins: data.skins.map((skin) => skin.name).sort(),
-      imageCount: root.querySelectorAll('img').length,
-      canvasCount: root.querySelectorAll('canvas').length,
-    };
-    renderer.dispose();
-    root.remove();
-    return summary;
-  }
-
-  const binary = summarize(binaryData);
-  const json = summarize(jsonData);
-
-  // scale: a setup length is the concrete number to halve. Bone lengths are
-  // read straight off the export, so this is the reader's scale and nothing
-  // else — no world transform, no renderer, no layout.
-  const scaleBone = 'torso';
-  const scaleFactor = 0.5;
-  const lengthOf = (data: SkeletonData): number => {
-    const bone = data.bones.find((candidate) => candidate.name === scaleBone);
-    if (!bone) throw new Error(`bone not found: ${scaleBone}`);
-    return bone.length;
-  };
-  const halfData = await loadSkeletonBinary(shared, '/spineboy/spineboy-pro.skel', {
-    scale: scaleFactor,
-  });
-
-  // Ownership, both failure shapes: the assets are the caller's, so a read
-  // that throws must leave them whole — the skeletons already read from them
-  // are still using the bitmaps. aliveBefore is sampled after both failures.
-  const badRead = await trackObjectUrls(async () => {
-    try {
-      await loadSkeletonBinary(shared, '/spineboy/spineboy.atlas');
-      return '';
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error);
-    }
-  });
-
-  const notFound: typeof globalThis.fetch = (input, init) => {
-    const url = String(input instanceof Request ? input.url : input);
-    if (url.endsWith('.skel')) {
-      return Promise.resolve(new Response('', { status: 404, statusText: 'Not Found' }));
-    }
-    return fetch(input, init);
-  };
-  const httpRead = await trackObjectUrls(async () => {
-    try {
-      await loadSkeletonBinary(shared, '/spineboy/spineboy-pro.skel', { fetch: notFound });
-      return '';
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error);
-    }
-  });
-
-  const aliveBefore = await alive(load.created);
-  // Twice: dispose() is documented as idempotent.
-  const release = await trackObjectUrls(async () => {
-    shared.dispose();
-    shared.dispose();
-  });
-
-  return {
-    createdUrls: load.created,
-    skeletonCreatedUrls: read.created,
-    regionCount: shared.regionImages.size,
-    binary,
-    json,
-    scaleBone,
-    scaleFactor,
-    unscaledBoneLength: lengthOf(binaryData),
-    scaledBoneLength: lengthOf(halfData),
-    badReadMessage: badRead.result,
-    badReadRevokedUrls: badRead.revoked,
-    httpMessage: httpRead.result,
-    httpCreatedUrls: httpRead.created,
-    httpRevokedUrls: httpRead.revoked,
-    aliveBefore,
-    revokedUrls: release.revoked,
-    aliveAfter: await alive(load.created),
   };
 }
 
@@ -1978,7 +1690,7 @@ async function cutConcurrencyProbe(): Promise<CutConcurrencyProbeResult> {
     const trap = installCutTrap({ kind: 'immediate' });
     let images: Map<string, RegionImage>;
     try {
-      images = await unpackRegions(painted.atlas, painted.pageImages);
+      images = await unpackAtlas(painted.atlas, painted.pageImages);
     } finally {
       trap.restore();
     }
@@ -1997,9 +1709,9 @@ async function cutConcurrencyProbe(): Promise<CutConcurrencyProbeResult> {
 
   // The real thing: one 1024×256 page, 40 regions, all of them cut.
   const trap = installCutTrap({ kind: 'immediate' });
-  let assets: Awaited<ReturnType<typeof loadAtlasAssets>>;
+  let assets: SpineAssets;
   try {
-    assets = await loadAtlasAssets({ atlasUrl: '/spineboy/spineboy.atlas' });
+    assets = await loadSpineAssets({ atlasUrl: '/spineboy/spineboy.atlas' });
   } finally {
     trap.restore();
   }
@@ -2056,7 +1768,7 @@ async function cutOrderProbe(): Promise<CutOrderProbeResult> {
     const trap = installCutTrap({ kind: 'reverse', expected, deadlineMs: 750 });
     let unpacked: { result: Map<string, RegionImage>; created: string[]; revoked: string[] };
     try {
-      unpacked = await trackObjectUrls(() => unpackRegions(painted.atlas, painted.pageImages));
+      unpacked = await trackObjectUrls(() => unpackAtlas(painted.atlas, painted.pageImages));
     } finally {
       trap.restore();
     }
@@ -2134,7 +1846,7 @@ async function cutFlightFailureProbe(): Promise<CutFlightFailureProbeResult> {
   let attempt: { result: string; created: string[]; revoked: string[] };
   try {
     attempt = await trackObjectUrls(async () => {
-      const settled = unpackRegions(painted.atlas, painted.pageImages).then(
+      const settled = unpackAtlas(painted.atlas, painted.pageImages).then(
         () => '',
         (error) => (error instanceof Error ? error.message : String(error)),
       );
@@ -2361,7 +2073,7 @@ async function scaledPageProbe(): Promise<ScaledPageProbeResult> {
       pageSizes[page.name] = { width: painted.width, height: painted.height };
     }
 
-    const unpacked = await trackObjectUrls(() => unpackRegions(atlas, pageImages));
+    const unpacked = await trackObjectUrls(() => unpackAtlas(atlas, pageImages));
     const pageUrlSet = new Set(pageUrls);
     const regions: ScaledCutEntry[] = [];
     for (const [name, region] of unpacked.result) {
@@ -2445,19 +2157,19 @@ async function halfResRenderProbe(): Promise<HalfResRenderProbeResult> {
   document.body.append(root);
 
   async function run(resolvePage?: () => string): Promise<RigidBox[]> {
-    const assets = await loadAtlasAssets({
+    const assets = await loadSpineAssets({
       atlasUrl: '/spineboy/spineboy.atlas',
       ...(resolvePage ? { resolvePage } : {}),
     });
-    const data = await loadSkeletonJson(assets, '/spineboy/spineboy-ess.json');
+    const data = await loadSkeletonJson(assets.atlas, '/spineboy/spineboy-ess.json');
     const skeleton = new Skeleton(data);
     const state = new AnimationState(new AnimationStateData(data));
     state.setAnimation(0, 'walk', true);
     state.update(1.2);
     state.apply(skeleton);
     advanceSkeleton(skeleton, 1.2);
-    const renderer = new SpineHtmlRenderer(root, assets.regionImages);
-    renderer.render(skeleton);
+    const renderer = new SkeletonRenderer(root, assets.regionImages);
+    renderer.renderSkeleton(skeleton);
 
     const images = [...root.querySelectorAll('img')];
     // naturalWidth is 0 until the blob decodes, and it is half of the point.
@@ -2583,7 +2295,7 @@ let cutRuleSource: Promise<{ atlasText: string; page: HTMLImageElement }> | null
 const cutRulePages = new Map<number, Promise<HTMLImageElement>>();
 
 /** What the stage is holding, to be torn down before the next render. */
-let cutRuleLive: { renderer: SpineHtmlRenderer; release: () => void } | null = null;
+let cutRuleLive: { renderer: SkeletonRenderer; release: () => void } | null = null;
 let cutRuleStageEl: HTMLDivElement | null = null;
 
 function cutRuleAssets(): Promise<{ atlasText: string; page: HTMLImageElement }> {
@@ -2703,7 +2415,7 @@ async function cutRuleRegions(
   rule: CutRule,
 ): Promise<{ images: Map<string, RegionImage>; release: () => void }> {
   if (rule === 'edge') {
-    const images = await unpackRegions(atlas, pageImages);
+    const images = await unpackAtlas(atlas, pageImages);
     return { images, release: () => revokeRegions(images) };
   }
   const urls: string[] = [];
@@ -2762,7 +2474,7 @@ async function cutRuleStage(options: CutRuleStageOptions): Promise<CutRuleStageR
     pageImages.set(page.name, image);
   }
   const cut = await cutRuleRegions(atlas, pageImages, options.rule);
-  const data = await loadSkeletonJson({ atlas }, '/spineboy/spineboy-ess.json');
+  const data = await loadSkeletonJson(atlas, '/spineboy/spineboy-ess.json');
 
   const stage = cutRuleStageElement();
   stage.replaceChildren();
@@ -2778,8 +2490,8 @@ async function cutRuleStage(options: CutRuleStageOptions): Promise<CutRuleStageR
   state.update(options.time);
   state.apply(skeleton);
   advanceSkeleton(skeleton, options.time);
-  const renderer = new SpineHtmlRenderer(root, cut.images);
-  renderer.render(skeleton);
+  const renderer = new SkeletonRenderer(root, cut.images);
+  renderer.renderSkeleton(skeleton);
   cutRuleLive = { renderer, release: cut.release };
 
   const images = [...root.querySelectorAll('img')];
@@ -2965,6 +2677,8 @@ export interface ClipCounterStep {
   clipWriteCount: number;
   clipCount: number;
   clipSkipCount: number;
+  /** Clipping attachments the draw loop met and did not start (read off the skeleton, not the renderer). */
+  clipsIgnored: number;
   elementsWithClipPath: number;
   /** Slots whose clip-path string changed during this step. */
   changedSlots: string[];
@@ -3012,15 +2726,15 @@ export interface ClipInverseProbeResult {
  * costs a property test.
  */
 function drawOrderOf(skeleton: Skeleton): Slot[] {
-  return coreCompatFor(skeleton).drawOrder(skeleton);
+  return skeleton.drawOrder.appliedPose;
 }
 
-function poseOf(skeleton: Skeleton, slot: Slot): SlotPoseView {
-  return coreCompatFor(skeleton).pose(slot);
+function poseOf(_skeleton: Skeleton, slot: Slot): Slot['appliedPose'] {
+  return slot.appliedPose;
 }
 
-function bonePoseOf(skeleton: Skeleton, slot: Slot): BonePoseView {
-  return coreCompatFor(skeleton).bonePose(slot.bone);
+function bonePoseOf(_skeleton: Skeleton, slot: Slot): Slot['bone']['appliedPose'] {
+  return slot.bone.appliedPose;
 }
 
 /** One deterministic pose of a named animation. */
@@ -3061,14 +2775,30 @@ function openClipCapture(id: string, top: number): {
   };
 }
 
-function clipRenderer(root: HTMLElement, assets: LoadedAssets): SpineHtmlRenderer {
-  const renderer = new SpineHtmlRenderer(root, assets.regionImages);
+/**
+ * A frame slot after every clip's range that draws nothing — its region has no
+ * bitmap, so the renderer hides it. Appended by the probes that measure the
+ * per-element path under a clip covering every drawn element (see
+ * `SkeletonRenderer.trailing`).
+ */
+const UNDRAWN_AFTER_CLIP: PosedSlot = {
+  slot: '__after-clip',
+  z: 100000,
+  blend: 'Normal',
+  tint: [1, 1, 1, 1],
+  kind: 'region',
+  region: '__no-such-region',
+  corners: [0, 0, 0, 1, 1, 1, 1, 0],
+};
+
+function clipRenderer(root: HTMLElement, assets: LoadedAssets): SkeletonRenderer {
+  const renderer = new SkeletonRenderer(root, assets.regionImages);
   // The root is scaled, so fold that in rather than rastering meshes at 1:1.
   renderer.pixelRatio = CLIP_SCALE;
   return renderer;
 }
 
-function clipCounters(renderer: SpineHtmlRenderer): ClipCounters {
+function clipCounters(renderer: SkeletonRenderer): ClipCounters {
   return {
     clipCount: renderer.clipCount,
     clipSkipCount: renderer.clipSkipCount,
@@ -3103,7 +2833,7 @@ function clipElements(
 function clipWorldPolygon(skeleton: Skeleton, slot: Slot, clip: ClippingAttachment): number[] {
   const n = clip.worldVerticesLength;
   const world = new Float32Array(n);
-  coreCompatFor(skeleton).vertexWorldVertices(clip, skeleton, slot, 0, n, world, 0, 2);
+  clip.computeWorldVertices(skeleton, slot, 0, n, world, 0, 2);
   const polygon: number[] = [];
   // Spine is Y-up, CSS is Y-down — the same negation the renderer applies.
   for (let v = 0; v < n; v += 2) polygon.push(world[v], -world[v + 1]);
@@ -3179,7 +2909,7 @@ function tiltedQuad(
  * compare it to the other.
  */
 async function clipPartMaskProbe(): Promise<ClipPartMaskProbeResult> {
-  const assets = await loadSkeletonAssets(CLIP_PRO);
+  const assets = await loadSpineAssets(CLIP_PRO);
   const skeleton = posedFor(assets, 'portal', 1.2);
   const drawOrder = drawOrderOf(skeleton);
   const startIndex = drawOrder.findIndex(
@@ -3203,7 +2933,7 @@ async function clipPartMaskProbe(): Promise<ClipPartMaskProbeResult> {
   // Full render first — the DOM report needs the out-of-range slots present.
   const full = openClipCapture('clip-part-full', CLIP_BOX.height * 2);
   const fullRenderer = clipRenderer(full.root, assets);
-  fullRenderer.render(skeleton);
+  fullRenderer.renderSkeleton(skeleton);
   const elements = clipElements(full.root, drawOrder, startIndex, endIndex);
   const rootClipPath = full.root.style.clipPath;
 
@@ -3219,12 +2949,12 @@ async function clipPartMaskProbe(): Promise<ClipPartMaskProbeResult> {
 
   const clipped = openClipCapture('clip-part-a', 0);
   const clippedRenderer = clipRenderer(clipped.root, assets);
-  clippedRenderer.render(skeleton);
+  clippedRenderer.renderSkeleton(skeleton);
 
   const unclipped = openClipCapture('clip-part-b', CLIP_BOX.height);
   const unclippedRenderer = clipRenderer(unclipped.root, assets);
   unclippedRenderer.clipping = false;
-  unclippedRenderer.render(skeleton);
+  unclippedRenderer.renderSkeleton(skeleton);
 
   return {
     startSlot: startSlot.data.name,
@@ -3246,11 +2976,12 @@ async function clipPartMaskProbe(): Promise<ClipPartMaskProbeResult> {
  * clip-path has to come back through that matrix's inverse.
  *
  * The clip sits in the first slot and ends at the LAST one, so it covers every
- * drawn element (which is what makes the whole capture maskable) while the
- * root fast path stays shut — the end slot lies ahead.
+ * drawn element (which is what makes the whole capture maskable), and a frame
+ * slot past its range that draws nothing (`UNDRAWN_AFTER_CLIP`) keeps the root
+ * fast path shut — the renderer takes it only for a clip over every slot.
  */
 async function clipRigidProbe(): Promise<ClipRigidProbeResult> {
-  const assets = await loadSkeletonAssets(CLIP_ESS);
+  const assets = await loadSpineAssets(CLIP_ESS);
   const skeleton = posedFor(assets, 'walk', 1.2);
   const drawOrder = drawOrderOf(skeleton);
   const host = drawOrder[0];
@@ -3267,7 +2998,8 @@ async function clipRigidProbe(): Promise<ClipRigidProbeResult> {
   );
   const control = openClipCapture('clip-rigid-c', CLIP_BOX.height * 2);
   const controlRenderer = clipRenderer(control.root, assets);
-  controlRenderer.render(skeleton);
+  controlRenderer.trailing = [UNDRAWN_AFTER_CLIP];
+  controlRenderer.renderSkeleton(skeleton);
 
   const clip = makeClip(
     skeleton,
@@ -3282,12 +3014,13 @@ async function clipRigidProbe(): Promise<ClipRigidProbeResult> {
 
   const clipped = openClipCapture('clip-rigid-a', 0);
   const clippedRenderer = clipRenderer(clipped.root, assets);
-  clippedRenderer.render(skeleton);
+  clippedRenderer.trailing = [UNDRAWN_AFTER_CLIP];
+  clippedRenderer.renderSkeleton(skeleton);
 
   const unclipped = openClipCapture('clip-rigid-b', CLIP_BOX.height);
   const unclippedRenderer = clipRenderer(unclipped.root, assets);
   unclippedRenderer.clipping = false;
-  unclippedRenderer.render(skeleton);
+  unclippedRenderer.renderSkeleton(skeleton);
 
   const reports = clipElements(clipped.root, drawOrder, 0, drawOrder.length - 1);
   let rotatedOrScaled = 0;
@@ -3325,7 +3058,7 @@ async function clipRigidProbe(): Promise<ClipRigidProbeResult> {
  * element, so the inline clip-path found there has to come back.
  */
 async function clipRootProbe(): Promise<ClipRootProbeResult> {
-  const assets = await loadSkeletonAssets(CLIP_ESS);
+  const assets = await loadSpineAssets(CLIP_ESS);
   const skeleton = posedFor(assets, 'walk', 1.2);
   const drawOrder = drawOrderOf(skeleton);
   const host = drawOrder[0];
@@ -3340,12 +3073,12 @@ async function clipRootProbe(): Promise<ClipRootProbeResult> {
 
   const clipped = openClipCapture('clip-root-a', 0);
   const clippedRenderer = clipRenderer(clipped.root, assets);
-  clippedRenderer.render(skeleton);
+  clippedRenderer.renderSkeleton(skeleton);
 
   const unclipped = openClipCapture('clip-root-b', CLIP_BOX.height);
   const unclippedRenderer = clipRenderer(unclipped.root, assets);
   unclippedRenderer.clipping = false;
-  unclippedRenderer.render(skeleton);
+  unclippedRenderer.renderSkeleton(skeleton);
 
   const reports = clipElements(clipped.root, drawOrder, 0, drawOrder.length);
   const counters = clipCounters(clippedRenderer);
@@ -3357,13 +3090,13 @@ async function clipRootProbe(): Promise<ClipRootProbeResult> {
   // whatever the engine serialized, which is what the renderer saved.
   const before = contract.root.style.clipPath;
   const contractRenderer = clipRenderer(contract.root, assets);
-  contractRenderer.render(skeleton);
+  contractRenderer.renderSkeleton(skeleton);
   const duringClip = contract.root.style.clipPath;
   hostPose.attachment = original;
-  contractRenderer.render(skeleton);
+  contractRenderer.renderSkeleton(skeleton);
   const afterClipEnds = contract.root.style.clipPath;
   hostPose.attachment = clip;
-  contractRenderer.render(skeleton);
+  contractRenderer.renderSkeleton(skeleton);
   const duringSecondClip = contract.root.style.clipPath;
   contractRenderer.dispose();
   const afterDispose = contract.root.style.clipPath;
@@ -3386,7 +3119,7 @@ async function clipRootProbe(): Promise<ClipRootProbeResult> {
  * No pixels here: every number below is a deterministic counter.
  */
 async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
-  const assets = await loadSkeletonAssets(CLIP_ESS);
+  const assets = await loadSpineAssets(CLIP_ESS);
   const skeleton = posedFor(assets, 'walk', 1.2);
   const drawOrder = drawOrderOf(skeleton);
   const host = drawOrder[0];
@@ -3406,10 +3139,11 @@ async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
   root.style.top = '0';
   document.body.appendChild(root);
   const renderer = clipRenderer(root, assets);
+  renderer.trailing = [UNDRAWN_AFTER_CLIP];
 
   let previous = new Map<string, string>();
   function step(): ClipCounterStep {
-    renderer.render(skeleton);
+    renderer.renderSkeleton(skeleton);
     const reports = clipElements(root, drawOrder, 0, drawOrder.length - 1);
     const now = new Map(reports.map((r) => [r.slot, r.clipPath]));
     const changedSlots: string[] = [];
@@ -3421,6 +3155,7 @@ async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
       clipWriteCount: renderer.clipWriteCount,
       clipCount: renderer.clipCount,
       clipSkipCount: renderer.clipSkipCount,
+      clipsIgnored: renderer.clipsIgnored,
       elementsWithClipPath: reports.filter((r) => r.clipPath !== '').length,
       changedSlots,
     };
@@ -3456,7 +3191,8 @@ async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
   const reEnabled = step();
 
   // A second clipping attachment while the first is still active: spine-core's
-  // clipStart ignores it, so it is counted, not nested.
+  // clipStart ignores it, so the frame never carries it — the slots after it
+  // stay under the first clip, and it is counted where the frame is read.
   const second = drawOrder[3];
   poseOf(skeleton, second).attachment = makeClip(
     skeleton,
@@ -3490,7 +3226,7 @@ async function clipCountersProbe(): Promise<ClipCountersProbeResult> {
  * origin element with no box to ring.
  */
 async function clipInverseProbe(): Promise<ClipInverseProbeResult> {
-  const assets = await loadSkeletonAssets(CLIP_ESS);
+  const assets = await loadSpineAssets(CLIP_ESS);
   const skeleton = posedFor(assets, 'walk', 1.2);
   const drawOrder = drawOrderOf(skeleton);
   const host = drawOrder[0];
@@ -3508,12 +3244,12 @@ async function clipInverseProbe(): Promise<ClipInverseProbeResult> {
 
   const clipped = openClipCapture('clip-inverse-a', 0);
   const clippedRenderer = clipRenderer(clipped.root, assets);
-  clippedRenderer.render(skeleton);
+  clippedRenderer.renderSkeleton(skeleton);
 
   const unclipped = openClipCapture('clip-inverse-b', CLIP_BOX.height);
   const unclippedRenderer = clipRenderer(unclipped.root, assets);
   unclippedRenderer.clipping = false;
-  unclippedRenderer.render(skeleton);
+  unclippedRenderer.renderSkeleton(skeleton);
 
   const reports = clipElements(clipped.root, drawOrder, 0, drawOrder.length);
   const sample = reports.find((r) => r.visible && r.clipPath !== '');
@@ -4270,7 +4006,7 @@ async function pmaCutProbe(): Promise<PmaCutProbeResult> {
     for (const page of atlas.pages) page.setTexture(new DomTexture(image));
     const pageImages = new Map([['ramp.png', image]]);
 
-    const unpacked = await trackObjectUrls(() => unpackRegions(atlas, pageImages));
+    const unpacked = await trackObjectUrls(() => unpackAtlas(atlas, pageImages));
     const whole = unpacked.result.get('whole');
     const sub = unpacked.result.get('sub');
     if (!whole || !sub) throw new Error('regions missing from the unpack');
@@ -4413,8 +4149,8 @@ async function pmaDerivationProbe(): Promise<PmaDerivationProbeResult> {
     }
 
     const before = straightAlphaDerivations();
-    const regionImages = await unpackRegions(atlas, pageImages);
-    const data = await loadSkeletonJson({ atlas }, '/spineboy/spineboy-pro.json');
+    const regionImages = await unpackAtlas(atlas, pageImages);
+    const data = await loadSkeletonJson(atlas, '/spineboy/spineboy-pro.json');
     const skeleton = new Skeleton(data);
     const state = new AnimationState(new AnimationStateData(data));
     state.setAnimation(0, 'walk', true);
@@ -4423,9 +4159,9 @@ async function pmaDerivationProbe(): Promise<PmaDerivationProbeResult> {
     advanceSkeleton(skeleton, 1.2);
 
     const renderers = (['canvas2d', 'webgl'] as const).map((backend) => {
-      const renderer = new SpineHtmlRenderer(root, regionImages);
+      const renderer = new SkeletonRenderer(root, regionImages);
       renderer.meshBackend = backend;
-      renderer.render(skeleton);
+      renderer.renderSkeleton(skeleton);
       if (variant === 'pma') {
         backendsActive.push(renderer.meshBackendActive);
         meshesDrawn.push(renderer.meshCount);
@@ -4496,7 +4232,7 @@ const PMA_STAGE = {
 };
 
 let pmaStageEl: HTMLDivElement | null = null;
-let pmaLive: SpineHtmlRenderer | null = null;
+let pmaLive: SkeletonRenderer | null = null;
 
 /** Atlas, region bitmaps and skeleton data for one page variant. */
 interface PmaScene {
@@ -4534,8 +4270,8 @@ function pmaScene(options: PmaStageOptions): Promise<PmaScene> {
       page.setTexture(new DomTexture(image));
       pageImages.set(page.name, image);
     }
-    const regionImages = await unpackRegions(atlas, pageImages);
-    const data = await loadSkeletonJson({ atlas }, `/spineboy/spineboy-${options.skeleton}.json`);
+    const regionImages = await unpackAtlas(atlas, pageImages);
+    const data = await loadSkeletonJson(atlas, `/spineboy/spineboy-${options.skeleton}.json`);
     return { atlas, regionImages, data };
   })();
   pmaScenes.set(key, built);
@@ -4578,11 +4314,11 @@ async function pmaStage(options: PmaStageOptions): Promise<PmaStageResult> {
   state.update(options.time);
   state.apply(skeleton);
   advanceSkeleton(skeleton, options.time);
-  const renderer = new SpineHtmlRenderer(root, regionImages);
+  const renderer = new SkeletonRenderer(root, regionImages);
   renderer.meshBackend = options.backend;
   // The stage is drawn at half scale, so raster at the resolution it shows at.
   renderer.pixelRatio = (window.devicePixelRatio || 1) * PMA_STAGE.scale;
-  renderer.render(skeleton);
+  renderer.renderSkeleton(skeleton);
   pmaLive = renderer;
 
   const images = [...root.querySelectorAll('img')];
@@ -4623,139 +4359,6 @@ async function pmaStage(options: PmaStageOptions): Promise<PmaStageResult> {
   };
 }
 
-/**
- * Reads the export twice — as JSON text, and as the installed spine-core parsed
- * it — and reports both, so a spec can require the second to contain the first.
- *
- * The three reads that have to be generation-aware are written as "wherever
- * this value lives now", which is what keeps the probe free of version keys:
- *
- * - a bone's inheritance mode is `BoneData.transformMode` on 4.0 and 4.1,
- *   `BoneData.inherit` on 4.2, and `BoneData.setupPose.inherit` on 4.3, and the
- *   enum has carried the same numbering throughout (0 = Normal);
- * - the JSON key is `transform` before 4.2 and `inherit` from 4.2;
- * - the deform section is `animations.<name>.deform` on 4.0 and
- *   `animations.<name>.attachments.<skin>.<slot>.<attachment>.deform` from 4.1.
- *
- * The runtime's own side is one `instanceof`: `DeformTimeline` is on the root
- * entry of all four generations (checked), reached through the namespace for
- * the same reason `Physics` is — a named import of an export a core does not
- * have is a link error that takes the whole file down. Not `constructor.name`:
- * the harness is served from a production vite build, where the minifier is
- * free to rename a class and that read would quietly count zero.
- */
-async function generationProbe(): Promise<GenerationProbeResult> {
-  const url = '/spineboy/spineboy-pro.json';
-  const text = await (await fetch(url)).text();
-  const json = JSON.parse(text) as {
-    skeleton?: { spine?: string };
-    bones?: Array<Record<string, unknown>>;
-    animations?: Record<string, Record<string, unknown>>;
-  };
-
-  const bones = json.bones ?? [];
-  const inheritKey = bones.some((bone) => 'inherit' in bone)
-    ? 'inherit'
-    : bones.some((bone) => 'transform' in bone)
-      ? 'transform'
-      : '';
-  const fileInherit: Record<string, string> = {};
-  for (const bone of bones) {
-    const mode = inheritKey ? bone[inheritKey] : undefined;
-    if (typeof mode === 'string') fileInherit[String(bone.name)] = mode;
-  }
-
-  const animations = json.animations ?? {};
-  const deformKey = Object.values(animations).some((anim) => 'deform' in anim)
-    ? 'deform'
-    : Object.values(animations).some((anim) => 'attachments' in anim)
-      ? 'attachments'
-      : '';
-  const fileDeform: Record<string, number> = {};
-  for (const [name, anim] of Object.entries(animations)) {
-    const section = deformKey ? (anim[deformKey] as Record<string, unknown> | undefined) : undefined;
-    if (!section) continue;
-    let count = 0;
-    for (const slots of Object.values(section)) {
-      for (const attachments of Object.values(slots as Record<string, unknown>)) {
-        for (const body of Object.values(attachments as Record<string, unknown>)) {
-          // 4.0 puts the frame array straight under the attachment name; 4.1
-          // and later wrap it in a `deform` member alongside other
-          // attachment-level timelines.
-          if (Array.isArray(body) || (body && typeof body === 'object' && 'deform' in body)) {
-            count += 1;
-          }
-        }
-      }
-    }
-    if (count) fileDeform[name] = count;
-  }
-
-  const assets = await loadSkeletonAssets({ atlasUrl: '/spineboy/spineboy.atlas', skeletonUrl: url });
-  try {
-    const data = assets.data as unknown as {
-      bones: Array<{
-        name: string;
-        transformMode?: number;
-        inherit?: number;
-        setupPose?: { inherit?: number };
-      }>;
-      animations: Array<{ name: string; timelines: Array<object> }>;
-    };
-    const modeOf = (bone: (typeof data.bones)[number]): number =>
-      bone.inherit ?? bone.setupPose?.inherit ?? bone.transformMode ?? 0;
-    const loadedInherit: Record<string, number> = {};
-    let loadedNonNormalBones = 0;
-    for (const bone of data.bones) {
-      const mode = modeOf(bone);
-      if (mode !== 0) loadedNonNormalBones += 1;
-      if (bone.name in fileInherit) loadedInherit[bone.name] = mode;
-    }
-
-    const loadedDeform: Record<string, number> = {};
-    for (const animation of data.animations) {
-      const count = animation.timelines.filter(
-        (timeline) => timeline instanceof DeformTimeline,
-      ).length;
-      if (count) loadedDeform[animation.name] = count;
-    }
-
-    return {
-      exportedBy: json.skeleton?.spine ?? '',
-      coreShape: coreCompatFor(new Skeleton(assets.data)).shape,
-      inheritKey,
-      fileInherit,
-      loadedInherit,
-      loadedNonNormalBones,
-      deformKey,
-      fileDeform,
-      loadedDeform,
-    };
-  } finally {
-    assets.dispose();
-  }
-}
-
-/** A region attachment in whichever shape the installed spine-core has. */
-interface AnyRegionAttachment {
-  width: number;
-  height: number;
-  region: unknown;
-  offset: ArrayLike<number>;
-  uvs: ArrayLike<number>;
-  /** 4.1 and later. */
-  updateRegion?(): void;
-  /** 4.0 only — the pair `updateRegion` replaced. */
-  updateOffset?(): void;
-  setRegion?(region: unknown): void;
-  computeWorldVertices(
-    slotOrBone: unknown,
-    world: Float32Array,
-    offset: number,
-    stride: number,
-  ): void;
-}
-
 /** A 2×1 texture region with the UV corners a caller chooses. */
 function probeRegion(u: number, v: number, u2: number, v2: number, degrees: number): TextureRegion {
   const region = new TextureRegion();
@@ -4773,35 +4376,6 @@ function probeRegion(u: number, v: number, u2: number, v2: number, degrees: numb
   return region;
 }
 
-/**
- * Builds the pre-4.3 attachment the installed core wants, with its region set
- * and its offsets and UVs computed — one step on 4.1 and 4.2, two on 4.0.
- */
-function prePoseAttachment(name: string, region: TextureRegion): AnyRegionAttachment {
-  if ('updateRegion' in RegionAttachment.prototype) {
-    const attachment = new (RegionAttachment as unknown as new (
-      name: string,
-      path: string,
-    ) => AnyRegionAttachment)(name, name);
-    attachment.region = region;
-    attachment.width = 2;
-    attachment.height = 1;
-    (attachment.updateRegion as () => void)();
-    return attachment;
-  }
-  const attachment = new (RegionAttachment as unknown as new (
-    name: string,
-  ) => AnyRegionAttachment)(name);
-  attachment.width = 2;
-  attachment.height = 1;
-  // 4.0 splits the one step: setRegion writes the UVs, updateOffset the
-  // offsets — and updateOffset reads `this.region`, so the order is not
-  // optional.
-  (attachment.setRegion as (r: unknown) => void)(region);
-  (attachment.updateOffset as () => void)();
-  return attachment;
-}
-
 function regionGeometryProbe(): RegionGeometryProbeResult {
   const poseCore = 'getOffsets' in RegionAttachment.prototype;
   const regionTakesSlot = 'updateRegion' in RegionAttachment.prototype;
@@ -4813,46 +4387,25 @@ function regionGeometryProbe(): RegionGeometryProbeResult {
   const straightRegion = probeRegion(0, 0, 1, 1, 0);
   const rotatedRegion = probeRegion(0.125, 0.25, 0.5, 0.875, 90);
 
-  let straight: RegionGeometryProbeResult['straight'];
-  let rotated: RegionGeometryProbeResult['rotated'];
+  const offsets: number[] = new Array<number>(8).fill(0);
+  const uvs = new Float32Array(8);
+  RegionAttachment.computeUVs(straightRegion, 0, 0, 1, 1, 0, 2, 1, offsets, uvs);
+  // An identity bone pose must preserve that order through
+  // computeWorldVertices (which reads only slot.bone.appliedPose).
+  const attachment = new RegionAttachment('corner-probe', new Sequence(1, false));
+  attachment.computeWorldVertices(
+    { bone: { appliedPose: { worldX: 0, worldY: 0, a: 1, b: 0, c: 0, d: 1 } } } as unknown as Slot,
+    offsets,
+    world,
+    0,
+    2,
+  );
+  const straight = { offset: [...offsets], uvs: Array.from(uvs), world: Array.from(world) };
 
-  if (poseCore) {
-    const offsets: number[] = new Array<number>(8).fill(0);
-    const uvs = new Float32Array(8);
-    RegionAttachment.computeUVs(straightRegion, 0, 0, 1, 1, 0, 2, 1, offsets, uvs);
-    // An identity bone pose must preserve that order through
-    // computeWorldVertices (which reads only slot.bone.appliedPose).
-    const Sequence = OPTIONAL_SEQUENCE as new (count: number, wrap: boolean) => never;
-    const attachment = new RegionAttachment('corner-probe', new Sequence(1, false));
-    attachment.computeWorldVertices(
-      { bone: { appliedPose: { worldX: 0, worldY: 0, a: 1, b: 0, c: 0, d: 1 } } } as unknown as Slot,
-      offsets,
-      world,
-      0,
-      2,
-    );
-    straight = { offset: [...offsets], uvs: Array.from(uvs), world: Array.from(world) };
-
-    const rotatedOffsets: number[] = new Array<number>(8).fill(0);
-    const rotatedUvs = new Float32Array(8);
-    RegionAttachment.computeUVs(rotatedRegion, 0, 0, 1, 1, 0, 2, 1, rotatedOffsets, rotatedUvs);
-    rotated = { offset: [...rotatedOffsets], uvs: Array.from(rotatedUvs) };
-  } else {
-    const attachment = prePoseAttachment('corner-probe', straightRegion);
-    // Pre-4.3 the bone IS its own applied pose, and the offsets are read off
-    // the attachment rather than handed in. 4.1 and 4.2 are given the slot,
-    // 4.0 the bone — the seam's one pre-pose difference, driven here too.
-    const bone = { worldX: 0, worldY: 0, a: 1, b: 0, c: 0, d: 1 };
-    attachment.computeWorldVertices(regionTakesSlot ? { bone } : bone, world, 0, 2);
-    straight = {
-      offset: Array.from(attachment.offset),
-      uvs: Array.from(attachment.uvs),
-      world: Array.from(world),
-    };
-
-    const turned = prePoseAttachment('rotated-probe', rotatedRegion);
-    rotated = { offset: Array.from(turned.offset), uvs: Array.from(turned.uvs) };
-  }
+  const rotatedOffsets: number[] = new Array<number>(8).fill(0);
+  const rotatedUvs = new Float32Array(8);
+  RegionAttachment.computeUVs(rotatedRegion, 0, 0, 1, 1, 0, 2, 1, rotatedOffsets, rotatedUvs);
+  const rotated = { offset: [...rotatedOffsets], uvs: Array.from(rotatedUvs) };
 
   return {
     poseCore,
@@ -4863,9 +4416,8 @@ function regionGeometryProbe(): RegionGeometryProbeResult {
   };
 }
 
-window.spineHtmlHarness = {
+window.rigPlayHarness = {
   unpackProbe,
-  generationProbe,
   regionGeometryProbe,
   passThroughProbe,
   rotatedCutProbe,
@@ -4875,9 +4427,7 @@ window.spineHtmlHarness = {
   glTextureProbe,
   backingProbe,
   scaledStageProbe,
-  loaderHttpFailureProbe,
-  sharedAtlasProbe,
-  binaryProbe,
+  sharedAssetsProbe,
   cutConcurrencyProbe,
   cutOrderProbe,
   cutFlightFailureProbe,

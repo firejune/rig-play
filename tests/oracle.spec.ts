@@ -4,10 +4,12 @@ import { expect, type Page, test } from '@playwright/test';
 
 import { CHANNEL_TOLERANCE, diffInPage } from './pixelDiff';
 
-// The stage is taller than the suite's default viewport, because the poses the
-// oracle draws need the room (see ORACLE_STAGE in tests/oracleStage.ts) and a
-// stage that does not fit would be screenshotted through a scroll.
-test.use({ viewport: { width: 820, height: 760 } });
+// The stage is larger than the suite's default viewport, because the poses the
+// oracle draws need the room (see ORACLE_STAGE in tests/oracleStage.ts, and the
+// gallery stages, sized from each build's own stage box at scale 1 — the
+// widest, `ride`, is 1376 px) and a stage that does not fit would be
+// screenshotted through a scroll.
+test.use({ viewport: { width: 1400, height: 1000 } });
 
 /**
  * The pixel oracle — this package against the official runtime.
@@ -223,6 +225,10 @@ const ORACLE_DIFF = { directional: CHANNEL_TOLERANCE } as const;
 
 interface Cell {
   name: string;
+  /** A gallery build: the package end to end, posed by rig-c/core (see tests/oracleStage.ts). */
+  rig?: string;
+  /** A gallery cell that draws meshes — the mesh tier and its backend are then checked. */
+  meshes?: boolean;
   page: 'plain' | 'pma';
   skeleton: 'ess' | 'pro';
   animation?: string;
@@ -290,11 +296,30 @@ const CELLS: Cell[] = [
   // Whole-skeleton tint — the one tint input no slot supplies, and the knob the
   // parity suite drives with `?tint=`.
   { name: 'tint (skeleton colour)', page: 'plain', skeleton: 'pro', tint: 'ff9060', backend: 'canvas2d' },
+  // The gallery cells: rigc's own example rigs, loaded with loadModel and
+  // played by RigPlayer, against the Spine pair the same `rigc build` wrote.
+  // These are the package end to end — the document, the core's pose, the
+  // adapter, the cut — and each stars what its rig stars. Times are whole
+  // GALLERY_DT steps. One-part-per-page builds pass every region through
+  // whole; the `-packed` cells cut every region from a shared page and sample
+  // the mesh tier through page UVs that are not the identity.
+  { name: 'gallery walk (ik, rigid tier)', rig: 'walk', animation: 'walk', time: 0.5, page: 'plain', skeleton: 'ess', backend: 'canvas2d' },
+  { name: 'gallery walk, packed', rig: 'walk-packed', animation: 'walk', time: 0.5, page: 'plain', skeleton: 'ess', backend: 'canvas2d' },
+  { name: 'gallery walk, tint', rig: 'walk', animation: 'walk', time: 0.5, page: 'plain', skeleton: 'ess', backend: 'canvas2d', tint: 'ff9060' },
+  { name: 'gallery flex (contour meshes), canvas2d', rig: 'flex', meshes: true, animation: 'wave', time: 0.5, page: 'plain', skeleton: 'pro', backend: 'canvas2d' },
+  { name: 'gallery flex (contour meshes), webgl', rig: 'flex', meshes: true, animation: 'wave', time: 0.5, page: 'plain', skeleton: 'pro', backend: 'webgl' },
+  { name: 'gallery flex, packed, canvas2d', rig: 'flex-packed', meshes: true, animation: 'wave', time: 0.5, page: 'plain', skeleton: 'pro', backend: 'canvas2d' },
+  { name: 'gallery flex, packed, webgl', rig: 'flex-packed', meshes: true, animation: 'wave', time: 0.5, page: 'plain', skeleton: 'pro', backend: 'webgl' },
+  { name: 'gallery squash (deform, slot rgba)', rig: 'squash', meshes: true, animation: 'bounce', time: 0.5, page: 'plain', skeleton: 'pro', backend: 'canvas2d' },
+  { name: 'gallery portrait (deform projection)', rig: 'portrait', meshes: true, animation: 'turn', time: 1, page: 'plain', skeleton: 'pro', backend: 'canvas2d' },
+  { name: 'gallery nod (pitch, wave)', rig: 'nod', meshes: true, animation: 'bow', time: 1, page: 'plain', skeleton: 'pro', backend: 'canvas2d' },
+  { name: 'gallery look (sliders, physics)', rig: 'look', meshes: true, animation: 'turn', time: 1, page: 'plain', skeleton: 'pro', backend: 'canvas2d' },
+  { name: 'gallery ride (path constraint)', rig: 'ride', animation: 'ride', time: 1, page: 'plain', skeleton: 'ess', backend: 'canvas2d' },
 ];
 
 async function openHarness(page: Page): Promise<void> {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 }
 
 /**
@@ -314,7 +339,7 @@ async function stableShot(page: Page): Promise<Buffer> {
 
 interface Capture {
   shot: Buffer;
-  info: Awaited<ReturnType<typeof window.spineHtmlHarness.oracleStage>>;
+  info: Awaited<ReturnType<typeof window.rigPlayHarness.oracleStage>>;
 }
 
 async function capture(
@@ -324,9 +349,10 @@ async function capture(
   offsetX = 0,
 ): Promise<Capture> {
   const info = await page.evaluate(
-    (opts) => window.spineHtmlHarness.oracleStage(opts),
+    (opts) => window.rigPlayHarness.oracleStage(opts),
     {
       side,
+      rig: cell.rig,
       page: cell.page,
       skeleton: cell.skeleton,
       animation: cell.animation ?? POSE.animation,
@@ -344,14 +370,15 @@ async function capture(
     // Nothing reached the GPU is the one way this side fails silently.
     expect(info.drawCalls).toBeGreaterThan(0);
   } else {
-    expect(info.imageCount + info.canvasCount).toBeGreaterThan(10);
+    // The smallest gallery rig (`nod`) draws ten slots.
+    expect(info.imageCount + info.canvasCount).toBeGreaterThan(cell.rig ? 5 : 10);
     // The stage has to contain the skeleton, or the two runtimes are being
     // compared on a crop.
     expect(info.contentBox.x).toBeGreaterThan(0);
     expect(info.contentBox.y).toBeGreaterThan(0);
     expect(info.contentBox.x + info.contentBox.width).toBeLessThan(info.stage.width);
     expect(info.contentBox.y + info.contentBox.height).toBeLessThan(info.stage.height);
-    if (cell.skeleton === 'pro') {
+    if (cell.rig ? cell.meshes : cell.skeleton === 'pro') {
       expect(info.meshesDrawn).toBeGreaterThan(0);
       // Guard the guard: a webgl cell that fell back to canvas2d would be
       // testing the 2d path twice under two names.
@@ -385,8 +412,8 @@ for (const cell of CELLS) {
         // See ROTATED PACKING: this is what the cells used to skip on, and a
         // zero says the atlas in front of them cannot show #49's defect class.
         `rotatedRegions=${referenceShot.info.rotatedRegions}, ` +
-        // Which seam drew, so a column's log says what it actually exercised.
-        `coreShape=${domShot.info.coreShape}, reference=${referenceShot.info.referenceShape}, ` +
+        // What posed the DOM side, so the log says which path a cell exercised.
+        `poser=${domShot.info.poser}, reference=${referenceShot.info.referenceShape}, ` +
         `content ref=${m.contentA} dom=${m.contentB} union=${m.contentUnion}, ` +
         `bad=${m.bad} of ${m.rawBad} raw (${(badRatio * 100).toFixed(3)}% of content, ` +
         `ch>${CHANNEL_TOLERANCE}), maxDelta=${m.maxDelta}, ` +
@@ -492,9 +519,11 @@ for (const cell of CELLS) {
  * while the offset figure is dominated by the shift. 1.5× leaves 2.2× and 4.3×
  * of margin here, and survives an aligned floor that doubles.
  */
-test('alignment canary: a one-unit world offset is detected', async ({ page }) => {
+for (const cell of [
+  CELLS[1], // the meshed spineboy canvas2d cell — every tier is in it
+  CELLS.find((c) => c.rig === 'flex' && c.backend === 'canvas2d') as Cell, // the model path
+]) test(`alignment canary: a one-unit world offset is detected — ${cell.name}`, async ({ page }) => {
   await openHarness(page);
-  const cell = CELLS[1]; // the meshed canvas2d cell — every tier is in it
   const referenceShot = await capture(page, cell, 'reference');
   const reference = referenceShot.shot;
   const aligned = (await capture(page, cell, 'dom')).shot;
@@ -503,7 +532,7 @@ test('alignment canary: a one-unit world offset is detected', async ({ page }) =
   const alignedDiff = await diffInPage(page, reference, aligned);
   const offsetDiff = await diffInPage(page, reference, offset);
   console.log(
-    `[oracle] ${test.info().project.name} alignment canary: ` +
+    `[oracle] ${test.info().project.name} alignment canary (${cell.name}): ` +
       `rotatedRegions=${referenceShot.info.rotatedRegions}, ` +
       `aligned rawBad=${alignedDiff.rawBad}, +1 world unit rawBad=${offsetDiff.rawBad}, ` +
       `ratio=${(offsetDiff.rawBad / Math.max(1, alignedDiff.rawBad)).toFixed(2)}×`,

@@ -4,10 +4,13 @@ Guidance for AI-assisted sessions working on this repository.
 
 ## What this is
 
-spine-html renders Spine skeletons as plain DOM — rigid slots as `<img>` posed by
-CSS `matrix()`, mesh slots on small per-part canvases (canvas2d or WebGL-blit
-backend), interleaved in one stacking context. Production since v0.3.0. Read
-README.md for architecture and measured numbers.
+spine-html renders rigs built by rigc as plain DOM — rigid slots as `<img>` posed
+by CSS `matrix()`, mesh slots on small per-part canvases (canvas2d or WebGL-blit
+backend), interleaved in one stacking context. It loads the compiled model
+document `rigc build` writes (`skeleton.model.json`, `rigc-compiled/3`), poses it
+through `rig-c/core`, and draws each pose as a `PosedFrame`. Production since
+v0.3.0; the model path since #60. Read README.md for architecture and measured
+numbers.
 
 ## Measurement rules (hard-won — do not relearn these)
 
@@ -28,112 +31,83 @@ README.md for architecture and measured numbers.
 
 ## Architecture invariants
 
-- `@esotericsoftware/spine-core` is the only math source; renderers only draw.
-- **Every spine-core member the renderer reads goes through `src/coreCompat.ts`,
-  and the package still compiles against one core.** A Spine runtime reads only
-  its own generation's data — 4.3 either refuses an older export or parses it and
-  loads **zero** constraints, since it reads one `constraints` array where 4.2
-  and older write `ik`/`transform`/`path`/`physics` (measured on a real-world
-  corpus: 40% unparseable, 0 of 7,065 constraints loaded across the rest). So
-  supporting 4.2 *data* means running on the 4.2 *runtime*, and the peer
-  dependency is how the consumer says which. The seam has three shapes, named
-  after the feature that moved rather than after a version (`CoreShape`):
-  `poses` is 4.3's pose split (`drawOrder.appliedPose`, `slot.appliedPose`,
-  `bone.appliedPose`, `Sequence.resolveIndex`/`getUVs`,
-  `RegionAttachment.getOffsets`, the `skeleton` argument to
-  `VertexAttachment.computeWorldVertices`, `ClippingAttachment.inverse`);
-  `sequences` is the pre-4.3 one (4.1, 4.2), where all of that sits on the slot,
-  the bone and the attachment; `pre-sequences` is 4.0, which is `sequences` with
-  **one** member replaced — `RegionAttachment.computeWorldVertices` took the
-  **bone** until 4.1 gave it the **slot**, because from 4.1 it may step a
-  sequence on the way. Nothing else the renderer reads moved: a 4.0 attachment
-  simply has no `sequence` and a 4.0 slot no `sequenceIndex`, and the shared
-  table already answers "no sequence" rather than reading an absent property, so
-  the third table is written as a spread of the second and not as a copy.
-  **The pre-4.3 shapes therefore need no wrapper object** — a `Slot` *is* its
-  own pose view, a `Bone` its own bone pose — which is what keeps the seam out
-  of the allocation path; do not "tidy" it into returning literals. The shape is
-  picked **once per renderer, from the live objects** (`drawOrder` carrying an
-  `appliedPose` array; then `updateRegion` on `RegionAttachment.prototype`,
-  which 4.1 introduced in the same release as the slot argument), never per slot
-  by try/catch and never from a version string, which a vendored copy need not
-  carry. Handing 4.0 a slot is the silent-and-total failure the 4.0 column
-  exists to catch: the method reads `worldX`/`a`/`b`/… off its argument, a
-  `Slot` has none of them, every rigid corner comes out `NaN`, nothing throws
-  and nothing draws — measured, 18 red cells, all of them in the oracle and the
-  clipping specs, while the parity suite stayed green because both backends were
-  equally wrong. One read that is **not** in the seam because it does not differ:
-  the mesh tier takes its page image from `region.page.texture`, never
-  `region.texture` — the latter is a 4.1-and-later convenience that 4.0 spells
-  `renderObject`, and the page is where the handle has always lived. spine-core
-  stays a single 4.3 devDependency and `dist/*.d.ts` keeps describing 4.3: the
-  older shapes are typed by local structural interfaces reached through casts
-  that never leave that file, so `tsc --noEmit` is meaningful only in the typed
-  column (`SPINE_CORE_MINOR`, playwright.config.ts) while the *shipped* types are
-  checked against every column by `tests/package.spec.ts`. **Supported = a green
-  CI column against that version's own exports**, and `peerDependencies` is that
-  set and nothing wider — widening one without the other is the bug the matrix in
-  `.github/workflows/ci.yml` exists to prevent.
-- **spine-core members that only *some* supported generations have go through
-  `src/coreOptional.ts`, which ships nothing.** `Physics` is absent from the
-  root entry of 4.1 and 4.0 and `Sequence` from 4.2's and 4.1's, and a *named*
-  import of an export a core does not have is a **link error that fails the
-  whole build**, not a runtime `undefined` — that alone is why #40 left 4.1 and
-  4.0 out. So they are read by *string key* off the namespace object: written
-  out as `core.Physics` a bundler resolves the member statically and warns
-  `"Physics" is not exported by …` on every build against those two, which is
-  true of the core and misleading about this code. That file also owns
-  `advanceSkeleton`, the pose call the difference reaches (`skeleton.update` is
-  4.2's physics step and does not exist on 4.1; `updateWorldTransform` takes a
-  `Physics` from 4.2 and took nothing before). It is **excluded from
-  `tsconfig.build.json`** next to `src/main.ts`, because nothing the library
-  does poses a skeleton — only the demo, the harness, the oracle stage and the
-  benchmark do. If a shipped file ever imports it, it is emitted again and the
-  pinned file list in `tests/package.spec.ts` goes red, which is the guard.
-- **Two upstream packaging defects bound what the *tests* can assert, and they
-  are probed rather than keyed on a version** (spine-core's issue #16; invisible
-  to every bundler and to esm.sh, which is how these runtimes are consumed).
-  **4.0** ships extensionless relative specifiers *and* no `"type": "module"`,
-  so plain node cannot import it — while its `.d.ts` typechecks clean under
-  nodenext, since TypeScript reads a package without `"type"` as CommonJS.
-  **4.1** is the mirror image: node imports it fine, and one extensionless
-  specifier in its own `dist/SkeletonData.d.ts` is a TS2835 under nodenext with
-  `skipLibCheck` off. `tests/package.spec.ts` measures the **installed peer by
-  itself** — one child node process importing only the peer, one tsc run over a
-  consumer importing only the peer — and skips exactly the one assertion each
-  takes away, with that reason. Everything not needing the peer (the `exports`
-  map, the emitted file set, the import walk, "nothing shipped names
-  spine-webgl") runs everywhere, and the 4.3 and 4.2 columns skip neither.
-  The same defect is why **no spec file may import spine-core at module scope**:
-  Playwright resolves a spec's imports with node's own resolver, so on the 4.0
-  column that is not a skipped test, it is a run that never starts. The probes
-  that have to *construct* spine-core objects therefore live in
-  `tests/harness.ts` and are asserted from the browser.
+- **`rig-c/core` is the only math source; the renderer only draws.** Nothing
+  under `src/` imports `@esotericsoftware/*` (`grep -rn "@esotericsoftware"
+  src/` is empty, and `tests/package.spec.ts` holds the shipped bytes to it).
+  The pose comes from `openTrack` (rig-c `src/core/track.ts`, the live track
+  issue #1276 added: pose 0, then one pose per `step(dt)`), and the renderer is
+  handed a **`PosedFrame`**, never a skeleton: per slot in draw order the kind,
+  four world corners or world vertices + page UVs + triangles, the region or the
+  page + `pma`, a tint, a blend, a clip polygon, a z. `DomRenderer.render(frame)`
+  is the whole interface between posing and drawing, so another poser — or the
+  one-canvas mode — feeds the same record.
+- **The adapter is `src/posedFrame.ts` (`frameOf`), re-cut over `rig-c/core`
+  alone from rigc's `src/render_core.ts`**, which is its specification and
+  cannot be imported (it value-imports node-bound modules). The rules, each one
+  rigc's: `order` is `pose.drawn` on active bones (`activeBones` of the view —
+  `pose.drawn` lists inactive-bone slots too, the oracle's convention), `z` the
+  slot's index in the full `pose.drawOrder`; a region's `corners` are its drawn
+  vertices, already in the runtime's BL, UL, UR, BR order; a mesh's `uvs` are
+  `meshPageUvs` over the region `drawnRegions` resolves (a sequence frame's own
+  region, a linked mesh's own region over its source's UVs) and its
+  `page`/`pma` that region's page; `tint` is the slot row's `[2..5]` times the
+  attachment's `colour`, channel by channel, then times the player's own colour
+  (a player knob, not a document value); `dark` the row's `[6]`; `blend` the
+  row's `[8]`; `clip` is `clipCover`, the official draw loop's
+  `clipStart`/`clipEnd` (a clip whose bone is active starts when none is in
+  force, covers the slots after it, ends after its end slot; a second clip while
+  one is in force is ignored; an end slot that is the clip's own or already
+  passed never ends it). Each started clip is **one object shared by every slot
+  it covers** — the renderer reads that identity — and a mesh's `uvs` and
+  `triangles` are **kept per region and attachment** so the same mapping is the
+  same array every frame (the renderer's dirty signature compares them by
+  identity). The pose's numbers are passed through as computed: no rounding, no
+  re-ordering. The renderer keeps reading vertices through its own Float32
+  scratch, exactly as it always read them, so the raster, the dirty signature
+  and the clip-path quantization saw no change of precision.
+- **The frame gate holds the adapter to spine-core at tolerance 0**
+  (`tests/frames.spec.ts`, node-side): each gallery build's Spine pair posed by
+  spine-core 4.3 on rigc's render recipe and read by `tests/skeletonFrame.ts`,
+  its model pair posed by `openTrack` and read by `frameOf`, compared field by
+  field with `===` — draw order, z, every region's name, corners and page UVs,
+  every mesh's page, `pma`, sequence, vertices, UVs and triangles, tint, dark,
+  blend, clip polygon and clip grouping — every animation, `dt = 1/12`, through
+  the loop's wrap, on one-page-per-part and `--pack` builds. Measured: 14
+  builds, 28 animations, 1,034 frames, 19,504 slots, 1,279,976 numbers, 0
+  mismatches. It is the instrument that sees a one-ulp defect: reading a
+  mesh's art UVs through `Math.fround` first left every one-page-per-part build
+  green and failed every packed one (a one-part page maps UVs by the identity),
+  which is why both layouts are built. No gallery build clips, so the clip half
+  is held by the gate's hand-made cover cases and by the renderer's clipping
+  specs over spineboy — say so whenever a clip claim is made from the gate.
+- **The test suite reads Spine exports through its own bridge,
+  `tests/skeletonFrame.ts` (and `tests/spineDom.ts` for drawing).** The
+  renderer specs, the spineboy stage (`tests/spine-stage.html`), the pixel
+  oracle's spineboy cells and the benchmark pose spine-core skeletons and read
+  them into the same `PosedFrame` the package's adapter writes — the official
+  draw loop, read rather than drawn. That is where clipping, additive blend and
+  premultiplied pages are exercised, because no rigc gallery build carries them.
+  spine-core 4.3 only: the generation seam the package carried until #60
+  (`coreCompat.ts`, four CI columns) went with the package's own spine-core
+  reads.
 - **An export under any runtime but its own generation's is never a supported
-  combination, and a clean parse is not evidence that it is.** Each
-  generation's `SkeletonJson` simply stops looking for keys the format dropped:
-  4.2 reads a bone's `inherit` and never `transform` (what 4.0 and 4.1 write),
-  4.1 and 4.2 read an animation's `attachments` and never `deform` (what 4.0
-  writes), 4.3 reads `constraints` and never `ik`/`transform`/`path`/`physics`,
-  and a 3.8 export parses under 4.0 and then poses its bones at non-finite
-  transforms. None of it throws, every constraint count still matches, and the
-  rig renders. The README once told 4.1 / 4.0 users to install 4.2 on the
-  strength of exactly that evidence (1,454 of 1,454 parsed, 14,022 of 14,022
-  constraints, a 60-rig render with no error) and had to be corrected. The
-  check that settles it is a **diff of the keys each generation's reader
-  consumes** against the keys the exports contain — not parsing, not counting,
-  not rendering without an error.
-- Rigid-tier corner order from `computeWorldVertices` is **BL, UL, UR, BR**
-  (verified by execution on 4.0.31, 4.1.56, 4.2.98, 4.2.120 and 4.3.13; the
-  br/bl/ul/ur comments inside the upstream function are stale). A test guards
-  this against upstream reorderings, on every generation — it is the one place
-  that has to *construct* spine-core objects rather than read them, and the
-  constructors differ where the seam's reads do not (4.3 computes the offsets
-  and UVs into caller arrays; 4.1 and 4.2 write them with `updateRegion()`; 4.0
-  splits that into `setRegion()` for the UVs and `updateOffset()` for the
-  offsets), so it detects the shape itself. The construction lives in
-  `tests/harness.ts` and the expectation in `tests/invariants.spec.ts`: it was
-  node-side until the 4.0 column, which plain node cannot load at all.
+  combination, and a clean parse is not evidence that it is.** This is the
+  reference side's concern now, and the reason it runs 4.3 over 4.3 exports
+  only. Each generation's `SkeletonJson` simply stops looking for keys the
+  format dropped: 4.2 reads a bone's `inherit` and never `transform` (what 4.0
+  and 4.1 write), 4.1 and 4.2 read an animation's `attachments` and never
+  `deform` (what 4.0 writes), 4.3 reads `constraints` and never
+  `ik`/`transform`/`path`/`physics`, and a 3.8 export parses under 4.0 and then
+  poses its bones at non-finite transforms. None of it throws. The check that
+  settles it is a **diff of the keys each generation's reader consumes**
+  against the keys the exports contain — not parsing, not counting, not
+  rendering without an error.
+- Rigid-tier corner order is **BL, UL, UR, BR** — spine-core's
+  `computeWorldVertices` order (verified by execution on 4.0.31, 4.1.56, 4.2.98,
+  4.2.120 and 4.3.13; the br/bl/ul/ur comments inside the upstream function are
+  stale), which rig-c's pose keeps and the frame gate holds it to at tolerance
+  0. `tests/invariants.spec.ts` pins spine-core's end of that chain
+  (construction in `tests/harness.ts`).
 - **Both raster backends address texels as `uv * size`**, the continuous frame
   where the page spans `[0, size]` — `drawImage` under an affine and
   `texture2D()` read the same frame. `uv * (size - 1)` (a discrete
@@ -141,12 +115,13 @@ README.md for architecture and measured numbers.
   residue, depending on the scene. No half-texel term: the per-triangle affine
   maps corners, it does not sample.
 - **The rigid cut reads the page in that same frame** — the region's bounds
-  relative to the declared page size (`region.page.width/height`), times the
+  relative to the declared page size (the document page's `width`/`height`), times the
   image's natural size, rounded per *edge* so neighbouring cuts keep tiling
   exactly. That is what lets a page ship at a resolution its `size:` line does
   not mention (half-res builds, @2x): spine-core normalizes UVs against the
   declared size and a sampler does not care what resolution the texture has, so
-  the mesh tier never noticed, and cutting in declared pixels was the rigid
+  the mesh tier never noticed (rig-c's `meshPageUvs` normalizes the same way),
+  and cutting in declared pixels was the rigid
   tier's private bug (#32). A cut bitmap is therefore the **native resolution**
   of its rect, never upscaled, while `RegionImage.width`/`height` are **atlas
   units whatever the bitmap's resolution** — they are the `<img>` layout box
@@ -174,10 +149,14 @@ README.md for architecture and measured numbers.
   written from the UVs and nothing else — `tests/regions.spec.ts` asserts a
   cut's pixels against the page texels those UVs name, on a rotated region that
   does not cover its page, and `tests/invariants.spec.ts` pins the UV
-  convention itself against whichever core is installed. The mesh tier never
-  had the defect: it samples the page through those same UVs.
-- **Alpha convention is per tier, keyed off `page.pma`** (#37). The exporter
-  premultiplies by default, so most consumer atlases carry `pma: true` and the
+  convention itself against spine-core. rig-c's `regionPageUvs` states the same
+  rule (held to `sequence.getUVs` there, and to spine-core here by the frame
+  gate's region-UV comparison). The mesh tier never had the defect: it samples
+  the page through those same UVs.
+- **Alpha convention is per tier, keyed off the page's `pma`** (#37) — the
+  document's `pages[].pma`, which a frame carries on each mesh (`PosedMesh.pma`)
+  and `unpackRegions` reads off the page layout. The exporter premultiplies by
+  default, so most atlases carry `pma: true` and the
   file's RGB is already multiplied by its alpha. GL then uploads it *without*
   `UNPACK_PREMULTIPLY_ALPHA_WEBGL` (its blend already wants premultiplied
   source — lossless); the DOM and canvas2d tiers cannot take it at all, since
@@ -235,14 +214,26 @@ README.md for architecture and measured numbers.
   The overdraw canary in `tests/parity.spec.ts` is what holds this.
 - **Relative imports in `src/` carry `.js`** — `from './DomTexture.js'`, never
   `from './DomTexture'`. TypeScript resolves the `.js` specifier back to the
-  `.ts` file under `moduleResolution: "bundler"`, and vite does the same for
-  both build entries, so nothing in development notices either way. What
-  notices is node: `tsc` emits the specifier *unchanged*, and node's ESM
-  resolver requires the extension, so extensionless specifiers shipped a
-  package that no plain `node` could import (#16 — `ERR_MODULE_NOT_FOUND`,
-  invisible to every bundler and to esm.sh). Building under `NodeNext` is not
-  an escape: it does not rewrite specifiers either, it just refuses to compile
-  without the `.js` (TS2835). The guard is `tests/package.spec.ts`.
+  `.ts` file under `moduleResolution: "bundler"`, and vite does the same, so
+  nothing in development notices either way. The shipped JavaScript is one
+  bundle now, so node's resolver never meets these specifiers in `index.js`;
+  it still meets them in the **declarations**, which `tsc` emits one per module
+  with the specifier unchanged, and a `nodenext` consumer rejects an
+  extensionless one with TS2835 (#16 was the same defect in the `.js`). The
+  guard is `tests/package.spec.ts`'s nodenext consumer typecheck.
+- **The package is one self-contained bundle** (`scripts/build-lib.mjs`):
+  vite library mode bundles `src/index.ts` with `rig-c` **not** external — its
+  `./core` entry is TypeScript source in a devDependency, which no consumer has
+  and no node loads from `node_modules` — and `tsc --emitDeclarationOnly`
+  writes the types, with `stripInternal` dropping every `@internal` declaration
+  (the adapter's and the loader's helpers, the only ones whose signatures name
+  a rig-c type), so the shipped `.d.ts` name nothing a consumer lacks.
+  `tests/package.spec.ts` installs the built package with nothing beside it,
+  imports and typechecks it by name, and asserts the bundle imports nothing,
+  reaches no `node:` module and contains `openTrack`. Measured: `index.js`
+  290 KB unminified (the demo's minified chunk for the player and the core,
+  139 KB / 46 KB gzip). Anything marked `@internal` must stay out of the public
+  types' reach, or the consumer typecheck goes red on `rig-c/core`.
 - **One shared WebGL context** at module level — browsers cap WebGL contexts at
   ~16; never create one per renderer/mesh. Because it outlives every renderer,
   its page textures are reference-counted per page (retained as a mesh job is
@@ -270,64 +261,62 @@ README.md for architecture and measured numbers.
   local frame** — the world polygon through the inverse of the `<img>` matrix
   for rigid slots, minus the canvas translate for mesh slots (`transform-origin`
   is `0 0` on every slot element, which is what lets the matrix be inverted with
-  no origin term). Semantics are spine-core's, taken from the official draw
-  loops rather than inferred: one active clip at a time, applied through the end
-  slot inclusive, and an end slot that is the clip's OWN slot never ends it —
-  `clipEnd(slot)` runs *before* `clipStart` on the starting slot and the loop
-  then `continue`s past the trailing `clipEnd`, so the starting slot is never
-  offered to it (spine-core 4.3.13 `dist/SkeletonRendererCore.js`, and
-  `dist/SkeletonRenderer.js` of `@esotericsoftware/spine-webgl` 4.3.13). That
-  own-slot case is the whole-skeleton clip, and it takes the **root fast path**:
-  one `clip-path` on the root, whose inline value is borrowed and restored (the
-  root is the caller's element) — never both root and per-element for one clip.
-  Writes are cached per element like `transform`, with coordinates quantized to
-  1/1000 of a local unit, so a static clip over a static pose costs zero writes
-  per frame. An **inverse** clip keeps a region with a hole in it, which needs
-  two rings — `polygon()` is one closed ring and silently turns a box plus a
-  polygon into a self-intersecting one whose even-odd fill leaves a wedge along
-  the seam, so inverse clips are a two-subpath `path(evenodd, …)` instead.
-  Neither raster backend knows any of this exists, and **the mesh
-  dirty signature must never start depending on the clip** — a mesh that held
-  still has to keep reusing its raster under a moving clip. `tests/clipping.spec.ts`
-  holds it, against a screen-space oracle that never touches the local-frame math.
+  no origin term). **Which slots a clip covers is the frame's**, decided by the
+  adapter's `clipCover` on the official draw loops' semantics (above; spine-core
+  4.3.13 `dist/SkeletonRendererCore.js`, and `dist/SkeletonRenderer.js` of
+  `@esotericsoftware/spine-webgl` 4.3.13): the renderer applies what each slot
+  carries. A clip that covers **every slot of the frame** — one clip object on
+  all of them, not inverse — takes the **root fast path**: one `clip-path` on the
+  root, whose inline value is borrowed and restored (the root is the caller's
+  element) — never both root and per-element for one clip. (Until #60 the test
+  was "started before anything was drawn and never ends"; a clip ending at the
+  last slot now takes the root path too, which draws the same picture. Specs
+  that measure the per-element path under a clip over every drawn element append
+  a frame slot past the clip that draws nothing, `SkeletonRenderer.trailing`.)
+  `clipCount` counts distinct clips applied, `clipSkipCount` distinct clips in
+  the frame not applied (`clipping` off, polygon under three points); a clip the
+  runtime ignores never reaches the frame, and the spineboy reader counts those
+  itself (`clipsIgnored`). Writes are cached per element like `transform`, with
+  coordinates quantized to 1/1000 of a local unit, so a static clip over a
+  static pose costs zero writes per frame. An **inverse** clip keeps a region
+  with a hole in it, which needs two rings — `polygon()` is one closed ring and
+  silently turns a box plus a polygon into a self-intersecting one whose
+  even-odd fill leaves a wedge along the seam, so inverse clips are a
+  two-subpath `path(evenodd, …)` instead. Neither raster backend knows any of
+  this exists, and **the mesh dirty signature must never start depending on the
+  clip** — a mesh that held still has to keep reusing its raster under a moving
+  clip. `tests/clipping.spec.ts` holds it, against a screen-space oracle that
+  never touches the local-frame math.
 - **A RegionImage map belongs to the caller, not to a renderer.** Its URLs may
   be blobs from `unpackRegions`, an atlas page passed through whole, or the
   caller's own part PNGs — and one map is normally shared by several renderers
   (the demo does it). So only `revokeRegions` frees anything, and only URLs
   this package minted (the `ownedUrls` ledger in DomTexture.ts). Never revoke
-  from `dispose()`. The same boundary covers atlas pages — the page image is
-  the caller's too, so nothing here nulls `page.texture` or drops a page to
-  reclaim memory (the reason step 2 of #7 was declined); a page goes when the
-  caller drops the atlas and the skeleton data that reach it.
+  from `dispose()`. The same boundary covers page images — they are the
+  caller's (`ModelAssets.pageImages`), so nothing here drops a page to reclaim
+  memory (the reason step 2 of #7 was declined); a page goes when the caller
+  drops the assets and every player drawing from them.
 - **`unpackRegions` starts the region cuts concurrently**, so a failure has to
   account for cuts still in flight: their blobs arrive *after* the error is
   known, and turning those into owned URLs nobody can revoke is a leak with no
   visual signature. The cleanup therefore waits for every started cut before
-  revoking and throwing, and the map is built from `atlas.regions` once they
-  settle — never from the arrivals — so atlas order and last-duplicate-wins
+  revoking and throwing, and the map is built from the page layout once they
+  settle — never from the arrivals — so layout order and last-duplicate-wins
   survive out-of-order delivery. How many cuts run at once is a private
   backing-pixel budget in DomTexture.ts (a measurement, not a knob: every
   started cut holds its canvas until its blob lands). `tests/regions.spec.ts`
   holds all of it by wrapping `toBlob` — overlap is a count, arrival order is
   chosen rather than raced, and nothing there is timed.
-- The loaders (`loadAtlasAssets.ts`, `loadSkeletonAssets.ts`, `binary.ts`) are a
-  convenience layer, not a dependency: nothing else in `src/` imports them —
-  `loadSkeletonAssets.ts` and `binary.ts` import `loadAtlasAssets.ts`, and that
-  is the whole graph — so they all tree-shake away. Keep it that way, and keep
-  the low-level path (TextureAtlas + DomTexture + unpackRegions) fully usable on
-  its own — the shapes they do not cover are real (in-memory images, an atlas
-  that is not fetched from a URL). `loadAtlasAssets.ts` must not import a
-  skeleton reader of either kind: it is the seam both readers sit on, and its
-  users must not carry a parser they did not ask for.
-- **`src/binary.ts` is a separate package entry point** (`spine-html/binary`,
-  the `./binary` key in the `exports` map). It is the only file that imports
-  `SkeletonBinary`, and **`index.ts` must never re-export it** — that subpath is
-  the entire mechanism keeping the second parser out of a JSON-only consumer's
-  bundle, and one re-export line undoes it. `tests/package.spec.ts` holds that
-  now: it walks the import graph of a freshly built `dist/index.js` and fails if
-  anything reachable from it names `SkeletonBinary` or imports `./binary`. A
-  re-export costs bundle size, not behaviour, so this used to be a review item
-  and a walk to run by hand — it is neither any more.
+- **`loadModel` reads `rigc-compiled/*` and nothing else.** A Spine export
+  (`.json` not ending `.model.json`, `.skel`) is refused by name before anything
+  is fetched; a document whose `spec` `readModel` refuses is refused with
+  `readModel`'s sentence plus "build it with `rigc build`", and so is a
+  `rigc-compiled/1` document (no `pages`). The low-level path stays usable on
+  its own — `unpackRegions` over a page layout and a page-image map, then
+  `new DomRenderer(root, regions, pages)` with frames of the caller's — for
+  images that do not come from a URL. The `./binary` entry and the Spine
+  loaders (`loadAtlasAssets`, `loadSkeletonAssets`, `loadSkeletonJson`,
+  `loadSkeletonBinary`) were deleted in #60: nothing is left for them to load.
 
 ## Testing
 
@@ -365,7 +354,11 @@ README.md for architecture and measured numbers.
   the parity suite's 10× because the defects are only ~2.3× above them; that
   gap is what there is, and Linux is unmeasured. `ORACLE_DUMP=1` is the
   instrument, exactly as `PARITY_DUMP=1` is for parity.
-- **spine-webgl is a devDependency and must stay unreachable from `src/`.** The
+- **The Spine runtimes are devDependencies and must stay unreachable from
+  `src/`.** spine-core and spine-webgl serve the reference side only (the
+  oracle, the frame gate, the spineboy specs, the benchmark);
+  `tests/package.spec.ts` asserts nothing shipped names `@esotericsoftware/`.
+  For spine-webgl in particular: the
   reference code is `tests/oracleStage.ts` — the only file that names it — and
   the dependency runs one way: the harness imports from `src/`, never the
   reverse. One import written backwards would put a second full runtime into
@@ -375,70 +368,50 @@ README.md for architecture and measured numbers.
   `dependencies` nor `peerDependencies`. A column of the CI matrix installs the
   **matching generation** of it alongside its core, in one `bun add --no-save`
   so the pinned pair cannot resolve apart and strand a nested second spine-core
-  under spine-webgl. The reference's own seam is four lines, read off the live
-  object like `src/coreCompat.ts` does: 4.3 takes the alpha convention on
+  under spine-webgl (one column, 4.3, since #60). The reference's own seam is
+  four lines, read off the live object: 4.3 takes the alpha convention on
   `GLTexture` and everything before it on `drawSkeleton`. That branch covers
   4.0 and 4.1 unchanged — `SceneRenderer`, `ManagedWebGLRenderingContext`,
   `GLTexture`, `camera`, `batcher.getDrawCalls()` and
   `skeletonRenderer.premultipliedAlpha` are the same there as on 4.2 (checked
   against 4.0.31 and 4.1.56), so the new columns needed nothing added to it.
-- Rendering is tested through the demo; the **loading path is tested through
-  `tests/harness.html`** (a second vite build entry that exposes the library on
-  `window.spineHtmlHarness`). Blob-URL ownership has no visual signature, so
-  its oracle is the browser: a revoked object URL stops resolving. Keep test
-  hooks in the harness, out of the demo.
+- Rendering is tested through the demo (gallery builds, the model path) and
+  `tests/spine-stage.html` (spineboy, the same frame loop over spine-core
+  skeletons); the **loading path is tested through `tests/harness.html`** (a
+  build entry that exposes the library on `window.rigPlayHarness`; its loader
+  probes run on the packed gallery build, whose regions are cut and mint blobs —
+  a one-part-per-page build mints none). Blob-URL ownership has no visual
+  signature, so its oracle is the browser: a revoked object URL stops
+  resolving. Keep test hooks in the harness, out of the demo.
 - What npm ships is tested by **`tests/package.spec.ts`, node-side, no
-  browser**: it builds the library to a temp directory, assembles a throwaway
-  `node_modules/spine-html` there (real manifest, peer symlinked) and imports
-  both entry points *by package name* through node's own resolver — the only
-  way to exercise the `exports` map, which a relative import of `dist/` would
-  bypass entirely. It must **never** build into the repository's own `dist/`:
-  during a run `vite preview` is serving the demo out of `dist/` and
-  `build:lib` opens with `rm -rf dist`, so a lib build there would pull the
-  ground out from under every other spec in the same run. It also pins the
-  exact set of files that build emits, because an unreachable file has no other
-  signature: `src/main.ts` is the demo's entry, `tsconfig.build.json` compiled
-  all of `src/`, and so `dist/main.*` shipped in 0.4.1 and 0.5.0 without any
-  resolver, import walk or consumer ever noticing (#24). That pinned list is
-  also what keeps `src/coreOptional.ts` out of the package — see its bullet
-  above.
+  browser**: it runs `scripts/build-lib.mjs` into a temp directory, assembles a
+  throwaway `node_modules/spine-html` there (real manifest, nothing else
+  installed) and imports and typechecks the package *by package name* through
+  node's own resolver — the only way to exercise the `exports` map, which a
+  relative import of `dist/` would bypass entirely. It must **never** build into
+  the repository's own `dist/`: during a run `vite preview` is serving the demo
+  out of `dist/` and `build:lib` opens with `rm -rf dist`, so a lib build there
+  would pull the ground out from under every other spec in the same run. It
+  also pins the exact set of files that build emits (`index.js` + map, and a
+  `.d.ts` + map per module), because an unreachable file has no other
+  signature: `dist/main.*` shipped in 0.4.1 and 0.5.0 without any resolver,
+  import walk or consumer ever noticing (#24).
 - Keep `@playwright/test` pinned to a version whose browser revisions match the
   machine's `~/Library/Caches/ms-playwright` before bumping it.
-- **CI runs the whole suite once per supported spine-core minor**, each column
-  installing that minor over the lockfile's (`bun add --no-save` — writes
-  node_modules, leaves `package.json` and `bun.lock` alone, and the column
-  asserts both) and fetching that spine-runtimes branch's exports
-  (`SPINE_ASSETS_BRANCH`, which also stamps `public/spineboy` so a branch switch
-  refetches from clean rather than mixing two generations). Locally:
-  `bun add --no-save '@esotericsoftware/spine-core@4.2'
-  '@esotericsoftware/spine-webgl@4.2'`, then `SPINE_ASSETS_BRANCH=4.2
-  SPINE_CORE_MINOR=4.2 bun run test` — and afterwards `bun install
-  --frozen-lockfile` plus `SPINE_ASSETS_BRANCH=4.3 bun run fetch-assets` to put
-  4.3 back. **`SPINE_ASSETS_BRANCH` belongs on the test run itself**, not only
-  on a `fetch-assets` before it: the run's own build hook fetches again, and
-  without it the stamped 4.2 exports are wiped and refetched at the default 4.3
-  *while the run is starting*. The column then puts the 4.2 runtime in front of
-  4.3 data, which is the one thing it was not meant to measure, and the red it
-  produces looks like anything but an assets swap (the loading specs go first).
-  CI does not hit this because the matrix sets both variables at job level. The
-  matrix is **4.3, 4.2, 4.1, 4.0** since #53; all seven files the fetch script
-  wants exist on all four spine-runtimes branches (checked), so nothing there
-  skips. **Do not fork an expectation per version to make a column green.** The
-  spineboy export is structurally identical on all four branches (52 slots, 66
-  region + 12 mesh + 1 clipping attachment, the same 11 animations including
-  `portal`), so slot counts, mesh counts and animation names need no keying at
-  all; what genuinely moves is the *pose*, which is why the part-mask cell's
-  non-vacuity guard is a proportion of drawn content rather than a pixel count —
-  it alone clips with the asset's own polygon. An absent *feature* gets a
-  feature test, not a version key (`inverseClippingSupported` in
-  `tests/clipping.spec.ts`, the peer probes in `tests/package.spec.ts`). What
-  the branches *do* differ in is the export format's own key names, and that is
-  asserted rather than assumed: `generationProbe` reads whichever key this
-  branch's file uses for bone inheritance (`transform` before 4.2, `inherit`
-  from 4.2) and for mesh deform (`deform` on 4.0, `attachments` from 4.1), and
-  requires what the file declares to have arrived in the parsed `SkeletonData` —
-  one assertion, no version table, and the only thing that distinguishes a
-  column running the matching runtime from one quietly dropping half the data.
+- **CI runs the suite once, against spine-core 4.3** (`.github/workflows/ci.yml`
+  keeps its matrix shape with one column until #63 removes it and the peer
+  dependency). The four columns (4.3, 4.2, 4.1, 4.0) measured the generation
+  seam #60 deleted; the reference side reads 4.3 exports — the gallery builds
+  are Spine 4.3 data — so it runs the 4.3 runtime only. `SPINE_ASSETS_BRANCH`
+  still belongs on the test run itself, not only on a `fetch-assets` before it:
+  the run's own build hook fetches again.
+- **The fixtures are built, not committed**: `scripts/fetch-assets.sh` fetches
+  spineboy (the reference side) and builds rigc's gallery rigs from a pinned
+  rigc tag with the rig-c devDependency of the same version into
+  `public/rigs/<name>/` and `public/rigs/<name>-packed/` (`--pack`), each with
+  `skeleton.model.json`, `skeleton.json`, `skeleton.atlas` and its pages side by
+  side, stamped like spineboy so a version change rebuilds from clean. The
+  build needs bun (rig-c's CLI hands off to it) and network for the tag.
 
 ## Workflow
 

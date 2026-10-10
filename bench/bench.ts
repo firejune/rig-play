@@ -11,11 +11,14 @@ import {
   SceneRenderer,
 } from '@esotericsoftware/spine-webgl';
 
-/** `Physics` is absent from 4.1's and 4.0's root entry — see `advance()`. */
-import { advanceSkeleton } from '../src/coreOptional';
-import { DomTexture, type RegionImage, unpackRegions } from '../src/DomTexture';
-import { loadSkeletonJson } from '../src/loadSkeletonAssets';
-import { type MeshBackend, SpineHtmlRenderer } from '../src/SpineHtmlRenderer';
+import type { MeshBackend } from '../src/DomRenderer';
+import type { RegionImage } from '../src/DomTexture';
+// The DOM side draws spine-core skeletons through the package's renderer: the
+// skeleton is read into the frame record the renderer takes by the test
+// suite's reader (tests/skeletonFrame.ts), so both panes pose the same export
+// with the same runtime and only the drawing differs.
+import { advanceSkeleton } from '../tests/skeletonFrame';
+import { DomTexture, loadSkeletonJson, SkeletonRenderer, unpackAtlas } from '../tests/spineDom';
 
 /**
  * The side-by-side benchmark page — an instrument for a person, not a test.
@@ -376,12 +379,12 @@ async function domSide(stageEl: HTMLDivElement): Promise<Side> {
     page.setTexture(new DomTexture(image));
     pageImages.set(page.name, image);
   }
-  const regionImages: Map<string, RegionImage> = await unpackRegions(atlas, pageImages);
-  const data = await loadSkeletonJson({ atlas }, skeletonUrl());
+  const regionImages: Map<string, RegionImage> = await unpackAtlas(atlas, pageImages);
+  const data = await loadSkeletonJson(atlas, skeletonUrl());
 
   const players: Player[] = [];
   const roots: HTMLDivElement[] = [];
-  const renderers: SpineHtmlRenderer[] = [];
+  const renderers: SkeletonRenderer[] = [];
   /**
    * The clip boxes — one per rect, mirroring the reference exactly: one box
    * over the pane when it shares a canvas, one box per cell when it does not.
@@ -402,7 +405,7 @@ async function domSide(stageEl: HTMLDivElement): Promise<Side> {
     const root = document.createElement('div');
     root.className = 'skeleton-root';
     clipBoxes[boxIndex].append(root);
-    const renderer = new SpineHtmlRenderer(root, regionImages);
+    const renderer = new SkeletonRenderer(root, regionImages);
     renderer.meshBackend = backend;
     players.push(makePlayer(data, i));
     roots.push(root);
@@ -448,7 +451,7 @@ async function domSide(stageEl: HTMLDivElement): Promise<Side> {
   return {
     frame(delta: number): number {
       const updateMs = advance(players, delta);
-      for (let i = 0; i < renderers.length; i++) renderers[i].render(players[i].skeleton);
+      for (let i = 0; i < renderers.length; i++) renderers[i].renderSkeleton(players[i].skeleton);
       return updateMs;
     },
     stats(fps, updateMs, renderMs, frames): string {
@@ -538,7 +541,7 @@ async function referenceSide(stageEl: HTMLDivElement): Promise<Side> {
         page.setTexture(makeReferenceTexture(renderer, context, image, page.pma));
         pma = page.pma;
       }
-      const data = await loadSkeletonJson({ atlas }, skeletonUrl());
+      const data = await loadSkeletonJson(atlas, skeletonUrl());
       return { context, renderer, data, pma };
     } catch {
       // The browser's context cap, most likely. Count it and keep the page
@@ -550,7 +553,7 @@ async function referenceSide(stageEl: HTMLDivElement): Promise<Side> {
 
   /** A skeleton that poses fine and never draws — keeps the arrays parallel. */
   async function orphanData(): Promise<SkeletonData> {
-    return loadSkeletonJson({ atlas: new TextureAtlas(atlasText) }, skeletonUrl());
+    return loadSkeletonJson(new TextureAtlas(atlasText), skeletonUrl());
   }
 
   /**

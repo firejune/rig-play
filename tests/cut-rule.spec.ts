@@ -67,7 +67,7 @@ async function stableShot(page: Page): Promise<Buffer> {
 
 async function capture(page: Page, pageScale: number, rule: 'edge' | 'fractional'): Promise<Buffer> {
   const info = await page.evaluate(
-    (opts) => window.spineHtmlHarness.cutRuleStage(opts),
+    (opts) => window.rigPlayHarness.cutRuleStage(opts),
     { ...POSE, pageScale, rule },
   );
   // A clipped or empty stage would compare two pictures of nothing.
@@ -168,7 +168,7 @@ test('the edge-rounded cut stays closer to the 1:1 page than fractional sampling
   page,
 }, testInfo) => {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
   // Thrown away: it makes the reference below not the document's first raster.
   await capture(page, 1, 'edge');
 

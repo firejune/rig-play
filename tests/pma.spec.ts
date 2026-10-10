@@ -127,7 +127,7 @@ async function capture(
   },
 ): Promise<Buffer> {
   const info = await page.evaluate(
-    (opts) => window.spineHtmlHarness.pmaStage(opts),
+    (opts) => window.rigPlayHarness.pmaStage(opts),
     { ...POSE, ...options },
   );
   // A clipped or empty stage would compare two pictures of nothing, and a flag
@@ -179,7 +179,7 @@ function boundedLine(bands: ReadonlyArray<{
 
 async function openHarness(page: Page): Promise<void> {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 }
 
 /** Every tier that reads a page, and the page scales they must compose with. */
@@ -271,7 +271,7 @@ test('the premultiplied fixture is exact, and the derivation does not re-premult
   page,
 }, testInfo) => {
   await openHarness(page);
-  const result = await page.evaluate(() => window.spineHtmlHarness.pmaFixtureProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.pmaFixtureProbe());
   console.log(
     `[pma] ${testInfo.project.name} fixture: ${result.pngBytes} B PNG\n` +
       `      control    ${controlLine(result.control)}\n` +
@@ -346,7 +346,7 @@ test('rigid cuts from a premultiplied page decode to straight alpha', async ({
   page,
 }, testInfo) => {
   await openHarness(page);
-  const result = await page.evaluate(() => window.spineHtmlHarness.pmaCutProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.pmaCutProbe());
   console.log(
     `[pma] ${testInfo.project.name} cuts\n` +
       `      control  ${controlLine(result.control)}\n` +
@@ -406,7 +406,7 @@ test('one straight-alpha derivation per page image, none without the flag', asyn
   page,
 }, testInfo) => {
   await openHarness(page);
-  const result = await page.evaluate(() => window.spineHtmlHarness.pmaDerivationProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.pmaDerivationProbe());
   console.log(
     `[pma] ${testInfo.project.name} derivations: straight=${result.straightDerivations} ` +
       `pma=${result.pmaDerivations}, backends=${result.backendsActive.join(',')}, ` +

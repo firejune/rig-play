@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
-import { UNTYPED_CORE } from '../playwright.config';
 
 /**
  * What npm ships, checked the way a consumer meets it — node-side, no browser.
@@ -33,38 +32,20 @@ import { UNTYPED_CORE } from '../playwright.config';
  * `build:lib` starts with `rm -rf dist` — a lib build here would pull the
  * ground out from under every other spec in the same run. So the library is
  * built to a temp directory instead, and assembled there into a throwaway
- * installed-package layout (`node_modules/spine-html` + the peer), which is
+ * installed-package layout (`node_modules/spine-html`, alone), which is
  * also the only way to exercise the `exports` map: resolution by *package
  * name* is the thing under test, and a relative import of `../dist/index.js`
  * would not touch `exports` at all.
  *
- * ## Two assertions the peer can take away, and how that is reported
+ * ## Self-contained, by construction and by test
  *
- * Importing `spine-html` by package name in node pulls in the peer, and
- * typechecking a consumer of it with `skipLibCheck: false` typechecks the
- * peer's own `.d.ts`. Both therefore fail on a peer that node or `nodenext`
- * cannot read — which two supported spine-core minors are, for reasons that are
- * upstream's (issue #16 there) and cannot be fixed from here:
- *
- * - **spine-core 4.0** ships extensionless relative specifiers *and* no
- *   `"type": "module"`, so `import('@esotericsoftware/spine-core')` fails in
- *   plain node. Its `.d.ts` typechecks clean under nodenext, though —
- *   TypeScript reads a package without `"type"` as CommonJS, where an
- *   extensionless specifier is legal.
- * - **spine-core 4.1** is the mirror image: it is a module with `.js` on every
- *   specifier but one, so node imports it fine, while that one —
- *   `dist/SkeletonData.d.ts` importing `"./Animation"` — is a TS2835 under
- *   nodenext, inside the peer, with `skipLibCheck` off.
- *
- * Neither is a fact about *this* package, and neither is keyed on a version.
- * `beforeAll` measures the installed peer **by itself** — one child node
- * process that imports only the peer, one tsc run over a consumer that imports
- * only the peer — and the two dependent tests skip with that reason when the
- * peer alone already fails. Everything that does not need to load or typecheck
- * the peer (the `exports` map's shape, the emitted file set, the import walk,
- * the reachability of the binary reader, "nothing shipped names spine-webgl")
- * runs in every column regardless, and no assertion is relaxed anywhere: a
- * probe that passes leaves its test exactly as strict as it has always been.
+ * The package poses through `rig-c/core`, whose entry is TypeScript source — a
+ * devDependency that no consumer has installed and no node would load from
+ * `node_modules` if they had. So the build (`scripts/build-lib.mjs`) bundles
+ * that closure into one `index.js`, and the sandbox below installs the built
+ * package and **nothing else**: no rig-c, no spine-core. Every assertion that
+ * imports or typechecks the package by name is therefore also the assertion
+ * that it needs nothing beside it.
  */
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -74,18 +55,6 @@ const tscBin = resolve(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc');
 let sandbox = '';
 /** The built package's `dist` inside that sandbox. */
 let pkgDist = '';
-/**
- * Whether the *installed peer, on its own* can be imported by plain node and
- * typechecked by a `nodenext` consumer — measured in `beforeAll`, never
- * inferred from a version. See the header: what these gate is the two
- * assertions that cannot run without them, and nothing else.
- */
-let peerImportsInNode = true;
-let peerTypechecksUnderNodeNext = true;
-/** What the failing probe said, quoted into the skip reason. */
-let peerImportError = '';
-let peerTypecheckError = '';
-
 /**
  * `process.execPath` is the node that runs the Playwright worker — real node
  * even when the suite was launched through `bunx`, which only resolves the
@@ -127,12 +96,7 @@ const MODULE_MODES = {
 } as const;
 type ModuleMode = keyof typeof MODULE_MODES;
 
-/**
- * Writes `<name>.ts` plus a tsconfig for it in the sandbox and returns the path
- * of the tsconfig. One writer for the shipped-types check and for the
- * peer-alone probe that decides whether the `nodenext` half of it can run, so
- * the probe measures the peer under exactly the settings the check uses.
- */
+/** Writes `<name>.ts` plus a tsconfig for it in the sandbox and returns the path of the tsconfig. */
 function writeConsumer(name: string, source: string, mode: ModuleMode): string {
   writeFileSync(resolve(sandbox, `${name}.ts`), source);
   const config = resolve(sandbox, `tsconfig.${name}.${mode}.json`);
@@ -169,45 +133,14 @@ test.beforeAll(() => {
   pkgDist = resolve(pkgRoot, 'dist');
   mkdirSync(pkgRoot, { recursive: true });
 
-  // One build, shared by every assertion in this file.
-  //
-  // `--noCheck` outside the typed column: this spec is about what npm *ships*,
-  // and under an older spine-core a type check of `src/` reports the generation
-  // difference `src/coreCompat.ts` exists to absorb — which would take the
-  // whole file down on the one thing it is not asking about. It still emits
-  // everything, declarations included, and the emit is the same emit: measured
-  // on spine-core 4.2.120, `--noCheck` produced files byte-identical to the
-  // fully-checked 4.3 build. So every assertion below — the `exports` map, the
-  // import walk, the emitted file set, and the consumer typecheck against the
-  // *shipped* `.d.ts` — is a real one in every column. The typed column is
-  // unchanged and still fails here on a type error.
-  const built = node(
-    [
-      tscBin,
-      '-p',
-      resolve(repoRoot, 'tsconfig.build.json'),
-      '--outDir',
-      pkgDist,
-      ...(UNTYPED_CORE ? ['--noCheck'] : []),
-    ],
-    repoRoot,
-  );
-  expect(built.status, `tsc -p tsconfig.build.json failed:\n${built.stdout}${built.stderr}`).toBe(0);
+  // One build, shared by every assertion in this file — the same script
+  // `bun run build:lib` runs, into the sandbox instead of `dist/`.
+  const built = node([resolve(repoRoot, 'scripts', 'build-lib.mjs'), pkgDist], repoRoot);
+  expect(built.status, `scripts/build-lib.mjs failed:\n${built.stdout}${built.stderr}`).toBe(0);
 
   // The repository's real manifest, so the `exports` map under test is the
   // shipped one rather than a copy that can drift from it.
   cpSync(resolve(repoRoot, 'package.json'), resolve(pkgRoot, 'package.json'));
-
-  // The peer, made resolvable from the installed package. 'junction' is
-  // ignored on POSIX and is what lets this work on Windows without elevation.
-  const scope = resolve(sandbox, 'node_modules', '@esotericsoftware');
-  mkdirSync(scope, { recursive: true });
-  const peer = resolve(repoRoot, 'node_modules', '@esotericsoftware', 'spine-core');
-  try {
-    symlinkSync(peer, resolve(scope, 'spine-core'), 'junction');
-  } catch {
-    cpSync(peer, resolve(scope, 'spine-core'), { recursive: true });
-  }
 
   // Makes the sandbox an ESM package of its own, so nothing above the temp
   // directory can decide how these probes are parsed.
@@ -216,38 +149,8 @@ test.beforeAll(() => {
     `${JSON.stringify({ name: 'spine-html-consumer', private: true, type: 'module' }, null, 2)}\n`,
   );
 
-  // --- what the installed peer can do, by itself -----------------------------
-  //
-  // See the header. These two probes name *only* the peer, so a failure is
-  // upstream's and provably not this package's: the same sandbox, the same
-  // node, the same tsc settings the dependent checks use, with spine-html
-  // taken out of the picture.
-  const peerImport = probe(
-    'probe-peer.mjs',
-    "await import('@esotericsoftware/spine-core');\nconsole.log('ok');\n",
-  );
-  peerImportsInNode = peerImport.status === 0;
-  peerImportError = `${peerImport.stdout}${peerImport.stderr}`.trim().split('\n')[0] ?? '';
-
-  const peerTypecheck = node(
-    [
-      tscBin,
-      '--noEmit',
-      '-p',
-      writeConsumer(
-        'peer-consumer',
-        [
-          "import type { Skeleton } from '@esotericsoftware/spine-core';",
-          'export type Peer = Skeleton;',
-          '',
-        ].join('\n'),
-        'nodenext',
-      ),
-    ],
-    sandbox,
-  );
-  peerTypechecksUnderNodeNext = peerTypecheck.status === 0;
-  peerTypecheckError = `${peerTypecheck.stdout}${peerTypecheck.stderr}`.trim().split('\n')[0] ?? '';
+  // Nothing but the package is installed: the claim every import below rests on.
+  expect(readdirSync(resolve(sandbox, 'node_modules'))).toEqual(['spine-html']);
 });
 
 test.afterAll(() => {
@@ -255,39 +158,28 @@ test.afterAll(() => {
 });
 
 test('the package entry resolves by name in node and exposes its public API', () => {
-  test.skip(
-    !peerImportsInNode,
-    `upstream: the installed spine-core cannot be imported by plain node — ${peerImportError}`,
-  );
   const run = probe(
     'probe-index.mjs',
     "const m = await import('spine-html');\nconsole.log(JSON.stringify(Object.keys(m).sort()));\n",
   );
   expect(run.status, `import('spine-html') failed:\n${run.stderr}`).toBe(0);
-  // Exhaustive on purpose: what the root entry exports is load-bearing, since
-  // keeping the binary reader out of it is the whole point of the subpath.
+  // Exhaustive on purpose: what the root entry exports is the package's API.
   expect(JSON.parse(run.stdout)).toEqual([
-    'DomTexture',
-    'SpineHtmlRenderer',
-    'loadAtlasAssets',
-    'loadSkeletonAssets',
-    'loadSkeletonJson',
+    'DomRenderer',
+    'RigPlayer',
+    'loadModel',
     'revokeRegions',
     'unpackRegions',
   ]);
 });
 
-test('the binary entry resolves by name in node and exposes loadSkeletonBinary', () => {
-  test.skip(
-    !peerImportsInNode,
-    `upstream: the installed spine-core cannot be imported by plain node — ${peerImportError}`,
-  );
+test('the binary subpath is gone: the package reads compiled models, not Spine exports', () => {
   const run = probe(
     'probe-binary.mjs',
-    "const m = await import('spine-html/binary');\nconsole.log(JSON.stringify(Object.keys(m).sort()));\n",
+    "try {\n  await import('spine-html/binary');\n  console.log(JSON.stringify({ code: 'RESOLVED' }));\n} catch (error) {\n  console.log(JSON.stringify({ code: error.code }));\n}\n",
   );
-  expect(run.status, `import('spine-html/binary') failed:\n${run.stderr}`).toBe(0);
-  expect(JSON.parse(run.stdout)).toEqual(['loadSkeletonBinary']);
+  expect(run.status, `probe crashed:\n${run.stderr}`).toBe(0);
+  expect(JSON.parse(run.stdout).code).toBe('ERR_PACKAGE_PATH_NOT_EXPORTED');
 });
 
 test('an unlisted subpath is refused by the exports map', () => {
@@ -295,26 +187,19 @@ test('an unlisted subpath is refused by the exports map', () => {
   // going through, not a bare directory walk that would resolve anything.
   const run = probe(
     'probe-subpath.mjs',
-    "try {\n  await import('spine-html/dist/DomTexture.js');\n  console.log(JSON.stringify({ code: 'RESOLVED' }));\n} catch (error) {\n  console.log(JSON.stringify({ code: error.code }));\n}\n",
+    "try {\n  await import('spine-html/dist/index.js');\n  console.log(JSON.stringify({ code: 'RESOLVED' }));\n} catch (error) {\n  console.log(JSON.stringify({ code: error.code }));\n}\n",
   );
   expect(run.status, `probe crashed:\n${run.stderr}`).toBe(0);
   expect(JSON.parse(run.stdout).code).toBe('ERR_PACKAGE_PATH_NOT_EXPORTED');
 });
 
 /**
- * The modules the library build is supposed to emit — the whole of `dist/`,
- * which is the whole of what `files` ships apart from NOTICE.md.
+ * What the library build is supposed to emit — the whole of `dist/`, which is
+ * the whole of what `files` ships apart from NOTICE.md: one bundled module
+ * (with its map), and one declaration file (with its map) per source module.
  */
-const EMITTED_MODULES = [
-  'DomTexture',
-  'MeshGlBlitter',
-  'SpineHtmlRenderer',
-  'binary',
-  'coreCompat',
-  'index',
-  'loadAtlasAssets',
-  'loadSkeletonAssets',
-];
+const EMITTED_BUNDLE = ['index.js', 'index.js.map'];
+const DECLARED_MODULES = ['DomRenderer', 'DomTexture', 'MeshGlBlitter', 'index', 'loadModel', 'player', 'posedFrame'];
 
 test('the library build emits those modules and nothing else', () => {
   /**
@@ -340,25 +225,25 @@ test('the library build emits those modules and nothing else', () => {
   expect(emitted.filter((file) => /(^|\/)main\./.test(file))).toEqual([]);
 
   // The payload, as an explicit set: the next file to wander in fails here
-  // instead of shipping unnoticed for two more releases.
-  expect(emitted.filter((file) => file.endsWith('.js'))).toEqual(
-    EMITTED_MODULES.map((name) => `${name}.js`).sort(),
-  );
-
-  // And the rest of it — types and both map kinds accompany every module, so
-  // this also pins `declaration` / `declarationMap` / `sourceMap` staying on.
+  // instead of shipping unnoticed for two more releases. One module — the
+  // bundle — and types plus their maps for every source module, which also
+  // pins `declaration` / `declarationMap` / `sourcemap` staying on.
+  expect(emitted.filter((file) => file.endsWith('.js'))).toEqual(['index.js']);
   expect(emitted).toEqual(
-    EMITTED_MODULES.flatMap((name) => [
-      `${name}.d.ts`,
-      `${name}.d.ts.map`,
-      `${name}.js`,
-      `${name}.js.map`,
-    ]).sort(),
+    [...EMITTED_BUNDLE, ...DECLARED_MODULES.flatMap((name) => [`${name}.d.ts`, `${name}.d.ts.map`])].sort(),
   );
 });
 
-test('nothing the package ships names the pixel oracle\'s reference runtime', () => {
+test('nothing the package ships names a Spine runtime', () => {
   /**
+   * The package reads no Spine runtime: it poses through `rig-c/core`. But
+   * `@esotericsoftware/spine-core` and `spine-webgl` are both still installed
+   * here — the oracle, the frame gate and the renderer specs read Spine
+   * exports — and either would ride into the bundle on one import written in
+   * `src/` by mistake, with no other signature: vite would inline it into
+   * `index.js` and the emitted file set would not change. So the assertion is
+   * on the shipped bytes, every module and every `.d.ts`, comments stripped.
+   *
    * `@esotericsoftware/spine-webgl` is a **development** dependency: the pixel
    * oracle draws the same skeleton with it and diffs the two pictures
    * (tests/oracle.spec.ts), and the benchmark page puts them side by side. A
@@ -378,15 +263,22 @@ test('nothing the package ships names the pixel oracle\'s reference runtime', ()
     .map((entry) => String(entry).split(sep).join('/'))
     .filter((file) => file.endsWith('.js') || file.endsWith('.d.ts'));
   const naming = emitted.filter((file) =>
-    /spine-webgl/.test(stripComments(readFileSync(resolve(pkgDist, file), 'utf8'))),
+    /@esotericsoftware\//.test(stripComments(readFileSync(resolve(pkgDist, file), 'utf8'))),
   );
   expect(naming).toEqual([]);
+  // A class the runtime defines and nothing here does, in case a bundler ever
+  // inlined the code without its package name.
+  const runtimeCode = emitted.filter((file) =>
+    /\bSkeletonJson\b|\bAnimationStateData\b/.test(stripComments(readFileSync(resolve(pkgDist, file), 'utf8'))),
+  );
+  expect(runtimeCode).toEqual([]);
 
   // Control: it is installed and resolvable here, so the assertion above means
   // "kept out of the package", not "absent from the machine".
   expect(existsSync(resolve(repoRoot, 'node_modules', '@esotericsoftware', 'spine-webgl'))).toBe(
     true,
   );
+  expect(existsSync(resolve(repoRoot, 'node_modules', '@esotericsoftware', 'spine-core'))).toBe(true);
 
   // And it is declared in neither of the two fields a consumer installs from.
   const manifest = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8'));
@@ -478,53 +370,26 @@ function walkGraph(entry: string): Map<string, GraphNode> {
   return seen;
 }
 
-test('nothing reachable from the root entry carries the binary reader', () => {
-  // `src/binary.ts` is a separate entry point so that a JSON-only consumer
-  // never bundles SkeletonBinary, a second parser. One re-export line in
-  // index.ts silently undoes that — it costs bundle size, not behaviour, so
-  // nothing else in the suite would notice. This is the machine that does.
+test('the bundle imports nothing: rig-c/core is inside it, and no node built-in is reached', () => {
+  // rig-c's `./core` entry is TypeScript source in a devDependency — a
+  // consumer has neither. So the bundle must carry the core's closure rather
+  // than import it, and must import nothing else either: a bare specifier left
+  // in `index.js` is a package the consumer was never told to install.
   const graph = walkGraph(resolve(pkgDist, 'index.js'));
   const name = (file: string) => relative(pkgDist, file);
-
-  // The separation itself, first — so a regression reds out on the assertion
-  // that names it rather than on one of the guards below it.
-  expect(
-    [...graph.values()]
-      .filter(
-        (n) =>
-          /SkeletonBinary/.test(n.code) ||
-          n.relative.some((r) => /(^|\/)binary\.js$/.test(r.spec)),
-      )
-      .map((n) => name(n.file)),
-  ).toEqual([]);
-  expect([...graph.keys()].map(name)).not.toContain('binary.js');
-
-  // Control: the parser does exist, behind the subpath — so the assertions
-  // above mean "kept out", not "not built".
-  expect(existsSync(resolve(pkgDist, 'binary.js'))).toBe(true);
-  expect(stripComments(readFileSync(resolve(pkgDist, 'binary.js'), 'utf8'))).toContain(
-    'SkeletonBinary',
-  );
-
-  // Every relative specifier is one node can actually load. This is issue #16
-  // itself, caught statically rather than through a spawned import.
-  expect(
-    [...graph.values()].flatMap((n) =>
-      n.relative.filter((r) => !r.target).map((r) => `${name(n.file)} -> ${r.spec}`),
-    ),
-  ).toEqual([]);
-
-  // Non-vacuity: the walk really traversed the package, it did not stop at
-  // the entry and declare victory over an empty graph.
-  expect([...graph.keys()].map(name).sort()).toEqual([
-    'DomTexture.js',
-    'MeshGlBlitter.js',
-    'SpineHtmlRenderer.js',
-    'coreCompat.js',
-    'index.js',
-    'loadAtlasAssets.js',
-    'loadSkeletonAssets.js',
-  ]);
+  expect([...graph.keys()].map(name)).toEqual(['index.js']);
+  const code = (graph.values().next().value as GraphNode).code;
+  expect(specifiers(code)).toEqual([]);
+  expect(/\bimport\s*\(/.test(code)).toBe(false);
+  // rig-c states its core links no `node:` module; a browser bundle is held to it.
+  expect(code).not.toMatch(/['"]node:/);
+  // And the core really is inside: `openTrack` is what the player steps.
+  expect(code).toContain('function openTrack');
+  // The shipped types name nothing a consumer does not have — the adapter's
+  // rig-c types are `@internal` and stripped (tsconfig.build.json).
+  const declarations = readdirSync(pkgDist).filter((file) => file.endsWith('.d.ts'));
+  const namingRigc = declarations.filter((file) => /rig-c/.test(stripComments(readFileSync(resolve(pkgDist, file), 'utf8'))));
+  expect(namingRigc).toEqual([]);
 });
 
 /**
@@ -532,9 +397,11 @@ test('nothing reachable from the root entry carries the binary reader', () => {
  * offers, reached by package name through the shipped `.d.ts`.
  */
 const CONSUMER_SOURCE = [
-  "import { DomTexture, loadAtlasAssets, loadSkeletonAssets, loadSkeletonJson, revokeRegions, SpineHtmlRenderer, unpackRegions } from 'spine-html';",
-  "import { loadSkeletonBinary } from 'spine-html/binary';",
-  'export const surface = [SpineHtmlRenderer, DomTexture, unpackRegions, revokeRegions, loadAtlasAssets, loadSkeletonAssets, loadSkeletonJson, loadSkeletonBinary];',
+  "import { DomRenderer, loadModel, revokeRegions, RigPlayer, unpackRegions } from 'spine-html';",
+  "import type { ModelAssets, PosedFrame, PosedSlot, RigPlayerOptions } from 'spine-html';",
+  'export const surface = [DomRenderer, RigPlayer, loadModel, unpackRegions, revokeRegions];',
+  'export function draw(renderer: DomRenderer, frame: PosedFrame): PosedSlot[] { renderer.render(frame); return frame.order; }',
+  'export function play(root: HTMLElement, assets: ModelAssets, options: RigPlayerOptions): RigPlayer { const p = new RigPlayer(root, assets, options); p.play(assets.animations[0].name, { loop: true }); return p; }',
   '',
 ].join('\n');
 
@@ -549,17 +416,7 @@ test('the emitted types resolve under bundler', async () => {
 test('the emitted types resolve under nodenext', async () => {
   // The .js in the source specifiers has to survive into the .d.ts too: a
   // node16/nodenext consumer resolves `./DomTexture.js` to `./DomTexture.d.ts`
-  // and rejects the extensionless form with TS2835. That is this package's
-  // half. The peer's half is not ours — see the header — so this runs only
-  // where a consumer of the peer *alone* already typechecks, and says so when
-  // it does not. The two modes are separate tests rather than a loop because
-  // only one of them can be taken away by the peer, and a suite should report
-  // "one mode was not checked, because of the peer" rather than either
-  // silently checking less or reddening on someone else's package.
-  test.skip(
-    !peerTypechecksUnderNodeNext,
-    `upstream: the installed spine-core's own .d.ts does not typecheck under nodenext — ${peerTypecheckError}`,
-  );
+  // and rejects the extensionless form with TS2835.
   const result = await nodeAsync(
     [tscBin, '--noEmit', '-p', writeConsumer('consumer', CONSUMER_SOURCE, 'nodenext')],
     sandbox,
