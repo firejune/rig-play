@@ -493,6 +493,150 @@ on-device (Chromium, dpr 2, stage under `scale(0.25)`, ~2.2 M CSS px on screen):
 | 92 meshes | `devicePixelRatio` (2) | 141.1 Mpx | 36–39 |
 | 92 meshes | `dpr × zoom` (0.5) | 9.1 Mpx | 60–61 |
 
+## Coming from spine-html 0.8
+
+This is not a drop-in upgrade. 0.8 drew a Spine export (`.json` or `.skel`, plus its
+`.atlas`) that `@esotericsoftware/spine-core` parsed and posed: the caller built the
+`Skeleton` and the `AnimationState`, advanced them each frame, and handed the skeleton to
+`renderer.render(skeleton)`. 1.0 loads one file, the `skeleton.model.json` that
+`rigc build` writes, poses it through `rig-c/core` (bundled into the package, with no peer
+dependency), and `RigPlayer` owns the track, so the caller's frame is `player.frame(dt)`.
+A Spine export is refused by name before anything is fetched: the data has to be a rigc
+build, and this package declares no loader for anything else.
+
+What did not move: a positioned root element is still the rig's origin (Y up) with its
+layout and scaling left to the caller, the DOM tier keeps its knobs under a new class
+name, and unloading is still elements first, bitmaps second.
+
+### 0.8 → 1.0
+
+| 0.8.0 (`spine-html`) | 1.0.0 (`rig-play`) | Note |
+| --- | --- | --- |
+| `npm i spine-html @esotericsoftware/spine-core` | `npm i rig-play`, and `npm i -D rig-c` for the build tool | 0.8 declared spine-core as a peer dependency (`>=4.0.0 <4.4.0`). 1.0.0 declares no dependencies and no peer dependencies. |
+| `loadSkeletonAssets(options)` | `loadModel(options)` | One URL instead of two. The `.atlas` and `skeleton.json` a build writes beside the document are not fetched. |
+| `LoadSkeletonAssetsOptions.atlasUrl`, `skeletonUrl` | `LoadModelOptions.modelUrl` | |
+| `resolvePage(pageName, atlasUrl)` | `resolvePage(pageName, modelUrl)` | The default now resolves a page name against the model URL's directory. |
+| `crossOrigin`, `fetch` | `crossOrigin`, `fetch` | Unchanged. |
+| `scale` (`LoadSkeletonAssetsOptions`, `LoadSkeletonJsonOptions`) | none | See below. |
+| `SkeletonAssets` | `ModelAssets` | |
+| `SkeletonAssets.data` | `ModelAssets.document`, `animations`, `skins`, `stage`, `spec` | `document` is opaque (`ModelDocument`); the player poses it. What a caller used to read off the skeleton data is stated as `animations` (name and duration), `skins` (names) and `stage` (the stage the build declared, or null). |
+| `SkeletonAssets.atlas` | `ModelAssets.pageImages` | The page images, keyed by page name. There is no atlas object; where each region sits is in the document's `pages` section. |
+| `SkeletonAssets.regionImages` | `ModelAssets.regionImages` | Same `Map<string, RegionImage>`. |
+| `SkeletonAssets.dispose()`, `AtlasAssets.dispose()` | `ModelAssets.dispose()` | Same contract: frees the blob URLs the load minted, idempotent, called after the players are disposed. |
+| `loadAtlasAssets` + `loadSkeletonJson` (one atlas, several skeletons) | none | One `loadModel` backs any number of `RigPlayer`s of the same rig. Two rigs are two loads, and each cuts its own regions. See below. |
+| `loadSkeletonBinary` from `spine-html/binary` | none | 1.0.0 has one entry point. A `.skel` URL is refused by name. |
+| `unpackRegions(atlas, pageImages)` | `unpackRegions(pages, pageImages)` | The first argument is the document's `pages` section (`readonly PageLayout[]`) instead of a `TextureAtlas`. |
+| `revokeRegions(images)` | `revokeRegions(images)` | Unchanged. |
+| `RegionImage` | `RegionImage` | Unchanged (`url`, `width`, `height`, in atlas units). |
+| `DomTexture` | none | Not exported; there is no atlas page to attach a texture to. |
+| `new Skeleton(assets.data)` and `new AnimationState(new AnimationStateData(assets.data))` | `new RigPlayer(root, assets, options?)` | The player holds the pose and the track. |
+| `state.setAnimation(0, 'walk', true)` | `player.play('walk', { loop: true })` | `loop` defaults to true. `play` opens the animation at its first pose with the physics reset there. `player.current` names what is playing. |
+| `state.update(delta)`, `state.apply(skeleton)`, `skeleton.update(delta)`, `skeleton.updateWorldTransform(Physics.update)`, `renderer.render(skeleton)` | `player.frame(dt)` | Or `player.advance(dt)` then `player.draw()`, to time the two apart. |
+| time scale (the caller's own, on the spine-core side) | `player.timeScale` | Multiplies every step. 0 holds the pose without re-posing it; a negative value is not stepped. |
+| holding a pose (the caller stopped advancing) | `player.pause()`, `player.resume()` | `frame` keeps drawing the held pose. |
+| moving to a time (the caller's own, on the spine-core side) | `player.seek(time)`, `RigPlayerOptions.seekStep`, `player.time` | A seek reopens the animation and steps forward in `seekStep` increments (1/60 s by default). Events and completes crossed on the way are not fired. |
+| events (the caller's own listener on the spine-core side) | `player.on('event', listener)`, `player.on('complete', listener)` | `'event'` hands a `RigEvent` (`name`, `time`, `int`, `float`, `string`); `'complete'` hands `{ animation }`. `on` returns a function that removes the listener. |
+| skin (set by the caller on its `Skeleton`) | `RigPlayerOptions.skin` | A constructor option. The names are in `ModelAssets.skins`. Without it the rig is posed with no skin set. |
+| `SpineHtmlRenderer` | `DomRenderer`, reached as `player.renderer` | In `mode: 'dom'`, the default. `mode: 'canvas'` is new and makes `player.renderer` a `CanvasRenderer`. |
+| `new SpineHtmlRenderer(root, regionImages)` | `new DomRenderer(root, regionImages, pages?)` | Only for drawing your own frames; `RigPlayer` constructs its renderer. `pages` is the page-image map the mesh tier samples (`ModelAssets.pageImages`). A hand-built `regionImages` map is still accepted. |
+| `renderer.render(skeleton)` | `renderer.render(frame)` | Takes a `PosedFrame`, not a skeleton. `player.posedFrame()` returns the one the player would draw. |
+| `renderer.pixelRatio` | `player.renderer.pixelRatio` | On both renderers. Carried over when `player.mode` changes. |
+| `renderer.syncPixelRatio()` | `DomRenderer.syncPixelRatio()` | DOM mode only. `player.renderer` is typed as either renderer, so narrow it (`instanceof DomRenderer`) before calling. |
+| `renderer.meshBackingPixels` | `DomRenderer.meshBackingPixels` | DOM mode only. |
+| `renderer.meshBackend`, `meshBackendActive`, type `MeshBackend` | `DomRenderer.meshBackend`, `meshBackendActive`, type `MeshBackend` | Same values (`'canvas2d'` default, `'webgl'`). Also settable up front as `RigPlayerOptions.meshBackend`. |
+| `renderer.triangleExpand` | `DomRenderer.triangleExpand` | Same default (0.5). |
+| `renderer.clipping` | `player.renderer.clipping` | On both renderers. Carried over when `player.mode` changes. |
+| `clipCount`, `clipSkipCount`, `clipWriteCount` | same names on `DomRenderer` | `clipSkipCount` counts less than it did: a second clip met while one is in force, and a clip on an inactive bone, no longer reach the frame, so they are not counted. |
+| `meshCount`, `meshReuseCount`, `canvasReallocCount`, `triangleCount` | same names on `DomRenderer` | |
+| tint: skeleton × slot × attachment colour | `player.color` × slot × attachment | `player.color` is `[r, g, b, a]` and takes the place of the skeleton's colour. The product arrives as `tint` on each `PosedSlot`. |
+| dark (two-colour) tint: unsupported | `DomRenderer`: unsupported. `CanvasRenderer`: drawn | Carried as `dark` on a `PosedSlot`. The canvas mode's canvas2d fallback draws alpha only. |
+| `renderer.dispose()` | `player.dispose()` | Then `assets.dispose()`, as before. `DomRenderer.dispose()` and `CanvasRenderer.dispose()` exist for a renderer you constructed yourself. |
+
+### No counterpart in 1.0.0
+
+Things a 0.8 caller could do because it held the spine-core objects, or through a 0.8
+export, for which 1.0.0 declares nothing:
+
+- **A Spine export as input.** `loadSkeletonJson`, `loadSkeletonBinary`, `loadAtlasAssets`,
+  the `spine-html/binary` entry and `DomTexture` have no counterpart, and neither does
+  choosing which spine-core generation reads the data. `loadModel` reads a compiled model
+  document and nothing else.
+- **Scaling the skeleton as it is read.** `LoadModelOptions` declares no `scale`. Scaling
+  the root element is still the caller's.
+- **One unpacked atlas shared by different skeletons.** A document is one rig, and each
+  `loadModel` cuts its own regions and owns its own blob URLs. Sharing is per rig: one
+  load, several players.
+- **More than one track, mixing between animations, or queueing one after another.**
+  `RigPlayer` declares one track; `play` reopens it at the animation's first pose.
+- **Reading or writing a bone.** No bone is exposed: nothing sets a bone's local values
+  between the step and the draw, and nothing returns a bone's world transform. What is
+  readable is the posed slots: `player.posedFrame()` carries each drawn slot's world
+  `corners` or `vertices`.
+- **A bounds query for the current pose.** None is declared. `ModelAssets.stage` is the
+  stage the document states (or null), which is the rig's declared framing and not the
+  box of the pose being drawn.
+- **Changing the skin after construction.** `skin` is a `RigPlayerOptions` field and
+  `RigPlayer` declares no way to change it later; a second player over the same assets
+  is the declared route.
+- **Changing one slot from code** (its attachment, its colour). `RigPlayer` declares only
+  the whole-rig `color`. The frame record is a plain object, so a caller that draws its
+  own frames through `DomRenderer.render` or `CanvasRenderer.render` decides what is in
+  it.
+- **Choosing how physics is stepped each frame.** 0.8's loop passed `Physics.update`
+  itself; 1.0.0 declares no physics option. `play` and `seek` reset physics at the
+  animation's first pose and every step advances it.
+- **Track callbacks other than the two declared.** `on` accepts `'event'` and
+  `'complete'`.
+
+Knobs on `DomRenderer` that `CanvasRenderer` does not declare:
+
+- `syncPixelRatio()`. `CanvasRenderer.pixelRatio` exists and is set by hand
+  (`devicePixelRatio * rootScale`).
+- `meshBackend` and `meshBackendActive`. The canvas mode has its own pair, `backend` and
+  `backendActive` (type `CanvasBackend`, `'webgl'` by default).
+- `triangleExpand`, `meshBackingPixels`, `clipWriteCount`, `meshCount`, `meshReuseCount`,
+  `triangleCount`. The canvas mode's counters are `drawCalls`, `blendFlushes`,
+  `trianglesDrawn`, `framesReused` and `blits`.
+
+Both declare `pixelRatio`, `clipping`, `clipCount`, `clipSkipCount`, `canvasReallocCount`,
+`render` and `dispose`. Only `pixelRatio` and `clipping` carry over when `player.mode`
+changes.
+
+### Before and after
+
+0.8.0:
+
+```ts
+import { Skeleton, AnimationState, AnimationStateData, Physics } from '@esotericsoftware/spine-core';
+import { loadSkeletonAssets, SpineHtmlRenderer } from 'spine-html';
+const assets = await loadSkeletonAssets({ atlasUrl: '/hero/hero.atlas', skeletonUrl: '/hero/hero.json' });
+const skeleton = new Skeleton(assets.data);
+const state = new AnimationState(new AnimationStateData(assets.data));
+state.setAnimation(0, 'walk', true);
+const renderer = new SpineHtmlRenderer(rootElement, assets.regionImages);
+function frame(delta: number) {
+  state.update(delta);
+  state.apply(skeleton);
+  skeleton.update(delta);
+  skeleton.updateWorldTransform(Physics.update);
+  renderer.render(skeleton);
+}
+renderer.dispose(); assets.dispose(); // on unload
+```
+
+1.0.0:
+
+```ts
+import { loadModel, RigPlayer } from 'rig-play';
+const assets = await loadModel({ modelUrl: '/rigs/walk/skeleton.model.json' });
+const player = new RigPlayer(rootElement, assets);
+player.play('walk', { loop: true });
+function frame(delta: number) {
+  player.frame(delta);
+}
+player.dispose(); assets.dispose(); // on unload
+```
+
 ## Demo (this repository)
 
 ```bash
