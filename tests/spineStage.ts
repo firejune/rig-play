@@ -11,7 +11,7 @@ import {
 import type { MeshBackend } from '../src/DomRenderer';
 import type { RegionImage } from '../src/DomTexture';
 import { advanceSkeleton } from './skeletonFrame';
-import { DomTexture, SkeletonRenderer, unpackAtlas } from './spineDom';
+import { DomTexture, SkeletonCanvasRenderer, SkeletonRenderer, unpackAtlas } from './spineDom';
 
 /**
  * The spineboy stage: the demo as it was before the package read compiled
@@ -37,6 +37,7 @@ const STAGE_SCALE = 0.4;
 // animation (isolates the dirty-skip path: every mesh should report reused);
 // ?backend=webgl rasterizes meshes through the shared WebGL blitter;
 // ?clipping=0 turns clipping attachments back off (counted, not applied);
+// ?mode=canvas draws each skeleton into one canvas (CanvasRenderer);
 // ?time=1.2 seeks every instance to the same pose (deterministic screenshots).
 const params = new URLSearchParams(location.search);
 
@@ -53,8 +54,39 @@ function parseTint(): { r: number; g: number; b: number } | null {
 interface Instance {
   skeleton: Skeleton;
   state: AnimationState;
-  renderer: SkeletonRenderer;
+  renderer: SkeletonRenderer | SkeletonCanvasRenderer;
   container: HTMLDivElement;
+}
+
+const MODE: 'dom' | 'canvas' = params.get('mode') === 'canvas' ? 'canvas' : 'dom';
+
+/** The canvas mode's stats: the same tokens as the demo's (src/main.ts). */
+function canvasNote(renderers: SkeletonCanvasRenderer[]): string {
+  let drawn = 0;
+  let reused = 0;
+  let drawCalls = 0;
+  let blendFlushes = 0;
+  let triangles = 0;
+  let blits = 0;
+  let clips = 0;
+  let skipped = 0;
+  for (const r of renderers) {
+    reused += r.framesReused;
+    drawn += 1 - r.framesReused;
+    drawCalls += r.drawCalls;
+    blendFlushes += r.blendFlushes;
+    triangles += r.trianglesDrawn;
+    blits += r.blits;
+    clips += r.clipCount;
+    skipped += r.clipSkipCount;
+  }
+  const backend = renderers[0]?.backendActive === 'webgl' ? 'webgl' : 'canvas2d fallback';
+  return (
+    ` · canvas · frames ${drawn} drawn / ${reused} reused · ${drawCalls} draw calls · ` +
+    `${blendFlushes} blend flushes · ${triangles} tris · ${blits} blits · ${backend}` +
+    (clips ? ` · ${clips} clips applied` : '') +
+    (skipped ? ` · ${skipped} clips skipped` : '')
+  );
 }
 
 async function loadImage(url: string): Promise<HTMLImageElement> {
@@ -153,10 +185,13 @@ function main(
       const timescaleParam = params.get('timescale');
       if (timescaleParam !== null) state.timeScale = Number(timescaleParam) || 0;
 
-      const renderer = new SkeletonRenderer(container, regionImages);
-      renderer.meshBackend = backendSelect.value as MeshBackend;
+      const renderer =
+        MODE === 'canvas' ? new SkeletonCanvasRenderer(container) : new SkeletonRenderer(container, regionImages);
       const expandParam = params.get('expand');
-      if (expandParam !== null) renderer.triangleExpand = Number(expandParam) || 0;
+      if (renderer instanceof SkeletonRenderer) {
+        renderer.meshBackend = backendSelect.value as MeshBackend;
+        if (expandParam !== null) renderer.triangleExpand = Number(expandParam) || 0;
+      }
       const clippingParam = params.get('clipping');
       if (clippingParam !== null) renderer.clipping = clippingParam !== '0';
       // Mesh canvases raster at the effective on-screen resolution: device
@@ -186,7 +221,9 @@ function main(
   });
   backendSelect.addEventListener('change', () => {
     // Live switch: the backend signature re-dirties every mesh on its own.
-    for (const inst of instances) inst.renderer.meshBackend = backendSelect.value as MeshBackend;
+    for (const inst of instances) {
+      if (inst.renderer instanceof SkeletonRenderer) inst.renderer.meshBackend = backendSelect.value as MeshBackend;
+    }
   });
 
   stateData.defaultMix = 0.2;
@@ -236,7 +273,17 @@ function main(
     renderMs += t2 - t1;
     frames++;
 
-    if (now - statsAt >= 500 && frames > 0) {
+    if (now - statsAt >= 500 && frames > 0 && MODE === 'canvas') {
+      const fps = (frames * 1000) / (now - statsAt);
+      stats.textContent =
+        `${instances.length} skeleton(s) · ${fps.toFixed(0)} fps · ` +
+        `skeleton ${(updateMs / frames).toFixed(2)}ms · ` +
+        `render ${(renderMs / frames).toFixed(2)}ms / frame` +
+        canvasNote(instances.map((inst) => inst.renderer as SkeletonCanvasRenderer));
+      updateMs = renderMs = 0;
+      frames = 0;
+      statsAt = now;
+    } else if (now - statsAt >= 500 && frames > 0) {
       let meshes = 0;
       let reused = 0;
       let reallocs = 0;
@@ -246,14 +293,15 @@ function main(
       let clipWrites = 0;
       let backing = 0;
       for (const inst of instances) {
-        meshes += inst.renderer.meshCount;
-        reused += inst.renderer.meshReuseCount;
-        reallocs += inst.renderer.canvasReallocCount;
-        triangles += inst.renderer.triangleCount;
-        clipsApplied += inst.renderer.clipCount;
-        clipsSkipped += inst.renderer.clipSkipCount;
-        clipWrites += inst.renderer.clipWriteCount;
-        backing += inst.renderer.meshBackingPixels;
+        const r = inst.renderer as SkeletonRenderer;
+        meshes += r.meshCount;
+        reused += r.meshReuseCount;
+        reallocs += r.canvasReallocCount;
+        triangles += r.triangleCount;
+        clipsApplied += r.clipCount;
+        clipsSkipped += r.clipSkipCount;
+        clipWrites += r.clipWriteCount;
+        backing += r.meshBackingPixels;
       }
       const reallocNote = reallocs ? ` / ${reallocs} realloc'd` : '';
       // Allocated mesh-canvas pixels: what an oversampling stage (a scaled
@@ -263,7 +311,7 @@ function main(
         meshes + reused
           ? ` · mesh canvases ${meshes} drawn (${triangles} tris) / ${reused} reused${reallocNote}${backingNote}`
           : '';
-      const first = instances[0]?.renderer;
+      const first = instances[0]?.renderer as SkeletonRenderer | undefined;
       // Surface the backend that actually ran, so a perf reading proves its path.
       const backendNote =
         first && first.meshBackend === 'webgl'

@@ -1,4 +1,5 @@
 import { type CompiledDocument, type LiveTrack, openTrack, type RawPose, underNoSkin, underSkin } from 'rig-c/core';
+import { CanvasRenderer } from './CanvasRenderer.js';
 import { DomRenderer, type MeshBackend } from './DomRenderer.js';
 import type { ModelAssets, ReadDocument } from './loadModel.js';
 import { type FrameSource, frameOf, frameSource, type PosedFrame } from './posedFrame.js';
@@ -9,9 +10,17 @@ import { type FrameSource, frameOf, frameSource, type PosedFrame } from './posed
  * The player owns the track and the renderer: `play` opens an animation on a
  * live track (`openTrack` from `rig-c/core`), each `frame(dt)` steps it by
  * `dt × timeScale`, turns the pose into a `PosedFrame` and hands that to its
- * `DomRenderer`. Everything the pose holds is computed by the core from the
- * compiled model document; this class schedules and draws.
+ * renderer — a `DomRenderer` (`mode: 'dom'`, the default) or a
+ * `CanvasRenderer` (`mode: 'canvas'`). Everything the pose holds is computed by
+ * the core from the compiled model document; this class schedules and draws.
  */
+
+/**
+ * How a player draws: `'dom'` — elements, the rigid tier as `<img>` and the
+ * mesh tier on per-part canvases (`DomRenderer`); `'canvas'` — the whole frame
+ * into one `<canvas>` through the shared WebGL context (`CanvasRenderer`).
+ */
+export type RenderMode = 'dom' | 'canvas';
 
 export interface RigPlayerOptions {
   /**
@@ -20,7 +29,9 @@ export interface RigPlayerOptions {
    * or constraints applied, every slot resolved through the default skin.
    */
   skin?: string;
-  /** The mesh tier's rasterizer (see `DomRenderer.meshBackend`). */
+  /** How the player draws (see `RenderMode`). Default `'dom'`. Can be changed later through `mode`. */
+  mode?: RenderMode;
+  /** The mesh tier's rasterizer (see `DomRenderer.meshBackend`) — the DOM mode only. */
   meshBackend?: MeshBackend;
   /**
    * The step `seek` walks the track forward with, in seconds. A seek is
@@ -52,13 +63,23 @@ type Listener<T> = (payload: T) => void;
  * ```
  */
 export class RigPlayer {
-  /** The renderer this player draws through — its knobs and counters are the caller's to read and set. */
-  readonly renderer: DomRenderer;
+  /**
+   * The renderer this player draws through — its knobs and counters are the
+   * caller's to read and set. A `DomRenderer` in the DOM mode, a
+   * `CanvasRenderer` in the canvas mode; a new object after `mode` changes.
+   */
+  get renderer(): DomRenderer | CanvasRenderer {
+    return this.active;
+  }
   /** Multiplies every step. 0 holds the pose (nothing is re-posed); negative is refused by the track. */
   timeScale = 1;
   /** The player's whole-rig colour, r g b a — multiplied into every slot's tint. Not a document value. */
   color: [number, number, number, number] = [1, 1, 1, 1];
 
+  private active: DomRenderer | CanvasRenderer;
+  private readonly root: HTMLElement;
+  private readonly assets: ModelAssets;
+  private readonly meshBackend: MeshBackend | undefined;
   private readonly view: CompiledDocument;
   private readonly source: FrameSource;
   private readonly seekStep: number;
@@ -78,8 +99,47 @@ export class RigPlayer {
     this.source = frameSource(this.view, read.parsed);
     this.seekStep = options.seekStep ?? 1 / 60;
     if (!(this.seekStep > 0)) throw new Error(`seekStep must be a positive number of seconds, got ${String(options.seekStep)}`);
-    this.renderer = new DomRenderer(root, assets.regionImages, assets.pageImages);
-    if (options.meshBackend) this.renderer.meshBackend = options.meshBackend;
+    this.root = root;
+    this.assets = assets;
+    this.meshBackend = options.meshBackend;
+    this.active = this.create(options.mode ?? 'dom');
+  }
+
+  /**
+   * How the player draws. Setting it swaps the renderer without reloading
+   * anything: the old one is disposed (its elements removed, its GPU pages
+   * handed back), the new one is created over the same root and the same
+   * assets, `pixelRatio` and `clipping` carry over, and the pose the player
+   * holds is drawn again at once.
+   */
+  get mode(): RenderMode {
+    return this.active instanceof CanvasRenderer ? 'canvas' : 'dom';
+  }
+
+  set mode(mode: RenderMode) {
+    if (mode !== 'dom' && mode !== 'canvas') throw new Error(`mode must be 'dom' or 'canvas', got ${String(mode)}`);
+    if (mode === this.mode) return;
+    const old = this.active;
+    const next = this.create(mode);
+    next.pixelRatio = old.pixelRatio;
+    next.clipping = old.clipping;
+    old.dispose();
+    this.active = next;
+    this.draw();
+  }
+
+  private create(mode: RenderMode): DomRenderer | CanvasRenderer {
+    if (mode === 'canvas') {
+      const renderer = new CanvasRenderer(this.root, this.assets.pageImages);
+      // The rig's own framing, so the canvas starts at the size the setup pose
+      // needs rather than growing into it frame by frame.
+      if (this.assets.stage) renderer.reserve(this.assets.stage);
+      return renderer;
+    }
+    if (mode !== 'dom') throw new Error(`mode must be 'dom' or 'canvas', got ${String(mode)}`);
+    const renderer = new DomRenderer(this.root, this.assets.regionImages, this.assets.pageImages);
+    if (this.meshBackend) renderer.meshBackend = this.meshBackend;
+    return renderer;
   }
 
   /** The animation the track is playing, or null before `play`. */

@@ -8,7 +8,7 @@ import {
 } from '@esotericsoftware/spine-core';
 import { GLTexture, ManagedWebGLRenderingContext, SceneRenderer } from '@esotericsoftware/spine-webgl';
 
-import { loadModel, type ModelAssets, type RegionImage, RigPlayer } from '../src/index';
+import { type DomRenderer, loadModel, type ModelAssets, type RegionImage, RigPlayer } from '../src/index';
 import { advanceSkeleton } from './skeletonFrame';
 import { DomTexture, loadSkeletonJson, SkeletonRenderer, unpackAtlas } from './spineDom';
 
@@ -499,10 +499,10 @@ async function drawDom(
     `transform-origin: 0 0; transform: scale(${geometry.scale});`;
   stage.append(root);
 
-  let renderer: RigPlayer['renderer'];
+  let renderer: DomRenderer;
   if (scene.model) {
     const player = new RigPlayer(root, scene.model, { meshBackend: options.backend ?? 'canvas2d' });
-    renderer = player.renderer;
+    renderer = player.renderer as DomRenderer;
     if (options.clipping !== undefined) renderer.clipping = options.clipping;
     renderer.pixelRatio = (window.devicePixelRatio || 1) * geometry.scale;
     const tint = parseTint(options.tint);

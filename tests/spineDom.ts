@@ -9,6 +9,7 @@ import {
   type TextureWrap,
 } from '@esotericsoftware/spine-core';
 
+import { CanvasRenderer } from '../src/CanvasRenderer';
 import { DomRenderer } from '../src/DomRenderer';
 import { type PageLayout, type RegionImage, revokeRegions, unpackRegions } from '../src/DomTexture';
 import type { PosedSlot } from '../src/posedFrame';
@@ -75,6 +76,26 @@ export class SkeletonRenderer extends DomRenderer {
     for (const [name, image] of read.pages) this.pageMap.set(name, image);
     this.clipsIgnored = read.clipsIgnored;
     this.render(this.trailing.length ? { order: [...read.frame.order, ...this.trailing] } : read.frame);
+  }
+}
+
+/**
+ * A `CanvasRenderer` that draws a spine-core skeleton — `SkeletonRenderer`'s
+ * twin for the canvas render mode: the same frame, read the same way.
+ */
+export class SkeletonCanvasRenderer extends CanvasRenderer {
+  private readonly pageMap: Map<string, HTMLImageElement>;
+
+  constructor(root: HTMLElement) {
+    const pages = new Map<string, HTMLImageElement>();
+    super(root, pages);
+    this.pageMap = pages;
+  }
+
+  renderSkeleton(skeleton: Skeleton): void {
+    const read = frameOfSkeleton(skeleton);
+    for (const [name, image] of read.pages) this.pageMap.set(name, image);
+    this.render(read.frame);
   }
 }
 

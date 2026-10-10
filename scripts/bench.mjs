@@ -46,6 +46,11 @@
  * Usage:
  *   node scripts/bench.mjs [--frames N] [--out DIR] [--port N]
  *                          [--scenes FILE] [--corpus DIR] [--max-load N]
+ *                          [--runtimes dom,canvas,reference]
+ *
+ *   --runtimes     which page loads each scene gets, comma-separated: `dom`
+ *                  (this package's DOM tier), `canvas` (its canvas render
+ *                  mode) and `reference` (spine-webgl). All three by default.
  *
  *   --corpus DIR   a directory holding its own scenes.json plus the rigs it
  *                  names, for real-world skeletons that never enter this
@@ -71,6 +76,7 @@ function parseArgs(argv) {
     // workstation. 1.0 is "the machine already has a full core of work per
     // core"; a benchmark under that is measuring the queue.
     maxLoad: 1.0,
+    runtimes: ['dom', 'canvas', 'reference'],
   };
   for (let i = 0; i < argv.length; i++) {
     const [flag, inline] = argv[i].split('=', 2);
@@ -82,6 +88,12 @@ function parseArgs(argv) {
       case '--scenes': args.scenes = resolve(value()); break;
       case '--corpus': args.corpus = resolve(value()); break;
       case '--max-load': args.maxLoad = Number(value()); break;
+      case '--runtimes': {
+        args.runtimes = value().split(',').map((r) => r.trim()).filter(Boolean);
+        const unknown = args.runtimes.filter((r) => !['dom', 'canvas', 'reference'].includes(r));
+        if (unknown.length || !args.runtimes.length) throw new Error(`--runtimes takes dom, canvas, reference; got ${unknown.join(', ') || 'nothing'}`);
+        break;
+      }
       case '--help':
         console.log(readFileSync(new URL(import.meta.url)).toString().split('*/')[0]);
         process.exit(0);
@@ -207,7 +219,7 @@ async function main() {
     };
 
     for (const scene of scenes) {
-      for (const runtime of ['dom', 'reference']) {
+      for (const runtime of args.runtimes) {
         const url = `http://localhost:${args.port}/?${queryString(scene.query, runtime)}`;
         await page.goto(url);
         await page.waitForFunction(() => Boolean(window.spineHtmlBench), null, { timeout: 60_000 });
@@ -300,7 +312,8 @@ function markdown(report) {
   );
   for (const row of rows) {
     const r = row.reading;
-    const dom = row.runtime === 'dom';
+    // The canvas mode draws in the DOM pane and publishes through its slots.
+    const dom = row.runtime === 'dom' || row.runtime === 'canvas';
     const fps = dom ? r.domFps : r.referenceFps;
     const stats = dom ? r.domStats : r.referenceStats;
     const delta = dom ? r.domOriginDeltaPx : r.referenceOriginDeltaPx;
