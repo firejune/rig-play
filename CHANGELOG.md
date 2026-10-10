@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.0.0](https://github.com/firejune/rig-play/compare/v0.8.0...v1.0.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **package:** published as rig-play; spine-html continues as a byte-identical alias.
+* **package:** the `@esotericsoftware/spine-core` peer dependency is removed — the package declares no peer and needs nothing installed beside it (rig-c/core is bundled). No `./binary` entry remains (removed in #60; `spine-html/binary` is asserted to be ERR_PACKAGE_PATH_NOT_EXPORTED).
+* **player:** removed exports, with replacements:
+    - `SpineHtmlRenderer` -> `DomRenderer` (`render(frame: PosedFrame)`,
+      constructor `(root, regionImages, pageImages)`), or `RigPlayer`
+    - `loadSkeletonAssets`, `loadAtlasAssets`, `loadSkeletonJson` -> `loadModel`
+    - `spine-html/binary` / `loadSkeletonBinary` -> removed (Spine exports are
+      refused; build with `rigc build`)
+    - `DomTexture` -> removed
+    - `unpackRegions(atlas: TextureAtlas, ...)` -> `unpackRegions(pages: PageLayout[], pageImages)`
+    - new: `RigPlayer`, `loadModel`, `PosedFrame`, `PosedSlot`, `PosedRegion`,
+      `PosedMesh`, `PosedClip`, `BlendMode`, `ModelAssets`, `PageLayout`
+
+### Features
+
+* **package:** link nothing from Esoteric Software — drop the spine-core peer and both runtimes, the oracle and frame gate, the spineboy fetch; pin rig-c exactly ([#69](https://github.com/firejune/rig-play/issues/69)) ([52ead20](https://github.com/firejune/rig-play/commit/52ead203c2eeeefafdc2a3811f620fe106550d5e))
+* **package:** publish as rig-play, keep spine-html as a byte-identical alias, and state what the package and the repository link ([#70](https://github.com/firejune/rig-play/issues/70)) ([1c3b18d](https://github.com/firejune/rig-play/commit/1c3b18d695f8e4b137f20a0be4f7d50f53d30f31))
+* **player:** load skeleton.model.json, pose it through rig-c/core, and draw a PosedFrame instead of a spine-core Skeleton ([#66](https://github.com/firejune/rig-play/issues/66)) ([0681482](https://github.com/firejune/rig-play/commit/06814829edfb5b1ff86b3854a303a920f6020666))
+* **render:** add a canvas render mode that draws the whole frame into one canvas through the shared WebGL context ([#68](https://github.com/firejune/rig-play/issues/68)) ([3d55339](https://github.com/firejune/rig-play/commit/3d55339ce381a25e9440256d18905e4a7a1b4073)), closes [#61](https://github.com/firejune/rig-play/issues/61)
+
 ## [0.8.0](https://github.com/firejune/spine-html/compare/v0.7.1...v0.8.0) (2026-09-19)
 
 
