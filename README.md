@@ -245,6 +245,24 @@ frame takes the one-`clip-path`-on-the-root path), and a mesh's `uvs` and
 `triangles` are the same arrays from frame to frame for the same texture
 mapping (a new array re-rasters the mesh).
 
+### Reading the pose
+
+Two reads off the pose the player holds — the last `frame`/`advance`/`seek`,
+or the setup pose before `play` — for framing a stage around a rig:
+
+```ts
+const head = player.bone('head');   // { x, y, a, b, c, d, rotationX, rotationY, scaleX, scaleY, active }
+const box = player.bounds();        // { x, y, width, height } | null — world units, Y up
+```
+
+`bone` is the core's world transform for that bone (`rig-c/core`'s `RawBone`,
+unchanged), and an unknown name is refused by name. `bounds` is the box of
+every region's four corners and every mesh's vertices in the frame record the
+renderer takes; a slot under a clip counts only inside the clip polygon's own
+box, an inverse clip removes nothing, and bounding boxes, paths and points do
+not draw and do not count. Both cost nothing until called and read the same
+numbers in `dom` and `canvas` mode.
+
 ### One load, several players
 
 One `loadModel` backs any number of players: the regions are cut once, and
