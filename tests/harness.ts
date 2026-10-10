@@ -229,6 +229,27 @@ export interface RigPlayHarness {
   pmaDerivationProbe(): Promise<PmaDerivationProbeResult>;
   pmaStage(options: PmaStageOptions): Promise<PmaStageResult>;
   canvasModeProbe(count: number): Promise<CanvasModeProbeResult>;
+  boneBoundsProbe(): Promise<BoneBoundsProbeResult>;
+}
+
+export interface BoneBoundsProbeResult {
+  /** Bones in the document, and how many of them the player read with every field bit-equal to the probe's own pose. */
+  boneCount: number;
+  boneMismatches: string[];
+  /** The player's reads before `play`: the setup pose. */
+  setupBone: { x: number; y: number } | null;
+  setupBounds: { x: number; y: number; width: number; height: number } | null;
+  /** A frame with no clip: the player's bounds against the probe's own box over the frame's corners and vertices. */
+  walkHasClip: boolean;
+  walkBounds: { x: number; y: number; width: number; height: number } | null;
+  walkExpected: { x: number; y: number; width: number; height: number } | null;
+  /** The `mask` animation: a clip covers slots, so the bounds may only shrink against the unclipped box. */
+  maskHasClip: boolean;
+  maskBounds: { x: number; y: number; width: number; height: number } | null;
+  maskUnclipped: { x: number; y: number; width: number; height: number } | null;
+  /** The same reads after switching the player to the canvas mode, compared field by field. */
+  canvasSame: boolean;
+  unknownBoneError: string;
 }
 
 export interface CanvasModeProbeResult {
@@ -4296,7 +4317,92 @@ async function canvasModeProbe(count: number): Promise<CanvasModeProbeResult> {
   };
 }
 
+/**
+ * `RigPlayer.bone` and `RigPlayer.bounds` (#73): read off the pose the player
+ * holds, held to the probe's own pose of the same walk (`poseAt`, the walk
+ * `seek` takes) and to the probe's own box over the frame record.
+ */
+async function boneBoundsProbe(): Promise<BoneBoundsProbeResult> {
+  const assets = await loadRig('figure');
+  const root = document.getElementById('root');
+  if (!root) throw new Error('#root missing');
+  root.replaceChildren();
+  const player = new RigPlayer(root, assets);
+
+  const setupBone = (() => {
+    const b = player.bone('hip');
+    return { x: b.x, y: b.y };
+  })();
+  const setupBounds = player.bounds();
+
+  const boxOf = (frame: PosedFrame) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const slot of frame.order) {
+      const pts = slot.kind === 'region' ? slot.corners : slot.vertices;
+      for (let i = 0; i < pts.length; i += 2) {
+        minX = Math.min(minX, pts[i]); maxX = Math.max(maxX, pts[i]);
+        minY = Math.min(minY, pts[i + 1]); maxY = Math.max(maxY, pts[i + 1]);
+      }
+    }
+    return minX === Infinity ? null : { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  };
+
+  const time = 0.7;
+  player.play('walk');
+  player.seek(time);
+  const own = poseAt(assets, 'walk', time);
+  const boneMismatches: string[] = [];
+  for (const bone of own.pose.bones) {
+    const read = player.bone(bone.name);
+    const pairs: Array<[string, number | boolean, number | boolean]> = [
+      ['active', read.active, bone.active], ['x', read.x, bone.worldX], ['y', read.y, bone.worldY],
+      ['a', read.a, bone.a], ['b', read.b, bone.b], ['c', read.c, bone.c], ['d', read.d, bone.d],
+      ['rotationX', read.rotationX, bone.rotationX], ['rotationY', read.rotationY, bone.rotationY],
+      ['scaleX', read.scaleX, bone.scaleX], ['scaleY', read.scaleY, bone.scaleY],
+    ];
+    for (const [field, got, want] of pairs) if (!Object.is(got, want)) boneMismatches.push(`${bone.name}.${field}: ${String(got)} != ${String(want)}`);
+  }
+  const walkHasClip = own.frame.order.some((slot) => slot.clip !== undefined);
+  const walkBounds = player.bounds();
+  const walkExpected = boxOf(own.frame);
+
+  player.play('mask');
+  player.seek(time);
+  const mask = poseAt(assets, 'mask', time);
+  const maskHasClip = mask.frame.order.some((slot) => slot.clip !== undefined);
+  const maskBounds = player.bounds();
+  const maskUnclipped = boxOf(mask.frame);
+
+  const domReads = JSON.stringify([player.bone('hip'), player.bone('leg_f'), player.bounds()]);
+  player.mode = 'canvas';
+  const canvasSame = JSON.stringify([player.bone('hip'), player.bone('leg_f'), player.bounds()]) === domReads;
+
+  let unknownBoneError = '';
+  try {
+    player.bone('no_such_bone');
+  } catch (error) {
+    unknownBoneError = error instanceof Error ? error.message : String(error);
+  }
+  player.dispose();
+  assets.dispose();
+  return {
+    boneCount: own.pose.bones.length,
+    boneMismatches,
+    setupBone,
+    setupBounds,
+    walkHasClip,
+    walkBounds,
+    walkExpected,
+    maskHasClip,
+    maskBounds,
+    maskUnclipped,
+    canvasSame,
+    unknownBoneError,
+  };
+}
+
 window.rigPlayHarness = {
+  boneBoundsProbe,
   canvasModeProbe,
   unpackProbe,
   regionGeometryProbe,

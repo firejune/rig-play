@@ -1,4 +1,4 @@
-import { type CompiledDocument, type LiveTrack, openTrack, type RawPose, underNoSkin, underSkin } from 'rig-c/core';
+import { type CompiledDocument, type LiveTrack, openTrack, poseRawSetup, type RawPose, underNoSkin, underSkin } from 'rig-c/core';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { DomRenderer, type MeshBackend } from './DomRenderer.js';
 import type { ModelAssets, ReadDocument } from './loadModel.js';
@@ -62,6 +62,35 @@ type Listener<T> = (payload: T) => void;
  * requestAnimationFrame(function tick(now) { player.frame(dt); requestAnimationFrame(tick); });
  * ```
  */
+/**
+ * Where a bone is in the pose the player holds — world units, Y up, the
+ * numbers `rig-c/core` posed (`RawBone`): the world matrix `a b c d`, the
+ * world position, the world rotation of each axis in degrees and the world
+ * scale of each, and whether the bone is active under the player's skin.
+ */
+export interface BoneWorld {
+  name: string;
+  active: boolean;
+  x: number;
+  y: number;
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  rotationX: number;
+  rotationY: number;
+  scaleX: number;
+  scaleY: number;
+}
+
+/** A box in world units, Y up: `y` is the bottom edge. */
+export interface PoseBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export class RigPlayer {
   /**
    * The renderer this player draws through — its knobs and counters are the
@@ -88,6 +117,7 @@ export class RigPlayer {
   private loop = true;
   private paused = false;
   private pose: RawPose | null = null;
+  private setup: RawPose | null = null;
   private readonly listeners = {
     event: new Set<Listener<RigEvent>>(),
     complete: new Set<Listener<{ animation: string }>>(),
@@ -227,6 +257,79 @@ export class RigPlayer {
   draw(): void {
     if (this.pose === null) return;
     this.renderer.render(this.posedFrame());
+  }
+
+  /**
+   * Where `name` is in the pose the player holds — the pose of the last
+   * `advance`/`frame`/`seek`, or the setup pose before `play`. Read off the
+   * core's pose, so it is the same in `dom` and `canvas` mode and costs nothing
+   * until called. An unknown bone is refused by name.
+   */
+  bone(name: string): BoneWorld {
+    const pose = this.posed();
+    for (const bone of pose.bones) {
+      if (bone.name !== name) continue;
+      return {
+        name,
+        active: bone.active,
+        x: bone.worldX,
+        y: bone.worldY,
+        a: bone.a,
+        b: bone.b,
+        c: bone.c,
+        d: bone.d,
+        rotationX: bone.rotationX,
+        rotationY: bone.rotationY,
+        scaleX: bone.scaleX,
+        scaleY: bone.scaleY,
+      };
+    }
+    throw new Error(`no bone named ${JSON.stringify(name)} in this document (bones: ${pose.bones.map((b) => b.name).join(', ')})`);
+  }
+
+  /**
+   * The box of what the pose the player holds draws, in world units, Y up:
+   * every region's four corners and every mesh's vertices, in the same frame
+   * record the renderer takes (`posedFrame`). A slot under a clip counts only
+   * inside the clip polygon's own box (an inverse clip removes nothing from
+   * the count); bounding boxes, paths and points are not drawn and do not
+   * count. `null` when nothing draws. The same numbers in `dom` and `canvas`
+   * mode; nothing is computed until called.
+   */
+  bounds(): PoseBounds | null {
+    const frame = this.pose === null ? frameOf(this.source, this.posed(), this.color) : this.posedFrame();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const slot of frame.order) {
+      const points = slot.kind === 'region' ? slot.corners : slot.vertices;
+      let lo = -Infinity, lb = -Infinity, hi = Infinity, hb = Infinity;
+      if (slot.clip && !slot.clip.inverse) {
+        const c = slot.clip.polygon;
+        lo = Infinity; lb = Infinity; hi = -Infinity; hb = -Infinity;
+        for (let i = 0; i < c.length; i += 2) {
+          if (c[i] < lo) lo = c[i];
+          if (c[i] > hi) hi = c[i];
+          if (c[i + 1] < lb) lb = c[i + 1];
+          if (c[i + 1] > hb) hb = c[i + 1];
+        }
+      }
+      for (let i = 0; i < points.length; i += 2) {
+        const x = Math.min(Math.max(points[i], lo), hi);
+        const y = Math.min(Math.max(points[i + 1], lb), hb);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (minX === Infinity) return null;
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+
+  /** The pose the reads above see: the track's, or the setup pose before `play` (posed once). */
+  private posed(): RawPose {
+    if (this.pose !== null) return this.pose;
+    if (this.setup === null) this.setup = poseRawSetup(this.view);
+    return this.setup;
   }
 
   /** The pose the player holds, as the frame record the renderer draws. */
