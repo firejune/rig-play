@@ -1,151 +1,107 @@
-import {
-  AnimationState,
-  AnimationStateData,
-  AtlasAttachmentLoader,
-  Skeleton,
-  type SkeletonData,
-  SkeletonJson,
-  TextureAtlas,
-} from '@esotericsoftware/spine-core';
-// `Physics` arrived in 4.2 and is absent from 4.1's and 4.0's root entry, where
-// a *named* import of it is a link error that fails this build outright. See
-// coreOptional.ts — which, like this file, ships nothing.
-import { advanceSkeleton } from './coreOptional.js';
-import { DomTexture, type RegionImage, unpackRegions } from './DomTexture.js';
-import { type MeshBackend, SpineHtmlRenderer } from './SpineHtmlRenderer.js';
+import type { MeshBackend } from './DomRenderer.js';
+import { loadModel, type ModelAssets } from './loadModel.js';
+import { RigPlayer } from './player.js';
 
-const ASSET_BASE = '/spineboy';
-const SKELETONS = {
-  pro: 'spineboy-pro.json', // meshes (deform tier → per-part canvases)
-  ess: 'spineboy-ess.json', // region attachments only (rigid tier → pure DOM)
-} as const;
-type SkeletonVariant = keyof typeof SKELETONS;
+/**
+ * The demo, and the perf oracle (README): rigc's gallery rigs, built by
+ * `rigc build` into `public/rigs/<name>/` (scripts/fetch-assets.sh), loaded
+ * with `loadModel` and played by `RigPlayer`.
+ */
+
+const GALLERY = ['walk', 'flex', 'squash', 'portrait', 'nod', 'look', 'ride'] as const;
+/** Each gallery rig as the gallery ships it (one page per part) and built with `--pack`. */
+const RIGS = GALLERY.flatMap((rig) => [rig, `${rig}-packed`]);
+type RigName = string;
 const STAGE_SCALE = 0.4;
 
-// Debug knobs: ?skel=pro|ess &anim=walk &count=10 pick the scene;
-// ?expand=0 shows the mesh cracks; ?tint=ff8080 tints the whole skeleton;
+// Debug knobs: ?rig=flex &anim=wave &count=10 pick the scene;
+// ?expand=0 shows the mesh cracks; ?tint=ff8080 tints the whole rig;
 // ?dpr=2 overrides the mesh-canvas backing ratio; ?timescale=0 freezes the
 // animation (isolates the dirty-skip path: every mesh should report reused);
 // ?backend=webgl rasterizes meshes through the shared WebGL blitter;
-// ?clipping=0 turns clipping attachments back off (counted, not applied);
+// ?clipping=0 turns clips back off (counted, not applied);
 // ?time=1.2 seeks every instance to the same pose (deterministic screenshots).
 const params = new URLSearchParams(location.search);
 
-function parseTint(): { r: number; g: number; b: number } | null {
+function parseTint(): [number, number, number, number] | null {
   const hex = params.get('tint');
   if (!hex || !/^[0-9a-fA-F]{6}$/.test(hex)) return null;
-  return {
-    r: parseInt(hex.slice(0, 2), 16) / 255,
-    g: parseInt(hex.slice(2, 4), 16) / 255,
-    b: parseInt(hex.slice(4, 6), 16) / 255,
-  };
+  return [
+    parseInt(hex.slice(0, 2), 16) / 255,
+    parseInt(hex.slice(2, 4), 16) / 255,
+    parseInt(hex.slice(4, 6), 16) / 255,
+    1,
+  ];
 }
 
-interface Instance {
-  skeleton: Skeleton;
-  state: AnimationState;
-  renderer: SpineHtmlRenderer;
-  container: HTMLDivElement;
+function rigUrl(name: RigName): string {
+  return `/rigs/${name}/skeleton.model.json`;
 }
 
-async function loadImage(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error(`Failed to load ${url}`));
-    img.src = url;
-  });
-}
-
-async function load(): Promise<{
-  data: Record<SkeletonVariant, SkeletonData>;
-  regionImages: Map<string, RegionImage>;
-}> {
-  const [atlasText, proText, essText] = await Promise.all([
-    fetch(`${ASSET_BASE}/spineboy.atlas`).then((r) => r.text()),
-    fetch(`${ASSET_BASE}/${SKELETONS.pro}`).then((r) => r.text()),
-    fetch(`${ASSET_BASE}/${SKELETONS.ess}`).then((r) => r.text()),
-  ]);
-
-  const atlas = new TextureAtlas(atlasText);
-  const pageImages = new Map<string, HTMLImageElement>();
-  for (const page of atlas.pages) {
-    const image = await loadImage(`${ASSET_BASE}/${page.name}`);
-    page.setTexture(new DomTexture(image));
-    pageImages.set(page.name, image);
-  }
-
-  const regionImages = await unpackRegions(atlas, pageImages);
-  const loader = new AtlasAttachmentLoader(atlas);
-  return {
-    data: {
-      pro: new SkeletonJson(loader).readSkeletonData(proText),
-      ess: new SkeletonJson(loader).readSkeletonData(essText),
-    },
-    regionImages,
-  };
-}
-
-function main(
-  data: Record<SkeletonVariant, SkeletonData>,
-  regionImages: Map<string, RegionImage>,
-): void {
+function main(firstRig: RigName, firstAssets: ModelAssets): void {
   const stage = document.getElementById('stage') as HTMLDivElement;
-  const skelSelect = document.getElementById('skel') as HTMLSelectElement;
+  const rigSelect = document.getElementById('rig') as HTMLSelectElement;
   const animSelect = document.getElementById('anim') as HTMLSelectElement;
   const countInput = document.getElementById('count') as HTMLInputElement;
   const backendSelect = document.getElementById('backend') as HTMLSelectElement;
   const stats = document.getElementById('stats') as HTMLDivElement;
   backendSelect.value = params.get('backend') === 'webgl' ? 'webgl' : 'canvas2d';
 
-  const skelParam = params.get('skel');
-  let variant: SkeletonVariant = skelParam === 'ess' ? 'ess' : 'pro';
-  skelSelect.value = variant;
-  let stateData = new AnimationStateData(data[variant]);
-  let instances: Instance[] = [];
+  for (const name of RIGS) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    rigSelect.appendChild(option);
+  }
+  rigSelect.value = firstRig;
+
+  let assets = firstAssets;
+  let players: Array<{ player: RigPlayer; container: HTMLDivElement }> = [];
   const tint = parseTint();
 
   function fillAnimations(): void {
     animSelect.innerHTML = '';
-    for (const anim of data[variant].animations) {
+    for (const anim of assets.animations) {
       const option = document.createElement('option');
       option.value = anim.name;
       option.textContent = anim.name;
       animSelect.appendChild(option);
     }
-    const names = data[variant].animations.map((a) => a.name);
-    animSelect.value = names.includes('walk') ? 'walk' : names[0];
+    animSelect.value = assets.animations[0]?.name ?? '';
   }
 
   function rebuild(count: number): void {
-    for (const inst of instances) {
-      inst.renderer.dispose();
-      inst.container.remove();
+    for (const { player, container } of players) {
+      player.dispose();
+      container.remove();
     }
-    instances = [];
+    players = [];
+    // The rig's own framing, so the stage centres it whatever its size.
+    const box = assets.stage ?? { x: 0, y: 0, width: 0, height: 0 };
     for (let i = 0; i < count; i++) {
       const container = document.createElement('div');
       container.className = 'skeleton-root';
-      // Spread instances horizontally; each root is the skeleton origin
-      // (feet), so park it near the stage bottom.
+      // Spread instances horizontally; each root is the rig's world origin,
+      // shifted so the middle of its stage box sits on the spread point.
       const x = count === 1 ? 50 : 10 + (80 * i) / (count - 1);
       container.style.left = `${x}%`;
-      container.style.transform = `scale(${STAGE_SCALE})`;
+      container.style.transform =
+        `scale(${STAGE_SCALE}) translate(${-(box.x + box.width / 2)}px, ${box.y}px)`;
       stage.appendChild(container);
 
-      const skeleton = new Skeleton(data[variant]);
-      if (tint) skeleton.color.set(tint.r, tint.g, tint.b, 1);
-      const state = new AnimationState(stateData);
-      state.setAnimation(0, animSelect.value, true);
-      // Desync walk cycles so N instances don't look like one stamped sprite —
+      const player = new RigPlayer(container, assets, {
+        meshBackend: backendSelect.value as MeshBackend,
+      });
+      if (tint) player.color = tint;
+      player.play(animSelect.value, { loop: true });
+      // Desync cycles so N instances don't look like one stamped sprite —
       // unless ?time seeks them all to one pose (for deterministic captures).
       const timeParam = params.get('time');
-      state.update(timeParam !== null ? Number(timeParam) || 0 : (i * 0.37) % 2);
+      player.seek(timeParam !== null ? Number(timeParam) || 0 : (i * 0.37) % 2);
       const timescaleParam = params.get('timescale');
-      if (timescaleParam !== null) state.timeScale = Number(timescaleParam) || 0;
+      if (timescaleParam !== null) player.timeScale = Number(timescaleParam) || 0;
 
-      const renderer = new SpineHtmlRenderer(container, regionImages);
-      renderer.meshBackend = backendSelect.value as MeshBackend;
+      const renderer = player.renderer;
       const expandParam = params.get('expand');
       if (expandParam !== null) renderer.triangleExpand = Number(expandParam) || 0;
       const clippingParam = params.get('clipping');
@@ -156,19 +112,26 @@ function main(
       const dprParam = params.get('dpr');
       renderer.pixelRatio =
         dprParam !== null ? Number(dprParam) || 1 : (window.devicePixelRatio || 1) * STAGE_SCALE;
-      instances.push({ skeleton, state, renderer, container });
+      players.push({ player, container });
     }
   }
 
-  skelSelect.addEventListener('change', () => {
-    variant = skelSelect.value as SkeletonVariant;
-    stateData = new AnimationStateData(data[variant]);
-    stateData.defaultMix = 0.2;
+  rigSelect.addEventListener('change', async () => {
+    const name = rigSelect.value as RigName;
+    const count = players.length || 1;
+    const next = await loadModel({ modelUrl: rigUrl(name) });
+    for (const { player, container } of players) {
+      player.dispose();
+      container.remove();
+    }
+    players = [];
+    assets.dispose();
+    assets = next;
     fillAnimations();
-    rebuild(instances.length || 1);
+    rebuild(count);
   });
   animSelect.addEventListener('change', () => {
-    for (const inst of instances) inst.state.setAnimation(0, animSelect.value, true);
+    for (const { player } of players) player.play(animSelect.value, { loop: true });
   });
   countInput.addEventListener('change', () => {
     const count = Math.min(50, Math.max(1, Number(countInput.value) || 1));
@@ -177,13 +140,12 @@ function main(
   });
   backendSelect.addEventListener('change', () => {
     // Live switch: the backend signature re-dirties every mesh on its own.
-    for (const inst of instances) inst.renderer.meshBackend = backendSelect.value as MeshBackend;
+    for (const { player } of players) player.renderer.meshBackend = backendSelect.value as MeshBackend;
   });
 
-  stateData.defaultMix = 0.2;
   fillAnimations();
   const animParam = params.get('anim');
-  if (animParam && data[variant].animations.some((a) => a.name === animParam)) {
+  if (animParam && assets.animations.some((a) => a.name === animParam)) {
     animSelect.value = animParam;
   }
   const initialCount = Math.min(50, Math.max(1, Number(params.get('count')) || 1));
@@ -202,9 +164,9 @@ function main(
     }
   });
 
-  // --- frame loop with split timings (skeleton math vs DOM writes) ---
+  // --- frame loop with split timings (posing vs DOM writes) ---
   let last = performance.now();
-  let updateMs = 0;
+  let poseMs = 0;
   let renderMs = 0;
   let frames = 0;
   let statsAt = last;
@@ -214,16 +176,12 @@ function main(
     last = now;
 
     const t0 = performance.now();
-    for (const inst of instances) {
-      inst.state.update(delta);
-      inst.state.apply(inst.skeleton);
-      advanceSkeleton(inst.skeleton, delta);
-    }
+    for (const { player } of players) player.advance(delta);
     const t1 = performance.now();
-    for (const inst of instances) inst.renderer.render(inst.skeleton);
+    for (const { player } of players) player.draw();
     const t2 = performance.now();
 
-    updateMs += t1 - t0;
+    poseMs += t1 - t0;
     renderMs += t2 - t1;
     frames++;
 
@@ -236,15 +194,16 @@ function main(
       let clipsSkipped = 0;
       let clipWrites = 0;
       let backing = 0;
-      for (const inst of instances) {
-        meshes += inst.renderer.meshCount;
-        reused += inst.renderer.meshReuseCount;
-        reallocs += inst.renderer.canvasReallocCount;
-        triangles += inst.renderer.triangleCount;
-        clipsApplied += inst.renderer.clipCount;
-        clipsSkipped += inst.renderer.clipSkipCount;
-        clipWrites += inst.renderer.clipWriteCount;
-        backing += inst.renderer.meshBackingPixels;
+      for (const { player } of players) {
+        const r = player.renderer;
+        meshes += r.meshCount;
+        reused += r.meshReuseCount;
+        reallocs += r.canvasReallocCount;
+        triangles += r.triangleCount;
+        clipsApplied += r.clipCount;
+        clipsSkipped += r.clipSkipCount;
+        clipWrites += r.clipWriteCount;
+        backing += r.meshBackingPixels;
       }
       const reallocNote = reallocs ? ` / ${reallocs} realloc'd` : '';
       // Allocated mesh-canvas pixels: what an oversampling stage (a scaled
@@ -254,7 +213,7 @@ function main(
         meshes + reused
           ? ` · mesh canvases ${meshes} drawn (${triangles} tris) / ${reused} reused${reallocNote}${backingNote}`
           : '';
-      const first = instances[0]?.renderer;
+      const first = players[0]?.player.renderer;
       // Surface the backend that actually ran, so a perf reading proves its path.
       const backendNote =
         first && first.meshBackend === 'webgl'
@@ -262,10 +221,6 @@ function main(
             ? ' · webgl'
             : ' · webgl unavailable → canvas2d'
           : '';
-      // Applied and skipped are separate tokens on purpose: "skipped" keeps
-      // its old wording so the counter it always meant still reads the same.
-      // clip-path writes only show up while they are happening — a static clip
-      // over a settled pose writes nothing after the first frame.
       const clipNote =
         (clipsApplied ? ` · ${clipsApplied} clips applied` : '') +
         (clipsSkipped ? ` · ${clipsSkipped} clips skipped` : '') +
@@ -275,10 +230,10 @@ function main(
       // cannot see.
       const fps = (frames * 1000) / (now - statsAt);
       stats.textContent =
-        `${instances.length} skeleton(s) · ${fps.toFixed(0)} fps · ` +
-        `skeleton ${(updateMs / frames).toFixed(2)}ms · ` +
+        `${players.length} rig(s) · ${fps.toFixed(0)} fps · ` +
+        `pose ${(poseMs / frames).toFixed(2)}ms · ` +
         `render ${(renderMs / frames).toFixed(2)}ms / frame${meshNote}${backendNote}${clipNote}`;
-      updateMs = renderMs = 0;
+      poseMs = renderMs = 0;
       frames = 0;
       statsAt = now;
     }
@@ -288,8 +243,10 @@ function main(
   requestAnimationFrame(frame);
 }
 
-load()
-  .then(({ data, regionImages }) => main(data, regionImages))
+const rigParam = params.get('rig');
+const firstRig: RigName = RIGS.includes(rigParam ?? '') ? (rigParam as RigName) : 'walk';
+loadModel({ modelUrl: rigUrl(firstRig) })
+  .then((assets) => main(firstRig, assets))
   .catch((err) => {
     const stats = document.getElementById('stats');
     if (stats) stats.textContent = `Load failed: ${err.message} — did you run bun run fetch-assets?`;

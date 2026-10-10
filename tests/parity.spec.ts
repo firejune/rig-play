@@ -75,15 +75,35 @@ import { CHANNEL_TOLERANCE, diffInPage } from './pixelDiff';
 
 const POSE = 'time=1.2&timescale=0&count=1&dpr=1';
 
-/** Scenes cover the element-level features both backends must agree on. */
+/** The spineboy stage — spine-core skeletons through the package's renderer (tests/spine-stage.html). */
+const SPINEBOY = '/tests/spine-stage.html';
+/** The demo — rigc gallery builds, posed by rig-c/core through RigPlayer. */
+const DEMO = '/';
+
+/**
+ * Scenes cover the element-level features both backends must agree on. The
+ * spineboy scenes are the ones the limits below were calibrated on, and carry
+ * what no gallery build does (additive blend, clipping); the gallery scenes
+ * put the model path — loadModel, RigPlayer, the frame adapter — under the
+ * same two backends, one part per page and packed.
+ */
 const SCENES = [
   // Hoverboard exhaust uses BlendMode.Additive → mix-blend-mode: plus-lighter.
-  { name: 'hoverboard (additive glow)', query: `skel=pro&anim=hoverboard&${POSE}` },
+  { name: 'hoverboard (additive glow)', stage: SPINEBOY, query: `skel=pro&anim=hoverboard&${POSE}` },
   // Portal carries a ClippingAttachment, applied as a per-element clip-path.
   // Clipping is element-level, so it must land identically on both backends.
-  { name: 'portal (clipping)', query: `skel=pro&anim=portal&${POSE}` },
+  { name: 'portal (clipping)', stage: SPINEBOY, query: `skel=pro&anim=portal&${POSE}` },
   // Whole-skeleton tint rides the feColorMatrix filter on <img> and <canvas>.
-  { name: 'walk (tint filter)', query: `skel=pro&anim=walk&tint=ff9060&${POSE}` },
+  { name: 'walk (tint filter)', stage: SPINEBOY, query: `skel=pro&anim=walk&tint=ff9060&${POSE}` },
+  // Contour meshes waved by bones and rippled by a deform.
+  { name: 'gallery flex (contour meshes)', stage: DEMO, query: `rig=flex&anim=wave&${POSE}` },
+  // The same rig packed: every mesh samples a shared page through page UVs.
+  { name: 'gallery flex, packed (shared page)', stage: DEMO, query: `rig=flex-packed&anim=wave&${POSE}` },
+  // A deform-squashed mesh with slot rgba keys, under the player's tint.
+  { name: 'gallery squash (deform + tint)', stage: DEMO, query: `rig=squash&anim=bounce&tint=ff9060&${POSE}` },
+  // Grid meshes keyed as a projection, and a depth-mapped face under sliders.
+  { name: 'gallery portrait (deform projection)', stage: DEMO, query: `rig=portrait&anim=turn&${POSE}` },
+  { name: 'gallery look, packed (sliders, physics)', stage: DEMO, query: `rig=look-packed&anim=turn&${POSE}` },
 ] as const;
 
 /**
@@ -134,6 +154,20 @@ const SCENES = [
  * there under this one limit; the mechanism inside that rasterizer is still
  * not identified.]
  */
+/*
+ * ## The gallery scenes sit much closer to it — measured, not yet re-calibrated
+ *
+ * The gallery scenes (added with the model path, #60) run under this same
+ * limit, and their floors are an order of magnitude above spineboy's: macOS
+ * chromium / webkit, flex 0.191% / 0.313%, flex packed 0.197% / 0.320%, look
+ * packed 0.290% / 0.485%, squash and portrait 0.000%. The contour meshes'
+ * hard outlines are where the two rasterizers' edge antialiasing disagrees.
+ * That leaves webkit's look-packed cell 1.03× under the limit, and Linux WebKit
+ * is unmeasured. The limit was not moved to make room: if a gallery cell
+ * reddens, dump it (PARITY_DUMP=1) and read the mask — residue on outlines is
+ * AA and calls for a gallery limit calibrated with mutants the way this one
+ * was; residue on whole triangles is a defect.
+ */
 const BAD_RATIO_LIMIT = 0.005;
 /**
  * Allowed relative difference in drawn-content pixel counts — the
@@ -155,10 +189,11 @@ const PARITY_DIFF = { floorStrip: true } as const;
 
 async function captureStage(
   page: Page,
+  stage: string,
   query: string,
   backend: 'canvas2d' | 'webgl',
 ): Promise<Buffer> {
-  await page.goto(`/?${query}&backend=${backend}`);
+  await page.goto(`${stage}?${query}&backend=${backend}`);
   const stats = page.locator('#stats');
   // A frozen scene has settled when every mesh reuses its raster: the pose
   // (including any physics) has stopped moving, so the screenshot is
@@ -175,8 +210,8 @@ async function captureStage(
 
 for (const scene of SCENES) {
   test(`canvas2d / webgl parity: ${scene.name}`, async ({ page }, testInfo) => {
-    const canvas2d = await captureStage(page, scene.query, 'canvas2d');
-    const webgl = await captureStage(page, scene.query, 'webgl');
+    const canvas2d = await captureStage(page, scene.stage, scene.query, 'canvas2d');
+    const webgl = await captureStage(page, scene.stage, scene.query, 'webgl');
     const m = await diffInPage(page, canvas2d, webgl, { ...PARITY_DIFF, withMask: DUMP });
 
     const badRatio = m.bad / Math.max(1, m.contentUnion);
@@ -269,8 +304,8 @@ test('seam canary: the canvas2d crack-closing overdraw is alive', async ({ page 
   // captures would be bit-identical (rawBad = 0). Today they differ on the
   // ~half-pixel silhouette ring plus any engine clip-AA seams.
   const query = `skel=pro&anim=hoverboard&${POSE}`;
-  const withExpand = await captureStage(page, query, 'canvas2d');
-  const withoutExpand = await captureStage(page, `${query}&expand=0`, 'canvas2d');
+  const withExpand = await captureStage(page, SPINEBOY, query, 'canvas2d');
+  const withoutExpand = await captureStage(page, SPINEBOY, `${query}&expand=0`, 'canvas2d');
   const m = await diffInPage(page, withExpand, withoutExpand, PARITY_DIFF);
   console.log(`[parity] ${test.info().project.name} seam canary: rawBad=${m.rawBad}`);
   expect(m.rawBad).toBeGreaterThanOrEqual(10);
@@ -302,8 +337,8 @@ test('overdraw canary: the canvas2d source sub-rect tracks the clip expansion', 
   // 428 / 475 with none. The limit sits between the two populations, ~1.8×
   // under the real floor and ~2.1× over the loudest mutant.
   const query = `skel=pro&anim=hoverboard&${POSE}`;
-  const wide = await captureStage(page, `${query}&expand=32`, 'canvas2d');
-  const narrow = await captureStage(page, `${query}&expand=8`, 'canvas2d');
+  const wide = await captureStage(page, SPINEBOY, `${query}&expand=32`, 'canvas2d');
+  const narrow = await captureStage(page, SPINEBOY, `${query}&expand=8`, 'canvas2d');
   const m = await diffInPage(page, wide, narrow, PARITY_DIFF);
   console.log(`[parity] ${test.info().project.name} overdraw canary: rawBad=${m.rawBad}`);
   expect(m.rawBad).toBeGreaterThanOrEqual(1500);

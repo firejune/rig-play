@@ -24,7 +24,7 @@ it.
 
 ## Example assets
 
-The spineboy skeleton exports (JSON and binary), atlas, and images used by the demo
-and the tests are owned by Esoteric Software. They are **not redistributed** in this
+The spineboy skeleton exports (JSON and binary), atlas, and images used by the test
+suite and the benchmark are owned by Esoteric Software. They are **not redistributed** in this
 repository; `scripts/fetch-assets.sh` downloads them from the official spine-runtimes
 repository for local evaluation.

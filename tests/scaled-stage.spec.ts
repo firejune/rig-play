@@ -16,7 +16,7 @@ import type { ScaledStageSnapshot } from './harness';
  */
 
 function probe(page: Page) {
-  return page.evaluate(() => window.spineHtmlHarness.scaledStageProbe());
+  return page.evaluate(() => window.rigPlayHarness.scaledStageProbe());
 }
 
 function pixels(snapshot: ScaledStageSnapshot): number {
@@ -25,7 +25,7 @@ function pixels(snapshot: ScaledStageSnapshot): number {
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 });
 
 test('a scaled stage syncs to the fresh-renderer backing, canvas by canvas', async ({ page }) => {

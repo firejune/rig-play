@@ -1,28 +1,33 @@
 import { expect, test } from '@playwright/test';
 
 /**
- * loadSkeletonAssets — the optional convenience loader.
+ * loadModel — the loader of a `rigc build` output.
  *
- * Driven through the harness page against the real spineboy export, so this
- * covers the wiring the twenty lines of boilerplate used to do by hand:
- * fetching both files, resolving page names relative to the atlas URL,
- * attaching the page textures, unpacking the regions, and freeing them again.
+ * Driven through the harness page against the packed gallery build
+ * (`public/rigs/flex-packed/`), whose regions share a page, so every region is
+ * cut and mints a blob URL — the ownership this file is about. (A one-part-
+ * per-page build passes every page through and mints nothing.) It covers the
+ * wiring: fetching the document, resolving page names against its directory,
+ * loading the pages, unpacking the regions, drawing a frame from them, and
+ * freeing them again — and the refusals: a Spine export by name, a document of
+ * a spec the core does not read, a document or a page that never arrives.
  */
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 });
 
-test('loads an atlas + skeleton pair and renders from it', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.loaderProbe());
+test('loads a model build and draws a frame from it', async ({ page }) => {
+  const probe = await page.evaluate(() => window.rigPlayHarness.loaderProbe());
 
-  expect(probe.animations).toContain('walk');
-  expect(probe.pageCount).toBe(1);
+  expect(probe.spec).toBe('rigc-compiled/3');
+  expect(probe.animations).toEqual(['wave', 'gust']);
+  expect(probe.pageCount).toBeGreaterThan(0);
   expect(probe.regionCount).toBeGreaterThan(0);
-  // Page images resolved against the atlas URL's directory (the default),
-  // proven by the frame actually drawing: rigid slots as <img>, spineboy-pro's
-  // deform slots as per-part <canvas>.
+  // Page images resolved against the document URL's directory (the default),
+  // proven by the frame actually drawing: rigid slots as <img>, the deform
+  // slots as per-part <canvas>.
   expect(probe.imageCount).toBeGreaterThan(0);
   expect(probe.canvasCount).toBeGreaterThan(0);
   expect(probe.rootChildrenAfterDispose).toBe(0);
@@ -34,75 +39,52 @@ test('loads an atlas + skeleton pair and renders from it', async ({ page }) => {
   for (const url of probe.createdUrls) expect(probe.aliveAfter[url]).toBe(false);
 });
 
-test('a failed load leaves no blob URL behind', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.loaderFailureProbe());
-
-  // The skeleton URL points at the atlas file: the regions unpack, then the
-  // JSON read throws — the one step that could strand them.
-  expect(probe.message).not.toBe('');
-  expect(probe.createdUrls.length).toBeGreaterThan(0);
-  expect([...probe.revokedUrls].sort()).toEqual([...probe.createdUrls].sort());
+test('a Spine export is refused by name, before anything is fetched', async ({ page }) => {
+  const probe = await page.evaluate(() => window.rigPlayHarness.loaderFailureProbe());
+  for (const refused of [probe.spineJson, probe.spineSkel]) {
+    expect(refused.message).toContain('is a Spine export');
+    expect(refused.message).toContain('rigc build');
+    expect(refused.fetched).toEqual([]);
+    expect(refused.createdUrls).toEqual([]);
+  }
 });
 
-test('a skeleton that never arrives leaves no blob URL behind', async ({ page }) => {
-  const probe = await page.evaluate(() => window.spineHtmlHarness.loaderHttpFailureProbe());
-
-  // A missing path is answered by the server, not by the library: this one is
-  // a preview server with an SPA fallback, so it replies 200 with an HTML body
-  // and the failure lands in the JSON read. The status is recorded rather than
-  // pinned, and the HTTP-error branch is reached with a fetch double below.
-  expect([200, 404]).toContain(probe.status);
-  expect(probe.missingMessage).not.toBe('');
-  expect(probe.missingCreatedUrls.length).toBeGreaterThan(0);
-  expect([...probe.missingRevokedUrls].sort()).toEqual([...probe.missingCreatedUrls].sort());
-  for (const url of probe.missingCreatedUrls) expect(probe.missingAliveAfter[url]).toBe(false);
-
-  // The fetch rejects before the skeleton is ever read, and it rejects while
-  // the atlas half is still unpacking — the case the one-call loader used to
-  // get for free (both texts were fetched before any blob existed) and now has
-  // to handle: the regions are already minted when the skeleton half fails.
-  // Both halves go in flight together, as they did when one Promise.all
-  // fetched both texts: the skeleton is asked for before the atlas is, so the
-  // download does not wait for the atlas to be read, its pages to load and its
-  // regions to be cut.
-  expect(probe.fetchOrder[0]).toContain('spineboy-pro.json');
-  expect(probe.fetchOrder[1]).toContain('spineboy.atlas');
-  expect(probe.httpMessage).toContain('404');
-  expect(probe.httpCreatedUrls.length).toBeGreaterThan(0);
-  expect([...probe.httpRevokedUrls].sort()).toEqual([...probe.httpCreatedUrls].sort());
-  for (const url of probe.httpCreatedUrls) expect(probe.httpAliveAfter[url]).toBe(false);
+test('a document of a spec the core does not read is refused with its sentence', async ({ page }) => {
+  const probe = await page.evaluate(() => window.rigPlayHarness.loaderFailureProbe());
+  // readModel's own sentence, passed through, and what to do about it.
+  expect(probe.foreignSpec.message).toContain('spec is "rigc-compiled/9", not "rigc-compiled/3"');
+  expect(probe.foreignSpec.message).toContain('build it with `rigc build`');
+  expect(probe.foreignSpec.createdUrls).toEqual([]);
 });
 
-test('one atlas, two skeletons: regions are cut once and shared', async ({ page }) => {
-  const shared = await page.evaluate(() => window.spineHtmlHarness.sharedAtlasProbe());
-  // The same atlas through the one-call loader, for the count to compare with.
-  const single = await page.evaluate(() => window.spineHtmlHarness.loaderProbe());
+test('a document or a page that never arrives leaves no blob URL behind', async ({ page }) => {
+  const probe = await page.evaluate(() => window.rigPlayHarness.loaderFailureProbe());
+  expect(probe.http.message).toContain('404');
+  expect(probe.http.createdUrls).toEqual([]);
+  // The document was read; a page failed before anything was cut.
+  expect(probe.missingPage.message).toContain('Failed to load page image');
+  expect(probe.missingPage.fetched.length).toBe(1);
+  expect(probe.missingPage.createdUrls).toEqual([]);
+  // A failure *during* the cuts is unpackRegions' own cleanup, held with the
+  // cuts in flight by tests/regions.spec.ts.
+});
 
-  // Minted once, not once per skeleton: the whole point of the two-step path.
+test('one load, two players: regions are cut once and shared', async ({ page }) => {
+  const shared = await page.evaluate(() => window.rigPlayHarness.sharedAssetsProbe());
+
+  // Minted once, by the load; building and drawing players mints nothing.
   expect(shared.createdUrls.length).toBe(shared.regionCount);
-  expect(shared.createdUrls.length).toBe(single.createdUrls.length);
-  expect(shared.regionCount).toBe(single.regionCount);
-  // Reading a skeleton owns no bitmaps, so it mints nothing at all.
-  expect(shared.skeletonCreatedUrls).toEqual([]);
+  expect(shared.playerCreatedUrls).toEqual([]);
+  expect(shared.firstElementCount).toBeGreaterThan(0);
+  expect(shared.secondElementCount).toBe(shared.firstElementCount);
+  expect(shared.secondCanvasCount).toBeGreaterThan(0);
 
-  // Both skeletons parsed, and both drew from the one shared map — ess is
-  // rigid-only, pro deforms, so only pro is expected to have canvases.
-  expect(shared.essAnimations).toContain('walk');
-  expect(shared.proAnimations).toContain('walk');
-  expect(shared.essElementCount).toBeGreaterThan(0);
-  expect(shared.proElementCount).toBeGreaterThan(0);
-  expect(shared.proCanvasCount).toBeGreaterThan(0);
+  // A player owns none of the assets: disposing one leaves every bitmap alive
+  // and the other player drawing.
+  for (const url of shared.createdUrls) expect(shared.aliveAfterFirstDispose[url]).toBe(true);
+  expect(shared.secondElementsAfterFirstDispose).toBe(shared.secondElementCount);
 
-  // Ownership runs the other way here than in the one-call loader: a read that
-  // throws must leave the caller's assets whole, because the skeletons already
-  // read from them still need the bitmaps. aliveBefore is sampled after that
-  // failed read, so a loadSkeletonJson that disposed on failure fails here.
-  expect(shared.badReadMessage).not.toBe('');
-  expect(shared.badReadRevokedUrls).toEqual([]);
-  for (const url of shared.createdUrls) expect(shared.aliveBefore[url]).toBe(true);
-
-  // One dispose() for the shared assets, called twice: no duplicates, and
-  // every URL dead afterwards.
+  // One dispose() for the assets, called twice: no duplicates, every URL dead.
   expect([...shared.revokedUrls].sort()).toEqual([...shared.createdUrls].sort());
   for (const url of shared.createdUrls) expect(shared.aliveAfter[url]).toBe(false);
 });

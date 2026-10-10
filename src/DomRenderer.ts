@@ -1,15 +1,6 @@
-import {
-  BlendMode,
-  ClippingAttachment,
-  MeshAttachment,
-  RegionAttachment,
-  type Skeleton,
-  type Slot,
-  type SlotData,
-} from '@esotericsoftware/spine-core';
-import { type CoreCompat, coreCompatFor, type SlotPoseView } from './coreCompat.js';
 import { type PageSource, type RegionImage, straightAlphaSource } from './DomTexture.js';
 import { getMeshGlBlitter, type MeshBlitJob } from './MeshGlBlitter.js';
+import type { BlendMode, PosedClip, PosedFrame, PosedMesh, PosedRegion, PosedSlot } from './posedFrame.js';
 
 /** Rasterizer used for the mesh (deform) tier. */
 export type MeshBackend = 'canvas2d' | 'webgl';
@@ -78,20 +69,6 @@ function clipNum(v: number): number {
  */
 const CLIP_COORD_LIMIT = 1e9;
 
-/**
- * Does `endSlot` still lie ahead of `index` in the draw order? A null end slot
- * never does, and neither does the clip's own slot (the scan starts past it)
- * nor one already passed — which is exactly why each of those clips runs to
- * the end of the draw order instead of ending.
- */
-function endsAhead(drawOrder: Slot[], index: number, endSlot: SlotData | null): boolean {
-  if (!endSlot) return false;
-  for (let i = index + 1, n = drawOrder.length; i < n; i++) {
-    if (drawOrder[i].data === endSlot) return true;
-  }
-  return false;
-}
-
 type SlotKind = 'image' | 'canvas';
 
 interface SlotView {
@@ -119,8 +96,15 @@ interface SlotView {
   canvasH: number;
   /** Canvas kind: pixelRatio the backing/CSS sizing was computed with. */
   meshRatio: number;
-  /** Canvas kind: shape signature of the last raster, for dirty-skipping. */
-  meshAttachment: MeshAttachment | null;
+  /**
+   * Canvas kind: shape signature of the last raster, for dirty-skipping. The
+   * UV and triangle arrays are compared by identity: the frame hands the same
+   * objects for the same region and attachment (see PosedMesh), so a new array
+   * is a new texture mapping and an old one is not.
+   */
+  meshUvs: ArrayLike<number> | null;
+  meshTriangles: ArrayLike<number> | null;
+  meshPage: HTMLImageElement | null;
   meshSequenceIndex: number;
   meshExpand: number;
   meshVertexCount: number;
@@ -133,22 +117,24 @@ interface SlotView {
    * permanently "dirty".
    */
   meshVertices: Float64Array;
+  /** The render() call that last drew this view — a view not drawn by the current one is hidden. */
+  drawnIn: number;
 }
 
 const BLEND_CSS: Record<BlendMode, string> = {
-  [BlendMode.Normal]: '',
-  [BlendMode.Additive]: 'plus-lighter',
-  [BlendMode.Multiply]: 'multiply',
-  [BlendMode.Screen]: 'screen',
+  Normal: '',
+  Additive: 'plus-lighter',
+  Multiply: 'multiply',
+  Screen: 'screen',
 };
 
 /**
- * Renders a spine-core Skeleton as DOM, split by slot type:
+ * Renders a posed frame (`PosedFrame`) as DOM, split by slot kind:
  *
- * - Region attachments (rigid parts) become one absolutely-positioned <img>
+ * - Region slots (rigid parts) become one absolutely-positioned <img>
  *   posed with a single CSS matrix() write per frame — exact, since bone
  *   transforms are affine.
- * - Mesh attachments (deform parts) each get a small per-part <canvas> sized
+ * - Mesh slots (deform parts) each get a small per-part <canvas> sized
  *   to the mesh's world bounding box, redrawn per frame — either with the
  *   standard per-triangle clip+transform+drawImage mapping (default), or via
  *   a shared offscreen WebGL canvas that rect-blits into the same per-part
@@ -157,46 +143,47 @@ const BLEND_CSS: Record<BlendMode, string> = {
  *
  * Both element kinds share one stacking context, so draw order interleaves
  * freely via z-index (rear hair canvas < torso img < front hair canvas).
- * RGB tint (skeleton × slot × attachment color) is applied per element with
- * an SVG feColorMatrix reference filter — exact channel multiply, works the
- * same on <img> and <canvas>. Dark (two-color) tint is not expressible that
- * way and is unsupported. Clipping attachments become a CSS clip-path per
- * element, in that element's own local frame, on spine-core's semantics — one
- * active clip at a time, ending at the end slot inclusive (see `clipping`).
+ * The RGB tint the frame carries (slot × attachment × the player's colour) is
+ * applied per element with an SVG feColorMatrix reference filter — exact
+ * channel multiply, works the same on <img> and <canvas>. Dark (two-color)
+ * tint is not expressible that way and is unsupported. A clip the frame
+ * carries becomes a CSS clip-path per element, in that element's own local
+ * frame (see `clipping`) — which slots a clip covers is decided by the poser's
+ * adapter (`frameOf`), not here.
  *
- * Coordinate mapping: Spine is Y-up, CSS is Y-down — world Y is negated.
- * spine-core computes everything (bones, constraints, physics, deformed
- * vertices) on the CPU; this class only draws.
+ * Coordinate mapping: the frame is world space, Y-up; CSS is Y-down — world Y
+ * is negated. The poser computes everything (bones, constraints, physics,
+ * deformed vertices) on the CPU; this class only draws.
  */
-export class SpineHtmlRenderer {
+export class DomRenderer {
   /**
-   * Apply clipping attachments (default). Each element drawn inside an active
+   * Apply the clips the frame carries (default). Each element drawn inside a
    * clip gets a CSS `clip-path` in its own local frame — an element-level
    * feature, so both mesh backends see exactly the same thing and neither
    * raster path knows clipping exists.
    *
-   * spine-core's semantics, not an approximation of them: one clip is active
-   * at a time (a second clipping attachment met while one is active is
-   * ignored, as SkeletonClipping.clipStart does), a clip applies to the slots
-   * drawn after its own slot through its end slot inclusive, and an end slot
-   * that is the clip's own slot — or one already passed — never ends it, so
-   * the clip runs to the end of the draw order. That last case is the
-   * whole-skeleton clip, and it takes a fast path: one `clip-path` on the root
-   * instead of one per element. The root is the caller's element, so its
-   * inline `clip-path` is borrowed — saved on the first write and restored
-   * when the clip stops covering the frame, when `clipping` goes false, and by
-   * `dispose()`.
+   * Which slots a clip covers is the frame's, decided by the adapter on the
+   * runtime's semantics (`clipCover` in posedFrame.ts: one clip in force at a
+   * time, a second one met while one is in force ignored, a clip covering the
+   * slots after its own through its end slot inclusive, an end slot that is
+   * the clip's own slot — or one already passed — never ending it). A clip
+   * that covers every slot of the frame is the whole-skeleton clip, and it
+   * takes a fast path: one `clip-path` on the root instead of one per element.
+   * The root is the caller's element, so its inline `clip-path` is borrowed —
+   * saved on the first write and restored when the clip stops covering the
+   * frame, when `clipping` goes false, and by `dispose()`.
    *
    * False restores the pre-0.6 behaviour: clips are counted in clipSkipCount
    * and nothing is clipped, with any clip-path this renderer wrote removed.
    */
   clipping = true;
-  /** Clipping attachments applied last frame. */
+  /** Clips applied last frame — distinct clip polygons over the drawn slots. */
   clipCount = 0;
   /**
-   * Clipping attachments NOT applied last frame: `clipping` is false, another
-   * clip was already active (spine-core ignores the second one), the slot's
-   * bone is inactive, or the polygon has fewer than three points.
+   * Clips in the frame NOT applied last frame: `clipping` is false, or the
+   * polygon has fewer than three points. A clip the runtime itself ignores (a
+   * second one met while one is in force, one on an inactive bone) never
+   * reaches the frame, so it is not counted here.
    */
   clipSkipCount = 0;
   /**
@@ -249,15 +236,9 @@ export class SpineHtmlRenderer {
   /** Backend that actually rasterized the mesh tier during the last render(). */
   meshBackendActive: MeshBackend = 'canvas2d';
 
-  /**
-   * How this renderer reaches spine-core, picked from the first skeleton it is
-   * handed and then reused — see coreCompat.ts. Null until then, because the
-   * constructor has no skeleton to look at and the installed core is not
-   * knowable from the root element.
-   */
-  private core: CoreCompat | null = null;
-
-  private readonly views = new Map<Slot, SlotView>();
+  private readonly views = new Map<string, SlotView>();
+  /** Counts render() calls: the stamp a view drawn this frame carries (`SlotView.drawnIn`). */
+  private frameNumber = 0;
   private readonly pendingJobs: MeshBlitJob[] = [];
   private readonly pendingViews: SlotView[] = [];
   /**
@@ -266,16 +247,22 @@ export class SpineHtmlRenderer {
    * that never leaves canvas2d holds nothing and gives nothing back.
    */
   private glPages: Set<HTMLImageElement> | null = null;
+  /**
+   * World vertices copied out of the frame. Float32, as the rigid and mesh
+   * paths have always read them: the raster, the dirty signature and the
+   * clip-path quantization below are calibrated on single-precision
+   * coordinates, and the frame's doubles are rounded here once rather than
+   * changing what those paths see.
+   */
   private scratchVertices = new Float32Array(256);
   private tintDefs: SVGSVGElement | null = null;
-  /** The clip in force at the current point of the draw order, if any. */
-  private clipAttachment: ClippingAttachment | null = null;
-  private clipEndSlot: SlotData | null = null;
+  /** The clip whose polygon is loaded in `clipPolygon`, if any. */
+  private clipActive: PosedClip | null = null;
+  /** The clips counted so far this frame, applied or skipped — one count each. */
+  private readonly clipsSeen = new Set<PosedClip>();
   private clipInverse = false;
   /** True while the active clip is served by one clip-path on the root. */
   private clipOnRoot = false;
-  /** Whether any element has been drawn yet this frame (the fast-path test). */
-  private drewAnything = false;
   /** The active clip polygon in CSS space (Y already negated), flat x,y. */
   private clipPolygon = new Float64Array(0);
   private clipPolygonLength = 0;
@@ -292,11 +279,16 @@ export class SpineHtmlRenderer {
    * @param root Positioned element (e.g. position:absolute) that becomes the
    *   skeleton origin. The renderer only appends slot elements to it — layout
    *   and scaling of the root belong to the caller.
-   * @param regionImages Unpacked per-region bitmaps (for the rigid tier).
+   * @param regionImages Unpacked per-region bitmaps (for the rigid tier),
+   *   keyed by region name — `PosedRegion.region`.
+   * @param pages Page images (for the mesh tier), keyed by page name —
+   *   `PosedMesh.page`. Read on every mesh draw, so a caller may fill it after
+   *   construction.
    */
   constructor(
     private readonly root: HTMLElement,
-    private readonly regionImages: Map<string, RegionImage>,
+    private readonly regionImages: ReadonlyMap<string, RegionImage>,
+    private readonly pages: ReadonlyMap<string, HTMLImageElement> = new Map(),
   ) {}
 
   /**
@@ -388,9 +380,12 @@ export class SpineHtmlRenderer {
     return next;
   }
 
-  render(skeleton: Skeleton): void {
-    // One feature detection per renderer, never per slot and never per frame.
-    const core = (this.core ??= coreCompatFor(skeleton));
+  /**
+   * Draws one frame. Slots the frame does not carry — no attachment, a
+   * clipping attachment, an inactive bone, a kind the DOM tier does not draw —
+   * are hidden, their elements kept for when they draw again.
+   */
+  render(frame: PosedFrame): void {
     this.clipCount = 0;
     this.clipSkipCount = 0;
     this.clipWriteCount = 0;
@@ -398,52 +393,39 @@ export class SpineHtmlRenderer {
     this.meshReuseCount = 0;
     this.canvasReallocCount = 0;
     this.triangleCount = 0;
-    this.clipAttachment = null;
-    this.clipEndSlot = null;
+    this.clipActive = null;
     this.clipInverse = false;
     this.clipOnRoot = false;
-    this.drewAnything = false;
+    this.clipsSeen.clear();
+    const stamp = ++this.frameNumber;
     const blitter = this.meshBackend === 'webgl' ? getMeshGlBlitter() : null;
     this.meshBackendActive = blitter ? 'webgl' : 'canvas2d';
-    const drawOrder = core.drawOrder(skeleton);
+    const order = frame.order;
 
-    for (let i = 0, n = drawOrder.length; i < n; i++) {
-      const slot = drawOrder[i];
-      const pose = core.pose(slot);
-      const attachment = pose.attachment;
-
-      // The official draw loops take the clipping attachment before anything
-      // else and in this order: end whatever clip this slot closes, start this
-      // slot's clip, then `continue` — skipping the per-slot clipEnd at the
-      // bottom. That `continue` is the whole own-slot rule: the slot that
-      // STARTS a clip is never offered to clipEnd afterwards, so an end slot
-      // equal to the clip's own slot ends nothing and the clip runs to the end
-      // of the draw order. [spine-core 4.3.13 dist/SkeletonRendererCore.js,
-      // and dist/SkeletonRenderer.js of @esotericsoftware/spine-webgl 4.3.13.]
-      if (attachment instanceof ClippingAttachment) {
-        this.clipEnd(slot);
-        // An inactive bone means the official loop never reaches the clipping
-        // branch at all, so no clip starts.
-        if (slot.bone.active) this.clipStart(skeleton, slot, attachment, drawOrder, i);
-        else this.clipSkipCount++;
-        this.hide(slot);
-        continue;
+    // Whole-skeleton fast path: one clip covers every slot of the frame, so
+    // every element is inside it — one clip-path on the root beats one per
+    // element. The frame shares one clip object across the slots it covers,
+    // so "every slot" is an identity test. An inverse clip is excluded: its
+    // CSS form needs an outer ring around the element's own box, and the root
+    // is an origin element with no box to use.
+    const first = order.length > 0 ? order[0].clip : undefined;
+    if (first && !first.inverse && this.clipping && first.polygon.length >= 6) {
+      let whole = true;
+      for (let i = 1, n = order.length; i < n && whole; i++) whole = order[i].clip === first;
+      if (whole) {
+        this.useClip(first);
+        this.clipOnRoot = true;
+        this.writeRootClip(this.rootClipPath());
       }
-      if (!slot.bone.active) {
-        this.hide(slot);
-        this.clipEnd(slot);
-        continue;
-      }
-      if (attachment instanceof RegionAttachment) {
-        this.renderRegion(skeleton, slot, pose, attachment, i);
-      } else if (attachment instanceof MeshAttachment) {
-        this.renderMesh(skeleton, slot, pose, attachment, i);
-      } else {
-        this.hide(slot);
-      }
-      // After the slot is drawn: the end slot is inside its own clip.
-      this.clipEnd(slot);
     }
+
+    for (let i = 0, n = order.length; i < n; i++) {
+      const slot = order[i];
+      if (!this.clipOnRoot) this.useClip(slot.clip);
+      const drawn = slot.kind === 'region' ? this.renderRegion(slot) : this.renderMesh(slot);
+      if (drawn) drawn.drawnIn = stamp;
+    }
+    for (const view of this.views.values()) if (view.drawnIn !== stamp) this.hide(view);
     // Only a clip that covered the whole frame keeps the root's style; every
     // other frame hands the caller's inline value back.
     if (!this.clipOnRoot) this.releaseRootClip();
@@ -507,35 +489,25 @@ export class SpineHtmlRenderer {
 
   // --- rigid tier -----------------------------------------------------------
 
-  private renderRegion(
-    skeleton: Skeleton,
-    slot: Slot,
-    pose: SlotPoseView,
-    attachment: RegionAttachment,
-    zIndex: number,
-  ): void {
-    const core = this.core as CoreCompat;
-    const region = core.regionAt(attachment, slot, core.sequenceIndex(attachment, pose));
-    const regionImage = region && this.regionImages.get(region.name);
-    if (!regionImage) {
-      this.hide(slot);
-      return;
-    }
+  private renderRegion(slot: PosedRegion): SlotView | null {
+    const regionImage = this.regionImages.get(slot.region);
+    if (!regionImage) return null;
 
-    const view = this.view(slot, 'image');
+    const view = this.view(slot.slot, 'image');
     const img = view.el as HTMLImageElement;
-    if (view.regionName !== region.name) {
-      view.regionName = region.name;
+    if (view.regionName !== slot.region) {
+      view.regionName = slot.region;
       img.src = regionImage.url;
       img.width = regionImage.width;
       img.height = regionImage.height;
     }
 
-    core.regionWorldVertices(attachment, slot, pose, regionVertices);
-    // Corner order from spine-core is BL, UL, UR, BR — derived from
-    // computeUVs, whose per-vertex UVs are (u,v2), (u,v), (u2,v), (u2,v2).
-    // (The br/bl/ul/ur comments inside computeWorldVertices are stale.)
-    // Flip Y for CSS (Spine is Y-up).
+    const corners = slot.corners;
+    for (let v = 0; v < 8; v++) regionVertices[v] = corners[v];
+    // Corner order is BL, UL, UR, BR — the runtime's, which the poser keeps:
+    // the region's UVs run (u,v2), (u,v), (u2,v), (u2,v2) in that order.
+    // (The br/bl/ul/ur comments inside spine-core's computeWorldVertices are
+    // stale.) Flip Y for CSS (the frame is Y-up).
     const blx = regionVertices[0], bly = -regionVertices[1];
     const ulx = regionVertices[2], uly = -regionVertices[3];
     const urx = regionVertices[4], ury = -regionVertices[5];
@@ -551,42 +523,26 @@ export class SpineHtmlRenderer {
     // inverse into the local (atlas-unit) frame the <img> box spans.
     this.applyClip(view, a, b, c, d, ulx, uly, w, h);
 
-    this.applyCommon(view, slot, pose, attachment.color, skeleton, zIndex);
+    this.applyCommon(view, slot);
+    return view;
   }
 
   // --- deform tier ----------------------------------------------------------
 
-  private renderMesh(
-    skeleton: Skeleton,
-    slot: Slot,
-    pose: SlotPoseView,
-    attachment: MeshAttachment,
-    zIndex: number,
-  ): void {
-    const core = this.core as CoreCompat;
-    const sequenceIndex = core.sequenceIndex(attachment, pose);
-    const region = core.regionAt(attachment, slot, sequenceIndex);
-    // The page image comes off the *page*, not off the region. A region's own
-    // `texture` is a 4.1-and-later convenience — `TextureAtlasPage.setTexture`
-    // copies the page's texture onto each of its regions — and 4.0 has no such
-    // field at all (it carries a `renderObject` back-reference instead, which
-    // is why spine-webgl 4.0 reads `region.renderObject.page.texture`). The
-    // page is where the handle has always lived, so reading it there needs no
-    // seam entry and is the same object on every supported generation.
-    const page = region?.page.texture?.getImage() as HTMLImageElement | undefined;
-    if (!region || !page) {
-      this.hide(slot);
-      return;
-    }
+  private renderMesh(slot: PosedMesh): SlotView | null {
+    const sequenceIndex = slot.sequence;
+    const page = this.pages.get(slot.page);
+    if (!page) return null;
     // Which alpha convention the page's texels are in. The two backends consume
     // opposite ones — GL wants them premultiplied, `drawImage` wants them
     // straight — so this decides what each is handed, never what it does.
-    const pma = region.page.pma;
+    const pma = slot.pma;
 
-    const count = attachment.worldVerticesLength;
+    const source = slot.vertices;
+    const count = source.length;
     if (this.scratchVertices.length < count) this.scratchVertices = new Float32Array(count);
     const vertices = this.scratchVertices;
-    core.vertexWorldVertices(attachment, skeleton, slot, 0, count, vertices, 0, 2);
+    for (let v = 0; v < count; v++) vertices[v] = source[v];
 
     // World bounds (in CSS coords: Y negated).
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -604,16 +560,17 @@ export class SpineHtmlRenderer {
     minY = Math.floor(minY) - pad;
     const w = Math.ceil(maxX) + pad - minX;
     const h = Math.ceil(maxY) + pad - minY;
-    if (w <= 0 || h <= 0) {
-      this.hide(slot);
-      return;
-    }
+    if (w <= 0 || h <= 0) return null;
 
-    const view = this.view(slot, 'canvas');
+    const view = this.view(slot.slot, 'canvas');
     const canvas = view.el as HTMLCanvasElement;
     const ratio = this.pixelRatio;
+    const uvs = slot.uvs;
+    const triangles = slot.triangles;
     let dirty =
-      view.meshAttachment !== attachment ||
+      view.meshUvs !== uvs ||
+      view.meshTriangles !== triangles ||
+      view.meshPage !== page ||
       view.meshSequenceIndex !== sequenceIndex ||
       view.meshExpand !== this.triangleExpand ||
       view.meshVertexCount !== count ||
@@ -681,14 +638,14 @@ export class SpineHtmlRenderer {
     if (!dirty) {
       this.meshReuseCount++;
     } else {
-      view.meshAttachment = attachment;
+      view.meshUvs = uvs;
+      view.meshTriangles = triangles;
+      view.meshPage = page;
       view.meshSequenceIndex = sequenceIndex;
       view.meshExpand = this.triangleExpand;
       view.meshVertexCount = count;
       view.meshBackendDrawn = this.meshBackendActive;
 
-      const uvs = core.meshUVs(attachment, sequenceIndex);
-      const triangles = attachment.triangles;
       if (this.meshBackendActive === 'webgl') {
         // Queued, not drawn: render() flushes the whole batch through the
         // shared GL context once the slot loop is done. `rel` is this view's
@@ -713,7 +670,8 @@ export class SpineHtmlRenderer {
       this.triangleCount += triangles.length / 3;
     }
 
-    this.applyCommon(view, slot, pose, attachment.color, skeleton, zIndex);
+    this.applyCommon(view, slot);
+    return view;
   }
 
   /**
@@ -912,68 +870,52 @@ export class SpineHtmlRenderer {
   // --- clipping tier ---------------------------------------------------------
 
   /**
-   * Begins a clip, mirroring SkeletonClipping.clipStart — whose first line is
-   * `if (this.clipAttachment) return`, so a second clipping attachment met
-   * while one is active is ignored rather than nested.
+   * Makes `clip` the clip in force for the slot about to be drawn, loading its
+   * polygon when it is not the one already loaded. Each clip object is counted
+   * once per frame — in clipCount when applied, in clipSkipCount when
+   * `clipping` is off or the polygon has fewer than three points (no clip is
+   * in force then, so the slot draws unclipped, as the runtime would).
    *
-   * The polygon is spine-core's: computeWorldVertices gives it in world space
-   * each frame, and the only thing done to it here is the Y negation the rest
-   * of the renderer already applies. It is NOT convexified or triangulated the
-   * way the CPU clipper does — CSS `polygon()` takes a concave polygon
-   * directly, so the decomposition that exists to feed a triangle rasterizer
-   * has no job here.
+   * The polygon is the poser's world-space one, and the only things done to it
+   * here are the single-precision read the vertex paths share and the Y
+   * negation the rest of the renderer already applies. It is NOT convexified
+   * or triangulated the way the CPU clipper does — CSS `polygon()` takes a
+   * concave polygon directly, so the decomposition that exists to feed a
+   * triangle rasterizer has no job here.
    */
-  private clipStart(
-    skeleton: Skeleton,
-    slot: Slot,
-    clip: ClippingAttachment,
-    drawOrder: Slot[],
-    index: number,
-  ): void {
-    const count = clip.worldVerticesLength;
-    if (this.clipAttachment || !this.clipping || count < 6) {
-      this.clipSkipCount++;
+  private useClip(clip: PosedClip | undefined): void {
+    if (!clip) {
+      this.clipActive = null;
       return;
     }
-    const core = this.core as CoreCompat;
+    if (clip === this.clipActive) return;
+    const count = clip.polygon.length;
+    const counted = this.clipsSeen.has(clip);
+    if (!this.clipping || count < 6) {
+      if (!counted) {
+        this.clipsSeen.add(clip);
+        this.clipSkipCount++;
+      }
+      this.clipActive = null;
+      return;
+    }
+    if (!counted) {
+      this.clipsSeen.add(clip);
+      this.clipCount++;
+    }
+    const polygon = clip.polygon;
     if (this.scratchVertices.length < count) this.scratchVertices = new Float32Array(count);
     const world = this.scratchVertices;
-    core.vertexWorldVertices(clip, skeleton, slot, 0, count, world, 0, 2);
+    for (let v = 0; v < count; v++) world[v] = polygon[v];
     if (this.clipPolygon.length < count) this.clipPolygon = new Float64Array(count);
     const poly = this.clipPolygon;
     for (let v = 0; v < count; v += 2) {
       poly[v] = world[v];
-      poly[v + 1] = -world[v + 1]; // Spine is Y-up, CSS is Y-down.
+      poly[v + 1] = -world[v + 1]; // The frame is Y-up, CSS is Y-down.
     }
     this.clipPolygonLength = count;
-    this.clipAttachment = clip;
-    this.clipEndSlot = clip.endSlot;
-    this.clipInverse = core.inverse(clip);
-    this.clipCount++;
-
-    // Whole-skeleton fast path: nothing was drawn before this clip started and
-    // it never ends, so every element of this frame is inside it — one
-    // clip-path on the root beats one per element. An inverse clip is
-    // excluded: its CSS form needs an outer ring around the element's own box,
-    // and the root is an origin element with no box to use.
-    this.clipOnRoot =
-      !this.drewAnything && !this.clipInverse && !endsAhead(drawOrder, index, clip.endSlot);
-    if (this.clipOnRoot) this.writeRootClip(this.rootClipPath());
-  }
-
-  /**
-   * Ends the active clip if this slot is its end slot, called after the slot
-   * has been drawn so that the end slot is itself clipped. Every other slot is
-   * ignored, exactly as SkeletonClipping.clipEnd ignores it.
-   *
-   * This cannot fire for a clip on the root fast path: that path is only taken
-   * when no slot ahead of the clip carries its end slot.
-   */
-  private clipEnd(slot: Slot): void {
-    if (this.clipAttachment && this.clipEndSlot === slot.data) {
-      this.clipAttachment = null;
-      this.clipEndSlot = null;
-    }
+    this.clipActive = clip;
+    this.clipInverse = clip.inverse;
   }
 
   /**
@@ -998,7 +940,7 @@ export class SpineHtmlRenderer {
     boxW: number,
     boxH: number,
   ): void {
-    if (!this.clipAttachment || this.clipOnRoot) {
+    if (!this.clipActive || this.clipOnRoot) {
       this.setClipPath(view, '');
       return;
     }
@@ -1084,24 +1026,14 @@ export class SpineHtmlRenderer {
     }
   }
 
-  private applyCommon(
-    view: SlotView,
-    slot: Slot,
-    pose: SlotPoseView,
-    attachmentColor: { r: number; g: number; b: number; a: number },
-    skeleton: Skeleton,
-    zIndex: number,
-  ): void {
-    // This element is about to be visible: the whole-skeleton fast path is
-    // only open to a clip that starts before anything has been drawn.
-    this.drewAnything = true;
-    const sc = skeleton.color;
-    const pc = pose.color;
+  private applyCommon(view: SlotView, slot: PosedSlot): void {
+    const zIndex = slot.z;
+    const tint = slot.tint;
     if (view.zIndex !== zIndex) {
       view.zIndex = zIndex;
       view.el.style.zIndex = String(zIndex);
     }
-    const alpha = sc.a * pc.a * attachmentColor.a;
+    const alpha = tint[3];
     if (view.opacity !== alpha) {
       view.opacity = alpha;
       view.el.style.opacity = alpha === 1 ? '' : String(alpha);
@@ -1110,9 +1042,9 @@ export class SpineHtmlRenderer {
     // scaling the channels is an exact multiply, applies to <img> and
     // <canvas> alike, and never touches the raster. Needs reference-filter
     // support (Safari 15+).
-    const r = sc.r * pc.r * attachmentColor.r;
-    const g = sc.g * pc.g * attachmentColor.g;
-    const b = sc.b * pc.b * attachmentColor.b;
+    const r = tint[0];
+    const g = tint[1];
+    const b = tint[2];
     if (view.tintR !== r || view.tintG !== g || view.tintB !== b) {
       view.tintR = r;
       view.tintG = g;
@@ -1127,7 +1059,7 @@ export class SpineHtmlRenderer {
         view.el.style.filter = `url(#${view.tintId})`;
       }
     }
-    const blendMode = slot.data.blendMode;
+    const blendMode = slot.blend;
     if (view.blendMode !== blendMode) {
       view.blendMode = blendMode;
       view.el.style.mixBlendMode = BLEND_CSS[blendMode];
@@ -1163,7 +1095,7 @@ export class SpineHtmlRenderer {
     return matrix;
   }
 
-  private view(slot: Slot, kind: SlotKind): SlotView {
+  private view(slot: string, kind: SlotKind): SlotView {
     let view = this.views.get(slot);
     if (view && view.kind !== kind) {
       view.el.remove();
@@ -1187,7 +1119,7 @@ export class SpineHtmlRenderer {
         visible: false,
         zIndex: -1,
         opacity: 1,
-        blendMode: BlendMode.Normal,
+        blendMode: 'Normal',
         transform: '',
         clipPath: '',
         tintR: 1,
@@ -1198,12 +1130,15 @@ export class SpineHtmlRenderer {
         canvasW: 0,
         canvasH: 0,
         meshRatio: -1,
-        meshAttachment: null,
+        meshUvs: null,
+        meshTriangles: null,
+        meshPage: null,
         meshSequenceIndex: -1,
         meshExpand: -1,
         meshVertexCount: -1,
         meshBackendDrawn: '',
         meshVertices: new Float64Array(0),
+        drawnIn: 0,
       };
       this.views.set(slot, view);
       this.root.appendChild(el);
@@ -1211,9 +1146,7 @@ export class SpineHtmlRenderer {
     return view;
   }
 
-  private hide(slot: Slot): void {
-    const view = this.views.get(slot);
-    if (!view) return;
+  private hide(view: SlotView): void {
     if (view.visible) {
       view.visible = false;
       view.el.style.display = 'none';

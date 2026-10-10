@@ -8,7 +8,11 @@
     "noUncheckedIndexedAccess": false,
     "noEmit": true,
     "isolatedModules": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    // rig-c's `./core` entry is TypeScript source that imports its siblings
+    // with their `.ts` extension; typechecking it needs this (and it is legal
+    // because nothing here emits JavaScript through tsc — see build-lib.mjs).
+    "allowImportingTsExtensions": true
   },
   "include": ["src", "tests", "bench", "playwright.config.ts"]
 }

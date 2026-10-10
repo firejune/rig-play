@@ -122,7 +122,7 @@ const CONTENT_ALPHA = 64;
  * node's resolver — see the header of tests/invariants.spec.ts.
  */
 async function inverseClippingSupported(page: Page): Promise<boolean> {
-  return (await page.evaluate(() => window.spineHtmlHarness.regionGeometryProbe()))
+  return (await page.evaluate(() => window.rigPlayHarness.regionGeometryProbe()))
     .inverseClipping;
 }
 
@@ -650,11 +650,11 @@ async function capturesOf(
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 });
 
 test('part mask: the repository asset clips exactly the slots in its range', async ({ page }) => {
-  const result = await page.evaluate(() => window.spineHtmlHarness.clipPartMaskProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.clipPartMaskProbe());
 
   // The scene is the one the demo and the parity suite already use.
   expect(result.startSlot).toBe('clipping');
@@ -705,7 +705,7 @@ test('part mask: the repository asset clips exactly the slots in its range', asy
 });
 
 test('rigid tier: a tilted clip over rotated <img> matrices', async ({ page }) => {
-  const result = await page.evaluate(() => window.spineHtmlHarness.clipRigidProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.clipRigidProbe());
 
   expect(result.counters.clipCount).toBe(1);
   expect(result.counters.clipSkipCount).toBe(0);
@@ -747,7 +747,7 @@ test('rigid tier: a tilted clip over rotated <img> matrices', async ({ page }) =
 test('whole-skeleton clip: one clip-path on the root, and the root style given back', async ({
   page,
 }) => {
-  const result = await page.evaluate(() => window.spineHtmlHarness.clipRootProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.clipRootProbe());
 
   expect(result.counters.clipCount).toBe(1);
   expect(result.counters.clipSkipCount).toBe(0);
@@ -783,7 +783,7 @@ test('inverse clip: even-odd against the element box keeps what is outside', asy
     !(await inverseClippingSupported(page)),
     'the installed spine-core has no inverse clipping',
   );
-  const result = await page.evaluate(() => window.spineHtmlHarness.clipInverseProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.clipInverseProbe());
 
   expect(result.counters.clipCount).toBe(1);
   expect(result.counters.clipSkipCount).toBe(0);
@@ -811,7 +811,7 @@ test('inverse clip: even-odd against the element box keeps what is outside', asy
 });
 
 test('clip-paths are written on change only', async ({ page }) => {
-  const result = await page.evaluate(() => window.spineHtmlHarness.clipCountersProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.clipCountersProbe());
 
   const covered = result.inRangeElements;
   expect(covered).toBeGreaterThan(5);
@@ -834,7 +834,7 @@ test('clip-paths are written on change only', async ({ page }) => {
 });
 
 test('clipping = false counts the clip and leaves no clip-path behind', async ({ page }) => {
-  const result = await page.evaluate(() => window.spineHtmlHarness.clipCountersProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.clipCountersProbe());
 
   expect(result.disabled.clipCount).toBe(0);
   expect(result.disabled.clipSkipCount).toBe(1);
@@ -849,10 +849,14 @@ test('clipping = false counts the clip and leaves no clip-path behind', async ({
 });
 
 test('a second clip met while one is active is ignored, as in spine-core', async ({ page }) => {
-  const result = await page.evaluate(() => window.spineHtmlHarness.clipCountersProbe());
+  const result = await page.evaluate(() => window.rigPlayHarness.clipCountersProbe());
 
   // SkeletonClipping.clipStart opens with `if (this.clipAttachment) return` —
-  // the second clip does not nest and does not replace, it is dropped.
+  // the second clip does not nest and does not replace, it is dropped. Which
+  // slots a clip covers is decided where the frame is read (the package's
+  // adapter, `clipCover`, held on hand-made poses by tests/frames.spec.ts; the
+  // skeleton reader here), so the renderer sees one clip and applies it.
+  expect(result.nested.clipsIgnored).toBe(1);
   expect(result.nested.clipCount).toBe(1);
-  expect(result.nested.clipSkipCount).toBe(1);
+  expect(result.nested.clipSkipCount).toBe(0);
 });

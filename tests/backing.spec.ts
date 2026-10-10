@@ -16,7 +16,7 @@ import type { BackingSnapshot } from './harness';
  */
 
 function probe(page: Page) {
-  return page.evaluate(() => window.spineHtmlHarness.backingProbe());
+  return page.evaluate(() => window.rigPlayHarness.backingProbe());
 }
 
 /** Total allocated backing pixels — the quantity the defect leaves stuck. */
@@ -26,7 +26,7 @@ function pixels(snapshot: BackingSnapshot): number {
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/tests/harness.html');
-  await page.waitForFunction(() => Boolean(window.spineHtmlHarness));
+  await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 });
 
 test('a pixelRatio drop sizes every mesh backing like a fresh renderer', async ({ page }) => {

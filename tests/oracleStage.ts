@@ -1,17 +1,16 @@
 import {
   AnimationState,
   AnimationStateData,
+  Physics,
   Skeleton,
   type SkeletonData,
   TextureAtlas,
 } from '@esotericsoftware/spine-core';
 import { GLTexture, ManagedWebGLRenderingContext, SceneRenderer } from '@esotericsoftware/spine-webgl';
 
-import { type CoreShape, coreCompatFor } from '../src/coreCompat';
-/** `Physics` is absent from 4.1's and 4.0's root entry — see `posed()` below. */
-import { advanceSkeleton } from '../src/coreOptional';
-import { DomTexture, type RegionImage, SpineHtmlRenderer, unpackRegions } from '../src/index';
-import { loadSkeletonJson } from '../src/loadSkeletonAssets';
+import { loadModel, type ModelAssets, type RegionImage, RigPlayer } from '../src/index';
+import { advanceSkeleton } from './skeletonFrame';
+import { DomTexture, loadSkeletonJson, SkeletonRenderer, unpackAtlas } from './spineDom';
 
 /**
  * The pixel oracle's two stages: this package, and the official runtime.
@@ -66,6 +65,24 @@ import { loadSkeletonJson } from '../src/loadSkeletonAssets';
  * GL's linear filtering against the browser's image scaling — at its floor
  * instead of inflating it with a downscale neither runtime was asked for.
  *
+ * ## Two kinds of cell
+ *
+ * - **spineboy** (`rig` absent): both sides draw the spineboy export posed by
+ *   spine-core. The DOM side reads the posed skeleton into a frame
+ *   (`tests/skeletonFrame.ts`) and draws it with the package's renderer. These
+ *   are the renderer's cells: every tier, both alpha conventions, clipping,
+ *   additive blend, slot colour — what no gallery build carries.
+ * - **gallery** (`rig` set): the package end to end. The DOM side loads the
+ *   build's `skeleton.model.json` with `loadModel` and plays it with
+ *   `RigPlayer` — posed by `rig-c/core`, never by spine-core — and the
+ *   reference draws the `skeleton.json` + `skeleton.atlas` the same build wrote
+ *   beside it, posed by spine-core. Both take pose 0 and then the same `dt`
+ *   steps (`GALLERY_DT`): rigc's render recipe on one side, `openTrack` on the
+ *   other, which `tests/frames.spec.ts` holds equal at tolerance 0 — so what
+ *   the diff sees is the drawing alone. The stage is sized from the build's
+ *   own stage box at scale 1, where one texel of its one-part pages is one CSS
+ *   pixel.
+ *
  * ## What is deliberately shared, and what is not
  *
  * The pose is: both sides run the identical call sequence (`state.update`,
@@ -101,9 +118,35 @@ export const ORACLE_STAGE = {
 
 const ASSET_BASE = '/spineboy';
 
+/** The gallery cells' step: pose 0, then whole steps of this to the cell's time. */
+export const GALLERY_DT = 1 / 60;
+/**
+ * Gallery stage: scale 1 (one texel per CSS pixel on a one-part page) and a
+ * margin round the build's stage box — the document's `stage`, which is the
+ * setup pose's box: a rig's animations reach past it (`nod` hangs 25 units
+ * below it, `ride`'s wheels 10 to its left), and the spec asserts the DOM side
+ * stays inside the capture.
+ */
+const GALLERY_SCALE = 1;
+const GALLERY_MARGIN = 48;
+
+interface StageGeometry {
+  width: number;
+  height: number;
+  originX: number;
+  originY: number;
+  scale: number;
+}
+
 export interface OracleStageOptions {
   /** Which runtime draws this capture. */
   side: 'dom' | 'reference';
+  /**
+   * A gallery build under `public/rigs/` — the package end to end (see *Two
+   * kinds of cell*). Absent: the spineboy cells, where `page` and `skeleton`
+   * pick the export.
+   */
+  rig?: string;
   /** `plain` is the shipped straight-alpha page; `pma` the exporter's premultiplied twin. */
   page: 'plain' | 'pma';
   skeleton: 'ess' | 'pro';
@@ -138,13 +181,11 @@ export interface OracleStageResult {
   /** Which spine-webgl generation the reference is running on. */
   referenceShape: 'pre-4.3' | '4.3';
   /**
-   * Which seam `src/coreCompat.ts` picked for the installed core, detected from
-   * the live objects. Reported so a column cannot pass while drawing through
-   * the wrong shape: the 4.0 column's whole point is that it runs
-   * `pre-sequences`, and a silent fall-back to `sequences` would draw `NaN`
-   * corners — which looks, from a count of slot elements, exactly like success.
+   * What posed the DOM side: spine-core (a spineboy cell, read into a frame by
+   * the test suite) or `rig-c/core` (a gallery cell, through `RigPlayer`).
+   * Reported so a log says which path a cell exercised.
    */
-  coreShape: CoreShape;
+  poser: 'spine-core' | 'rig-c/core';
   /** The stage the capture covers, so a spec never hard-codes its size. */
   stage: { width: number; height: number };
   /**
@@ -228,17 +269,16 @@ let glCanvas: HTMLCanvasElement | null = null;
 let glContext: ManagedWebGLRenderingContext | null = null;
 let sceneRenderer: SceneRenderer | null = null;
 let compat: ReferenceCompat | null = null;
-let domLive: SpineHtmlRenderer | null = null;
+let domLive: { dispose(): void } | null = null;
 
-function stageElement(): HTMLDivElement {
-  if (stageEl) return stageEl;
-  const stage = document.createElement('div');
+function stageElement(geometry: StageGeometry): HTMLDivElement {
+  const stage = stageEl ?? document.createElement('div');
   stage.id = 'oracle-stage';
   stage.style.cssText =
     'position: absolute; left: 0; top: 0; overflow: hidden;' +
-    `width: ${ORACLE_STAGE.width}px; height: ${ORACLE_STAGE.height}px;` +
+    `width: ${geometry.width}px; height: ${geometry.height}px;` +
     `background: ${ORACLE_STAGE.background};`;
-  document.body.append(stage);
+  if (!stageEl) document.body.append(stage);
   stageEl = stage;
   return stage;
 }
@@ -261,14 +301,9 @@ function reference(): {
   if (glCanvas && glContext && sceneRenderer && compat) {
     return { canvas: glCanvas, context: glContext, renderer: sceneRenderer, compat };
   }
+  // Sized per capture (`sizeReference`): one context for every stage size.
   const canvas = document.createElement('canvas');
   canvas.id = 'oracle-reference';
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(ORACLE_STAGE.width * dpr);
-  canvas.height = Math.round(ORACLE_STAGE.height * dpr);
-  canvas.style.cssText =
-    `position: absolute; left: 0; top: 0;` +
-    `width: ${ORACLE_STAGE.width}px; height: ${ORACLE_STAGE.height}px;`;
   const context = new ManagedWebGLRenderingContext(canvas, {
     alpha: false,
     preserveDrawingBuffer: true,
@@ -284,13 +319,29 @@ function reference(): {
   return { canvas, context, renderer, compat };
 }
 
+/** The reference canvas at a stage's size — backing at `dpr`, the viewport over all of it. */
+function sizeReference(canvas: HTMLCanvasElement, geometry: StageGeometry): void {
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.round(geometry.width * dpr);
+  const height = Math.round(geometry.height * dpr);
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  canvas.style.cssText =
+    `position: absolute; left: 0; top: 0;` +
+    `width: ${geometry.width}px; height: ${geometry.height}px;`;
+}
+
 /** Atlas, bitmaps and skeleton data for one (side, page, skeleton), built once. */
 interface OracleScene {
   atlas: TextureAtlas;
-  data: SkeletonData;
+  /** Null on a gallery cell's DOM side, which reads the model instead. */
+  data: SkeletonData | null;
   /** DOM side only. */
   regionImages: Map<string, RegionImage>;
   pageImage: HTMLImageElement;
+  /** A gallery cell's DOM side: the build as `loadModel` loaded it. */
+  model: ModelAssets | null;
+  geometry: StageGeometry;
 }
 
 const scenes = new Map<string, Promise<OracleScene>>();
@@ -302,10 +353,60 @@ const scenes = new Map<string, Promise<OracleScene>>();
  * between runtimes.
  */
 function scene(options: OracleStageOptions): Promise<OracleScene> {
-  const key = `${options.side}@${options.page}@${options.skeleton}`;
+  const key = options.rig
+    ? `${options.side}@rig@${options.rig}`
+    : `${options.side}@${options.page}@${options.skeleton}`;
   const cached = scenes.get(key);
   if (cached) return cached;
-  const built = (async (): Promise<OracleScene> => {
+  const built = options.rig ? galleryScene(options.side, options.rig) : spineboyScene(options);
+  scenes.set(key, built);
+  return built;
+}
+
+/** A gallery build's stage at scale 1, its stage box inset by the margin. */
+interface StageBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function galleryGeometry(box: StageBox): StageGeometry {
+  return {
+    width: Math.ceil(box.width * GALLERY_SCALE) + 2 * GALLERY_MARGIN,
+    height: Math.ceil(box.height * GALLERY_SCALE) + 2 * GALLERY_MARGIN,
+    originX: GALLERY_MARGIN - box.x * GALLERY_SCALE,
+    originY: GALLERY_MARGIN + (box.y + box.height) * GALLERY_SCALE,
+    scale: GALLERY_SCALE,
+  };
+}
+
+async function galleryScene(side: 'dom' | 'reference', rig: string): Promise<OracleScene> {
+  const base = `/rigs/${rig}`;
+  const atlas = new TextureAtlas(await (await fetch(`${base}/skeleton.atlas`)).text());
+  if (side === 'dom') {
+    const model = await loadModel({ modelUrl: `${base}/skeleton.model.json` });
+    if (!model.stage) throw new Error(`${rig}: the document states no stage box to size the capture from`);
+    const pageImage = model.pageImages.values().next().value as HTMLImageElement;
+    return { atlas, data: null, regionImages: model.regionImages, pageImage, model, geometry: galleryGeometry(model.stage) };
+  }
+  let pageImage: HTMLImageElement | null = null;
+  for (const page of atlas.pages) {
+    const image = await loadImage(`${base}/${page.name}`);
+    pageImage ??= image;
+    page.setTexture(reference().compat.makeTexture(reference().context, image, page.pma));
+  }
+  if (!pageImage) throw new Error('the atlas declared no pages');
+  const data = await loadSkeletonJson(atlas, `${base}/skeleton.json`);
+  // The same box the DOM side frames by: the document's stage, read as data —
+  // the Spine header's own bounds differ from it on some builds, and two
+  // cameras over two boxes would compare two crops.
+  const box = (JSON.parse(await (await fetch(`${base}/skeleton.model.json`)).text()) as { stage: StageBox }).stage;
+  return { atlas, data, regionImages: new Map(), pageImage, model: null, geometry: galleryGeometry(box) };
+}
+
+function spineboyScene(options: OracleStageOptions): Promise<OracleScene> {
+  return (async (): Promise<OracleScene> => {
     const atlasText = await (await fetch(atlasUrl(options.page))).text();
     const atlas = new TextureAtlas(atlasText);
     const pageImages = new Map<string, HTMLImageElement>();
@@ -323,16 +424,11 @@ function scene(options: OracleStageOptions): Promise<OracleScene> {
     if (!pageImage) throw new Error('the atlas declared no pages');
     const regionImages =
       options.side === 'dom'
-        ? await unpackRegions(atlas, pageImages)
+        ? await unpackAtlas(atlas, pageImages)
         : new Map<string, RegionImage>();
-    const data = await loadSkeletonJson(
-      { atlas },
-      `${ASSET_BASE}/spineboy-${options.skeleton}.json`,
-    );
-    return { atlas, data, regionImages, pageImage };
+    const data = await loadSkeletonJson(atlas, `${ASSET_BASE}/spineboy-${options.skeleton}.json`);
+    return { atlas, data, regionImages, pageImage, model: null, geometry: ORACLE_STAGE };
   })();
-  scenes.set(key, built);
-  return built;
 }
 
 function parseTint(hex: string | null | undefined): { r: number; g: number; b: number } | null {
@@ -359,10 +455,30 @@ function posed(data: SkeletonData, options: OracleStageOptions): Skeleton {
   skeleton.x = options.offsetX ?? 0;
   const state = new AnimationState(new AnimationStateData(data));
   state.setAnimation(0, options.animation, true);
+  if (options.rig) {
+    // A gallery cell: rigc's render recipe — pose 0 with the physics reset
+    // there, then whole GALLERY_DT steps — which the DOM side's track takes too.
+    skeleton.setupPose();
+    state.apply(skeleton);
+    skeleton.update(0);
+    skeleton.updateWorldTransform(Physics.reset);
+    for (let i = 0; i < galleryStepsOf(options.time); i++) {
+      state.update(GALLERY_DT);
+      state.apply(skeleton);
+      skeleton.update(GALLERY_DT);
+      skeleton.updateWorldTransform(Physics.update);
+    }
+    return skeleton;
+  }
   state.update(options.time);
   state.apply(skeleton);
   advanceSkeleton(skeleton, options.time);
   return skeleton;
+}
+
+/** How many GALLERY_DT steps a gallery cell's time is. */
+function galleryStepsOf(time: number): number {
+  return Math.round(time / GALLERY_DT);
 }
 
 const round = (value: number): number => Math.round(value * 100) / 100;
@@ -372,20 +488,40 @@ async function drawDom(
   scene: OracleScene,
   options: OracleStageOptions,
 ): Promise<Pick<OracleStageResult, 'imageCount' | 'canvasCount' | 'backendActive' | 'meshesDrawn' | 'contentBox'>> {
+  const geometry = scene.geometry;
   const root = document.createElement('div');
+  // A gallery cell cannot move its skeleton in world space (the model has no
+  // `skeleton.x`), so the alignment offset moves the root by the same amount
+  // on screen: px = originX + S·(x + offset).
+  const shift = scene.model ? (options.offsetX ?? 0) * geometry.scale : 0;
   root.style.cssText =
-    `position: absolute; left: ${ORACLE_STAGE.originX}px; top: ${ORACLE_STAGE.originY}px;` +
-    `transform-origin: 0 0; transform: scale(${ORACLE_STAGE.scale});`;
+    `position: absolute; left: ${geometry.originX + shift}px; top: ${geometry.originY}px;` +
+    `transform-origin: 0 0; transform: scale(${geometry.scale});`;
   stage.append(root);
 
-  const skeleton = posed(scene.data, options);
-  const renderer = new SpineHtmlRenderer(root, scene.regionImages);
-  renderer.meshBackend = options.backend ?? 'canvas2d';
-  if (options.clipping !== undefined) renderer.clipping = options.clipping;
-  // Raster at the resolution the stage shows at, exactly as the demo does.
-  renderer.pixelRatio = (window.devicePixelRatio || 1) * ORACLE_STAGE.scale;
-  renderer.render(skeleton);
-  domLive = renderer;
+  let renderer: RigPlayer['renderer'];
+  if (scene.model) {
+    const player = new RigPlayer(root, scene.model, { meshBackend: options.backend ?? 'canvas2d' });
+    renderer = player.renderer;
+    if (options.clipping !== undefined) renderer.clipping = options.clipping;
+    renderer.pixelRatio = (window.devicePixelRatio || 1) * geometry.scale;
+    const tint = parseTint(options.tint);
+    if (tint) player.color = [tint.r, tint.g, tint.b, 1];
+    player.play(options.animation, { loop: true });
+    for (let i = 0; i < galleryStepsOf(options.time); i++) player.advance(GALLERY_DT);
+    player.draw();
+    domLive = player;
+  } else {
+    const skeleton = posed(scene.data as SkeletonData, options);
+    const skeletonRenderer = new SkeletonRenderer(root, scene.regionImages);
+    renderer = skeletonRenderer;
+    renderer.meshBackend = options.backend ?? 'canvas2d';
+    if (options.clipping !== undefined) renderer.clipping = options.clipping;
+    // Raster at the resolution the stage shows at, exactly as the demo does.
+    renderer.pixelRatio = (window.devicePixelRatio || 1) * geometry.scale;
+    skeletonRenderer.renderSkeleton(skeleton);
+    domLive = skeletonRenderer;
+  }
 
   const images = [...root.querySelectorAll('img')];
   await Promise.all(images.map((img) => img.decode().catch(() => {})));
@@ -428,6 +564,8 @@ async function drawReference(
   options: OracleStageOptions,
 ): Promise<Pick<OracleStageResult, 'drawCalls' | 'referenceShape' | 'contentBox'>> {
   const { canvas, context, renderer, compat: seam } = reference();
+  const geometry = scene.geometry;
+  sizeReference(canvas, geometry);
   stage.append(canvas);
 
   const gl = context.gl;
@@ -438,13 +576,13 @@ async function drawReference(
   gl.clear(gl.COLOR_BUFFER_BIT);
 
   const camera = renderer.camera;
-  camera.viewportWidth = ORACLE_STAGE.width / ORACLE_STAGE.scale;
-  camera.viewportHeight = ORACLE_STAGE.height / ORACLE_STAGE.scale;
-  camera.position.x = (ORACLE_STAGE.width / 2 - ORACLE_STAGE.originX) / ORACLE_STAGE.scale;
-  camera.position.y = (ORACLE_STAGE.originY - ORACLE_STAGE.height / 2) / ORACLE_STAGE.scale;
+  camera.viewportWidth = geometry.width / geometry.scale;
+  camera.viewportHeight = geometry.height / geometry.scale;
+  camera.position.x = (geometry.width / 2 - geometry.originX) / geometry.scale;
+  camera.position.y = (geometry.originY - geometry.height / 2) / geometry.scale;
   camera.position.z = 0;
 
-  const skeleton = posed(scene.data, options);
+  const skeleton = posed(scene.data as SkeletonData, options);
   const pma = scene.atlas.pages[0]?.pma ?? false;
   renderer.begin();
   seam.drawSkeleton(renderer, skeleton, pma);
@@ -466,8 +604,8 @@ async function drawReference(
     contentBox: {
       x: 0,
       y: 0,
-      width: ORACLE_STAGE.width,
-      height: ORACLE_STAGE.height,
+      width: geometry.width,
+      height: geometry.height,
     },
   };
 }
@@ -482,11 +620,11 @@ export async function oracleStage(options: OracleStageOptions): Promise<OracleSt
     domLive = null;
   }
   const built = await scene(options);
-  const stage = stageElement();
+  const stage = stageElement(built.geometry);
   stage.replaceChildren();
 
   const base = {
-    coreShape: coreCompatFor(new Skeleton(built.data)).shape,
+    poser: (built.model ? 'rig-c/core' : 'spine-core') as OracleStageResult['poser'],
     side: options.side,
     pagePma: built.atlas.pages[0]?.pma ?? false,
     pageSize: { width: built.pageImage.naturalWidth, height: built.pageImage.naturalHeight },
@@ -496,7 +634,7 @@ export async function oracleStage(options: OracleStageOptions): Promise<OracleSt
     meshesDrawn: 0,
     drawCalls: 0,
     referenceShape: '4.3' as const,
-    stage: { width: ORACLE_STAGE.width, height: ORACLE_STAGE.height },
+    stage: { width: built.geometry.width, height: built.geometry.height },
     rotatedRegions: built.atlas.regions.filter((region) => region.degrees !== 0).length,
   };
 

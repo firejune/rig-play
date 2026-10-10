@@ -134,284 +134,164 @@ with a self-contained test suite (backend visual parity + invariants) and CI.
 ## Install
 
 ```bash
-npm i spine-html @esotericsoftware/spine-core
+npm i spine-html
 ```
 
+The package plays rigs built by [rigc](https://github.com/firejune/rigc):
+`rigc build` writes a compiled model document, `skeleton.model.json` (spec
+`rigc-compiled/3`), next to the Spine pair and the atlas pages. That document
+is what the player loads, and it states everything posing and drawing need —
+the skeleton, the animations, and where every region sits on its page — so the
+`.atlas` and `skeleton.json` beside it are not fetched. Poses are computed by
+`rig-c/core`, rigc's own posing core, which is bundled into this package: there
+is nothing else to install.
+
 ```ts
-import { Skeleton, AnimationState, AnimationStateData, Physics }
-  from '@esotericsoftware/spine-core';
-import { loadSkeletonAssets, SpineHtmlRenderer } from 'spine-html';
+import { loadModel, RigPlayer } from 'spine-html';
 
-const assets = await loadSkeletonAssets({
-  atlasUrl: '/spineboy/spineboy.atlas',
-  skeletonUrl: '/spineboy/spineboy-pro.json',
-});
+const assets = await loadModel({ modelUrl: '/rigs/walk/skeleton.model.json' });
 
-// A positioned element becomes the skeleton origin (Spine is Y-up: the
-// skeleton grows upward from it). Layout and scaling are the caller's.
-const skeleton = new Skeleton(assets.data);
-const state = new AnimationState(new AnimationStateData(assets.data));
-state.setAnimation(0, 'walk', true);
-const renderer = new SpineHtmlRenderer(rootElement, assets.regionImages);
+// A positioned element becomes the rig's world origin (Y-up: the rig grows
+// upward from it). Layout and scaling are the caller's.
+const player = new RigPlayer(rootElement, assets);
+player.play('walk');                        // looping; { loop: false } holds at the end
 
 function frame(delta: number) {
-  state.update(delta);
-  state.apply(skeleton);
-  skeleton.update(delta);
-  skeleton.updateWorldTransform(Physics.update);
-  renderer.render(skeleton);
+  player.frame(delta);                      // step the track by delta × timeScale, draw
 }
 
 // Unloading (a cutscene ends, a level swaps): elements first, bitmaps second.
 // The unpacked regions are blob URLs — nothing else frees them.
-renderer.dispose();
+player.dispose();
 assets.dispose();
 ```
+
+The player owns one track: `play(name, { loop })` opens an animation at its first
+pose, `frame(dt)` steps it (or `advance(dt)` then `draw()`, to time the two
+apart), `pause()` / `resume()` hold and release it, `timeScale` scales every
+step, and `seek(t)` moves it to a time. A seek is "reopen, then step to the
+time" in `seekStep` increments (1/60 s by default) — never a jump, because a
+physics rig has history and its pose at a time depends on the steps that
+reached it. `on('event', …)` receives the event keys each step crosses, in the
+runtime's order across a loop's wrap; `on('complete', …)` fires once a step
+completes a cycle. `skin` (a constructor option) poses under a named skin;
+without it the rig is posed the way a fresh Spine skeleton is, with no skin
+set. `player.color` multiplies a whole-rig colour into every slot's tint.
+`player.renderer` is the `DomRenderer` underneath, whose knobs and counters
+are below.
+
+**What it refuses, by name.** A Spine export (`.json`, `.skel`) is refused
+before anything is fetched: this package reads compiled models and nothing
+else. A document whose `spec` is not one `rig-c/core` reads is refused with the
+core's own sentence plus "build it with `rigc build`", and so is a
+`rigc-compiled/1` document, which predates the `pages` section.
 
 `spine-html` is a third-party renderer and is not affiliated with or endorsed by
 Esoteric Software.
 
-### Which spine-core to install
+### Drawing your own frames
 
-> **Install the `@esotericsoftware/spine-core` that matches the Spine editor
-> version your data was exported from.**
-
-A Spine runtime reads only the data its own generation exported, so this is
-never a choice between "newest" and "oldest" — it is decided by your `.json` or
-`.skel` files. `spine-core` is a **peer** dependency here precisely so the
-decision stays yours, and `spine-html` draws from either generation:
-
-| `@esotericsoftware/spine-core` | `spine-html` |
-| --- | --- |
-| **4.3.x** | ✅ supported |
-| **4.2.x** | ✅ supported |
-| **4.1.x** | ✅ supported — browser/bundler only, see the Node note below |
-| **4.0.x** | ✅ supported — browser/bundler only, see the Node note below |
-| 3.8.x and older | ❌ not supported — no runtime is published under this package name |
-
-*Supported* means one specific thing: a column of this repository's CI runs the
-**whole** test suite on that minor, against **that version's own** example
-exports, with the pixel oracle drawing the same poses through
-`@esotericsoftware/spine-webgl` of the same generation. `peerDependencies` is
-that set and nothing wider. Nothing in the API above changes with the version —
-the difference is absorbed internally, in one file, chosen once per renderer by
-looking at the objects spine-core hands over.
-
-> **Node note, for 4.1 and 4.0 only.** Those two releases of `spine-core`
-> cannot be imported by plain Node: they ship extensionless relative specifiers
-> in their own `dist/`, and 4.0 also omits `"type": "module"`. Every bundler
-> resolves them (so do CDNs such as esm.sh), which is how a browser consumer
-> meets them, and `spine-html` itself is unaffected — but `import` of either
-> package from a Node process fails, so **SSR and Node-side tooling cannot load
-> them**. It is upstream's defect and not fixable from here. 4.1 has one more:
-> a single extensionless specifier inside its own `.d.ts` makes it fail a
-> `moduleResolution: "nodenext"` typecheck. 4.2 and 4.3 have neither problem.
-
-**Worth knowing, because it is silent.** If you point a 4.3 runtime at older
-data, the bad outcome is not the one that throws. 4.3 reads constraints from a
-single top-level `constraints` array, where 4.2 and older write separate
-`ik` / `transform` / `path` / `physics` ones — so an older export that still
-parses loads **none of its constraints at all**, and the skeleton animates on
-bones alone: no IK, no path, no physics, no error. Measured over a real-world
-corpus of 267 skeletons (88% of them 4.2 exports): 40% failed to parse under
-4.3.13 outright, and across those that did parse, **0 of 7,065** constraints and
-**0 of 5,704** physics constraints were loaded. If a skeleton renders but goes
-limp, this is why — and installing the matching `spine-core` is the whole fix.
-
-**If your data was exported by 4.1 or 4.0, install the matching runtime.**
-Since 0.8.0 both are supported columns, and installing spine-core 4.2 for such
-data is **not** a substitute — the failure is the quiet kind again. Read off
-`SkeletonJson` in each generation:
-
-- 4.0 and 4.1 write a bone's inheritance mode as `transform`
-  (`noRotationOrReflection`, `onlyTranslation`, …); 4.2 reads `inherit` and
-  nothing else, so every such bone falls back to `Normal`.
-- 4.0 writes mesh deform timelines under the animation's `deform`; 4.1 and 4.2
-  read `attachments` and never look at `deform`, so those timelines are dropped.
-
-Neither throws. Over a real-world corpus of shipped web skeletons, 96 of 418
-exports made by 4.0 and 20 of 101 made by 4.1 carry such bones (643 of them),
-and 91 of the 4.0 exports carry 1,031 deform timelines between them — all of it
-lost without a message under 4.2, while the file parses, every constraint
-loads, and the rig renders without an error.
-
-Spine's own spineboy export carries both, which is why every CI column checks
-this rather than trusting it: four bones at `noRotationOrReflection` and four
-mesh deform timelines, declared under the key that branch's exporter writes, and
-asserted to have arrived in the parsed `SkeletonData`.
-
-> **Correction.** The README shipped with 0.7.1, and the 0.7.0 release notes,
-> said "install spine-core 4.2" for 4.1 / 4.0 data — on the strength of exactly
-> the evidence that looks conclusive: every export parsed, all 14,022
-> constraints loaded, a 60-rig sample rendered cleanly. That evidence was real
-> and the conclusion was wrong, because **parsing without an error says nothing
-> about keys a newer reader no longer looks for.** The same corpus holds 19
-> Spine 3.8 exports that also parse cleanly under a 4.x runtime — and then pose
-> most of their bones at non-finite transforms (3.8 writes a rotate key as
-> `angle` and a curve as scalars; 4.0 reads `value` and an array). The test that
-> would have caught this is a diff of the keys each generation's reader
-> consumes, which is what the list above is. 0.7.1 corrected the advice to "4.2
-> is not a stand-in, and 4.1 / 4.0 are not supported"; 0.8.0 supports them, so
-> the advice is now simply the rule at the top of this section.
-
-Spine 3.8 and older are out of scope: they are not published under this package
-name.
-
-### One atlas, several skeletons
-
-Skeletons that share an atlas — a character's `-ess` and `-pro` exports, a whole
-cast packed onto one page — load in two steps instead. Calling
-`loadSkeletonAssets` once per skeleton would fetch and unpack the same pages
-again and mint a second set of region blob URLs:
+`RigPlayer` is the convenient path; the renderer underneath takes a plain
+record, so anything that can produce one can draw through it:
 
 ```ts
-import { loadAtlasAssets, loadSkeletonJson, SpineHtmlRenderer } from 'spine-html';
+import { DomRenderer, type PosedFrame } from 'spine-html';
 
-const shared = await loadAtlasAssets({ atlasUrl: '/spineboy/spineboy.atlas' });
-const [essData, proData] = await Promise.all([
-  loadSkeletonJson(shared, '/spineboy/spineboy-ess.json'),
-  loadSkeletonJson(shared, '/spineboy/spineboy-pro.json'),
-]);
-
-const ess = new SpineHtmlRenderer(essRoot, shared.regionImages);
-const pro = new SpineHtmlRenderer(proRoot, shared.regionImages);
-
-// Unloading: every renderer first, then the one dispose() that owns the bitmaps.
-ess.dispose();
-pro.dispose();
-shared.dispose();
+const renderer = new DomRenderer(rootElement, assets.regionImages, assets.pageImages);
+renderer.render(frame); // frame: PosedFrame
 ```
-
-`loadAtlasAssets` takes the atlas half of the options above (`resolvePage`,
-`crossOrigin`, `fetch`) and `loadSkeletonJson` the skeleton half (`scale`,
-`fetch`). Ownership is the thing to keep straight: the atlas assets belong to
-the caller, reading a skeleton against them never frees them, and one
-`regionImages` map is meant to be handed to several renderers — so there is
-exactly one `dispose()` for however many skeletons were read. `loadSkeletonJson`
-asks only for `{ atlas }`, so a caller that built its atlas by hand (below) can
-still use it for the read. `loadSkeletonAssets` is these two calls with the
-atlas half kept private: use it for one atlas and one skeleton, this for the
-rest.
-
-### Binary exports (`.skel`)
-
-Binary exports are read by a second parser, `SkeletonBinary`, which is as big as
-the JSON one. It lives behind its own entry point so that consumers who only
-ever read `.json` never carry it:
 
 ```ts
-import { loadAtlasAssets, SpineHtmlRenderer } from 'spine-html';
-import { loadSkeletonBinary } from 'spine-html/binary';
-
-const shared = await loadAtlasAssets({ atlasUrl: '/spineboy/spineboy.atlas' });
-const data = await loadSkeletonBinary(shared, '/spineboy/spineboy-pro.skel');
-
-const renderer = new SpineHtmlRenderer(rootElement, shared.regionImages);
-// Unloading, as above: renderer.dispose(); shared.dispose();
+PosedFrame { order: PosedSlot[] }                     // the slots that draw, in draw order
+PosedSlot = { slot; z; blend: 'Normal'|'Additive'|'Multiply'|'Screen';
+              tint: [r, g, b, a]; dark?: [r, g, b];
+              clip?: { polygon: number[]; inverse: boolean } }   // world space, Y up
+          & ( { kind: 'region'; region: string; corners: number[] /* BL, UL, UR, BR */ }
+            | { kind: 'mesh'; page: string; pma: boolean; vertices: number[];
+                uvs: number[]; triangles: number[]; sequence: number } )
 ```
 
-`loadSkeletonBinary` is `loadSkeletonJson` with the parser swapped: same
-arguments, the same `{ scale, fetch }` options, the same ownership rule — it
-never frees `assets`, whichever way it ends. Those two calls are the binary path
-in full. There is no one-call `loadSkeletonAssetsBinary`, because the atlas half
-is precisely what a caller reading binary usually wants kept in hand, and hiding
-it again would only earn back a line.
+`player.posedFrame()` returns the record the player would draw. Two things the
+renderer reads off it by identity rather than by value: every slot a clip
+covers carries the **same** `clip` object (one that covers every slot of the
+frame takes the one-`clip-path`-on-the-root path), and a mesh's `uvs` and
+`triangles` are the same arrays from frame to frame for the same texture
+mapping (a new array re-rasters the mesh).
 
-The subpath is the whole mechanism, so import it as written: pulling
-`loadSkeletonBinary` out of `'spine-html'` is not possible, by design. Worth
-knowing about the format itself: binary exports are version-locked to the
-runtime that reads them, so a `.skel` written by an editor newer than your
-installed `@esotericsoftware/spine-core` fails in the read, not in the fetch.
+### One load, several players
+
+One `loadModel` backs any number of players: the regions are cut once, and
+every player draws from the one `regionImages` map. A player owns none of it —
+disposing a player leaves the bitmaps alive for the others — so there is exactly
+one `assets.dispose()`, after the last player is gone:
+
+```ts
+const assets = await loadModel({ modelUrl: '/rigs/walk/skeleton.model.json' });
+const a = new RigPlayer(rootA, assets);
+const b = new RigPlayer(rootB, assets, { skin: 'winter' });
+
+a.dispose();
+b.dispose();
+assets.dispose();
+```
+
+A document is one rig. Two rigs whose builds share page images load as two
+documents; the images are fetched by URL, so a page both name at the same URL
+is loaded once by the browser — but each load cuts its own regions and owns its
+own blob URLs.
 
 ### Loading it yourself
 
-`loadSkeletonAssets` is optional sugar over five `spine-core` calls, and the
-package works without it. Drop to the low-level path whenever you need
-something no loader does — images that are already in memory, an atlas that is
-not fetched from a URL at all:
+`loadModel` is a convenience over two calls the package exports: read the
+document, load its pages, and cut the regions with `unpackRegions`, which takes
+the document's `pages` section — `{ name, width, height, pma, regions: [{ name,
+x, y, width, height, degrees }] }` per page — and a map of page images keyed by
+those names. Use it when the page images do not come from a URL (`resolvePage`
+on `loadModel` covers the ones that come from another URL), and pair it with
+`revokeRegions` on unload.
 
-```ts
-import { TextureAtlas, AtlasAttachmentLoader, SkeletonJson }
-  from '@esotericsoftware/spine-core';
-import { DomTexture, unpackRegions, revokeRegions } from 'spine-html';
-
-const atlas = new TextureAtlas(atlasText);
-const pageImages = new Map<string, HTMLImageElement>();
-for (const page of atlas.pages) {
-  const image = await loadImage(page.name); // your loader
-  page.setTexture(new DomTexture(image));
-  pageImages.set(page.name, image);
-}
-const regionImages = await unpackRegions(atlas, pageImages);
-const data = new SkeletonJson(new AtlasAttachmentLoader(atlas)).readSkeletonData(jsonText);
-
-// …and on unload, after every renderer using them is disposed:
-revokeRegions(regionImages);
-```
-
-A region the packer stored turned (`rotate: 90`) is cut upright again, and which
-way round that is comes from spine-core's own UVs rather than from the cut: such
-a region's corners carry `(u2, v2), (u, v2), (u, v), (u2, v)` in the order
-BL, UL, UR, BR, so the artwork's top-left corner sits at the packed rect's
+A region the packer stored turned (`degrees: 90`) is cut upright again, and
+which way round that is comes from the UVs a runtime assigns such a region,
+not from the cut: its corners carry `(u2, v2), (u, v2), (u, v), (u2, v)` in the
+order BL, UL, UR, BR, so the artwork's top-left corner sits at the packed rect's
 bottom-left and unpacking it is a clockwise turn. Every release up to 0.7.0
-turned it the other way and drew rotated rigid parts 180° round (#49); if you
-worked around that by re-packing an atlas without rotation, you can stop.
+turned it the other way and drew rotated rigid parts 180° round (#49).
 
 `unpackRegions` mints one blob URL per region; `revokeRegions` is its
 counterpart. It only frees URLs `unpackRegions` created, so a map you built
-yourself (below) and page images reused by the whole-page pass-through survive
-it — and calling it twice is a no-op. Load once for the page's lifetime and you
-can ignore it; load and unload repeatedly without it and you leak an atlas per
+yourself and page images reused by the whole-page pass-through survive it — and
+calling it twice is a no-op. Load once for the page's lifetime and you can
+ignore it; load and unload repeatedly without it and you leak an atlas per
 cycle.
 
 ### Pages that ship at another resolution
 
-A page image may ship at a resolution its atlas does not declare — a
-half-resolution texture build, or an @2x variant, with the `size:` line left as
-the packer wrote it. Nothing here needs a flag for that. A region's bounds are
-read **relative to the declared page size** and scaled onto the image's natural
-size, which is exactly how `spine-core` derives the UVs the mesh tier samples
-with (`region.u = region.x / page.width`), so both tiers land on the same
-pixels at any resolution:
-
-```
-hero.png
-size: 4096, 4096     # what the packer wrote
-                     # hero.png itself ships 2048×2048
-```
+A page image may ship at a resolution its document does not declare — a
+half-resolution texture build, or an @2x variant, with the page's `width` and
+`height` left as the build wrote them. Nothing here needs a flag for that. A
+region's bounds are read **relative to the declared page size** and scaled onto
+the image's natural size, which is how the page UVs the mesh tier samples with
+are derived too (`u = x / page.width`), so both tiers land on the same pixels at
+any resolution.
 
 Each unpacked bitmap comes out at the **native resolution of the pixels it was
 cut from** — half-resolution pages cost a quarter of the cut pixels, and
 nothing is upscaled back — while `RegionImage.width`/`height` stay in **atlas
 units**. Those two numbers are the `<img>` layout box and the denominator of
-its CSS matrix, so the skeleton poses identically and the browser scales the
+its CSS matrix, so the rig poses identically and the browser scales the
 smaller bitmap into the same box, the way a GPU samples a smaller texture
-through the same UVs. Ship one atlas and swap the images per device if you
-like.
+through the same UVs. Ship one build and swap the images per device if you
+like (`resolvePage`).
 
-The corollary: a `size:` line that is simply **wrong** is now wrong for the
-whole renderer rather than for the mesh tier alone. Bounds are read against
-what the atlas declares, so a page declared at a size its artwork was not
-packed at reads every region from the wrong place in both tiers — correct the
-`size:` line, which is what every other Spine runtime needs too.
+### Premultiplied pages (`pma`)
 
-### Premultiplied pages (`pma: true`)
-
-The Spine texture packer premultiplies alpha by default, and says so with a page
-line:
-
-```
-hero.png
-size: 2048, 2048
-pma: true
-```
-
-Such a page's RGB is already multiplied by its alpha, and nothing is asked of
-you: the flag is read off the atlas and each tier is handed the page in the
-convention it actually consumes. The `webgl` mesh backend uploads the texels
-unconverted (its blend already expects premultiplied source — lossless). The DOM
-and canvas2d tiers cannot: an `<img>` and `drawImage` composite straight alpha by
-definition, so they read a straight-alpha derivation of the page —
+A page's `pma` flag in the document's `pages` section — the build copies it from
+the atlas's `pma: true` line — says its RGB is already multiplied by its alpha,
+and nothing is asked of you: each tier is handed the page in the convention it
+actually consumes. The `webgl` mesh backend uploads the texels unconverted (its
+blend already expects premultiplied source — lossless). The DOM and canvas2d
+tiers cannot: an `<img>` and `drawImage` composite straight alpha by definition,
+so they read a straight-alpha derivation of the page —
 `rgb = round(rgb * 255 / a)`, computed once and shared by the region cuts and
 the mesh raster. Without it every semi-transparent texel is multiplied by its
 alpha a second time and draws darker than it was authored: soft edges, soft
@@ -419,97 +299,60 @@ shadows, glows.
 
 What it costs: **one page-sized canvas per premultiplied page image**
 (width × height × 4 bytes — 1 MiB for a 1024×256 page, 16 MiB for a 2048×2048
-one), alive as long as you hold the page image and released with it; the cache
-is weak, so there is nothing to free by hand. A page with no `pma:` line derives
-nothing and takes exactly the path it always did. The division is 8-bit and
-starts from a canvas read, which has itself quantized a premultiplied texel, so
-a very transparent texel can land a few levels off — exact at alpha 0 and 255,
-within one level of 255 above alpha 128, and a little more below that, by an
-amount that belongs to the browser's canvas rather than to this package (some
-rasterizers round premultiplied storage several times more coarsely than
-others). It is bounded by what that canvas already costs, and it is invisible
-wherever the texel is: a texel at alpha 11 is ~4% opaque. The `webgl` backend,
-having no such step, is exact.
+one), alive as long as the page image is and released with it; the cache is
+weak, so there is nothing to free by hand. A page without the flag derives
+nothing. The division is 8-bit and starts from a canvas read, which has itself
+quantized a premultiplied texel, so a very transparent texel can land a few
+levels off — exact at alpha 0 and 255, within one level of 255 above alpha 128,
+and a little more below that, by an amount that belongs to the browser's canvas
+rather than to this package. It is invisible wherever the texel is: a texel at
+alpha 11 is ~4% opaque. The `webgl` backend, having no such step, is exact.
 
-One consequence worth knowing if your atlas is one part per page: a whole-page
+One consequence worth knowing if your build is one part per page: a whole-page
 region on a premultiplied page is **cut** rather than handed through, because
 the page's own URL holds premultiplied pixels (see below).
 
 ### What unloading frees
 
-`revokeRegions()` — and `assets.dispose()`, which just calls it — frees the blob
-URLs `unpackRegions` minted, and nothing else. The rest is pinned by objects you
-own: an atlas **page image** is held by the `DomTexture` you attached to its
-page, and `SkeletonData` reaches that same image through every attachment
-(`region.texture.getImage()`), so a page is released only once the atlas, the
-skeleton data and every renderer drawing from them are gone. `atlas.dispose()`
-does not do it — `DomTexture.dispose()` is a no-op, because the image is yours.
-With the `webgl` mesh backend the shared blitter also uploads each page image on
-first use, but that GL texture is not the module's forever: every renderer
-drawing the page holds a reference to it, `renderer.dispose()` hands those back,
-and the texture is deleted once the last renderer using that page is disposed —
-a later frame that needs the page uploads it again. The cache is keyed weakly by
-the page image, so a renderer dropped without `dispose()` costs GPU memory until
+`revokeRegions()` — and `assets.dispose()`, which calls it — frees the blob URLs
+`unpackRegions` minted, and nothing else. The page images are held by
+`assets.pageImages` and by every player drawing from them, so a page is
+released once you drop the assets and every player is disposed. With the
+`webgl` mesh backend the shared blitter also uploads each page image on first
+use, but that GL texture is not the module's forever: every renderer drawing
+the page holds a reference to it, `player.dispose()` hands those back, and the
+texture is deleted once the last renderer using that page is disposed — a later
+frame that needs the page uploads it again. The cache is keyed weakly by the
+page image, so a renderer dropped without `dispose()` costs GPU memory until
 the context is lost, but never keeps the image itself alive.
 
-A meshed skeleton samples the page bitmap every frame, so its decoded form stays
-in use: a floor on the order of `page width × page height × 4` bytes per page —
-1 MiB for spineboy's single 1024×256 page. A rigid-only skeleton draws nothing
-from the page after `unpackRegions`, and what a merely reachable, undrawn image
-costs is up to the browser, not measurable from script.
+A rig with meshes samples its page bitmaps every frame, so their decoded form
+stays in use: a floor on the order of `page width × page height × 4` bytes per
+page. A rigid-only rig draws nothing from the pages after `unpackRegions`, and
+what a merely reachable, undrawn image costs is up to the browser, not
+measurable from script.
 
 Unload in this order:
 
-1. `renderer.dispose()`, for every renderer using the images.
-2. `revokeRegions(regionImages)` (or `assets.dispose()`).
-3. Drop your references to the atlas and the skeleton data.
+1. `player.dispose()`, for every player using the assets.
+2. `assets.dispose()` (or `revokeRegions(regionImages)`).
+3. Drop your references to the assets.
 
-### One part per page (loose part PNGs)
+### One part per page
 
-Not every pipeline runs the Spine editor's texture packer. If your parts are
-loose PNGs, declare each one as its own atlas page — a blank line closes a page
-block, the next line opens the next:
+`rigc build` writes one page per part by default — each part PNG is its own
+page, its one region covering it — and `rigc build --pack` arranges the parts
+onto shared pages instead. Both play here, unchanged:
 
-```
-head.png
-size: 512, 512
-head
-bounds: 0, 0, 512, 512
-
-torso.png
-size: 640, 480
-torso
-bounds: 0, 0, 640, 480
-```
-
-`spine-core` parses this as a normal multi-page atlas and nothing here needs a
-flag. Two things to know:
-
-- **`size:` is the frame every coordinate is read in**, so each page's
-  `bounds` must be written against the `size:` above them. The two need not be
-  the PNG's pixel size — that is the point of the section above, and a
-  half-resolution `head.png` under `size: 512, 512` works — but a `size:` that
-  matches neither the bounds nor the artwork reads every region from the wrong
-  place, in both tiers.
-- Regions like these cover their whole page, so `unpackRegions` hands the page
-  image straight through instead of cutting and re-encoding it — at any image
-  resolution, since covering the page is a statement about the declared size.
-  Load cost for this atlas shape is just the image loads. The exception is a
-  page marked `pma: true`: its URL holds premultiplied pixels, which an `<img>`
-  would composite as straight alpha, so those regions are cut from the
-  straight-alpha derivation like any other (and the blob is revoked by
-  `revokeRegions` like any other).
-
-For a **rigid-only** skeleton you can skip atlas unpacking altogether and hand
-the renderer a map you build yourself — meshes cannot, because the deform tier
-samples the page bitmap through the atlas region:
-
-```ts
-const regionImages = new Map([
-  ['head', { url: '/parts/head.png', width: 512, height: 512 }],
-]);
-const renderer = new SpineHtmlRenderer(rootElement, regionImages);
-```
+- Regions that cover their whole page are handed straight through by
+  `unpackRegions` instead of being cut and re-encoded — at any image resolution,
+  since covering the page is a statement about the declared size. Load cost for
+  this shape is just the image loads. The exception is a page marked `pma`: its
+  URL holds premultiplied pixels, which an `<img>` would composite as straight
+  alpha, so those regions are cut from the straight-alpha derivation like any
+  other (and the blob is revoked by `revokeRegions` like any other).
+- A packed build cuts every region from its page once, at load, and its meshes
+  sample the shared page through page UVs.
 
 ### Runtime knobs and what they cost
 
@@ -546,8 +389,12 @@ const renderer = new SpineHtmlRenderer(rootElement, regionImages);
   mesh once (no reallocation), so it is fine to expose as a user setting.
 - `renderer.triangleExpand` — clip overdraw in px that closes antialiased mesh
   seams (default 0.5). Also re-rasters every mesh once when changed.
-- `renderer.clipping` — apply clipping attachments (default `true`). What it
-  writes is one CSS `clip-path` per element the active clip covers, in that
+- `renderer.clipping` — apply the clips the frame carries (default `true`).
+  Which slots a clip covers is decided where the frame is made — the player's
+  adapter walks the draw order the way the runtime's draw loop does (one clip in
+  force at a time, a second one met while one is in force ignored, the end slot
+  inside its own clip). What the renderer writes is one CSS `clip-path` per
+  element a clip covers, in that
   element's own local frame; nothing reaches the raster backends, and a clip is
   not part of the mesh dirty signature, so a mesh that held still keeps reusing
   its raster under a moving clip. **Writes happen on change only**: each
@@ -555,11 +402,11 @@ const renderer = new SpineHtmlRenderer(rootElement, regionImages);
   1/1000 of a local unit so float jitter cannot defeat that cache, and a static
   polygon over a static pose therefore costs **zero style writes per frame after
   the first** — `renderer.clipWriteCount` is the check, alongside
-  `clipCount` (applied) and `clipSkipCount` (not applied: switched off, a second
-  clip met while one was active, an inactive bone, a degenerate polygon).
-  **The whole-skeleton fast path**: when the clip starts before anything has been
-  drawn and never ends, one `clip-path` goes on the root instead of one per
-  element. The root is *your* element, so its inline `clip-path` is **borrowed,
+  `clipCount` (clips applied) and `clipSkipCount` (clips in the frame not
+  applied: switched off, or a degenerate polygon; a clip the runtime itself
+  ignores never reaches the frame). **The whole-skeleton fast path**: when one
+  clip covers every slot of the frame, one `clip-path` goes on the root instead
+  of one per element. The root is *your* element, so its inline `clip-path` is **borrowed,
   not taken** — saved on the first write and put back verbatim when the clip
   stops covering the frame, when `clipping` goes `false`, and by `dispose()`.
   Per-element clip-paths and the root clip-path are never both in force for the
@@ -600,18 +447,23 @@ bun install
 bun run dev
 ```
 
-The official spineboy example assets are downloaded automatically on first `dev`/`build`
-(they are owned by Esoteric Software and not redistributed in this repository — see
-[NOTICE.md](NOTICE.md)); `bun run fetch-assets` runs the same idempotent step manually.
+The demo plays rigc's own gallery rigs (`walk`, `flex`, `squash`, `portrait`,
+`nod`, `look`, `ride`), each built by `rigc build` from a pinned rigc tag into
+`public/rigs/<name>/` on first `dev`/`build` — and each again with `--pack` into
+`public/rigs/<name>-packed/`. The same step downloads the official spineboy
+example assets, which the test suite's reference side reads (they are owned by
+Esoteric Software and not redistributed in this repository — see
+[NOTICE.md](NOTICE.md)); `bun run fetch-assets` runs it manually, and it is
+idempotent.
 
-Debug knobs (query string): `?skel=pro|ess` `?anim=walk` `?count=10` pick the scene,
-`?tint=ff8080` tints the whole skeleton, `?dpr=2` overrides the mesh-canvas backing
+Debug knobs (query string): `?rig=flex` `?anim=wave` `?count=10` pick the scene,
+`?tint=ff8080` tints the whole rig, `?dpr=2` overrides the mesh-canvas backing
 ratio, `?timescale=0` freezes the pose (every mesh should report "reused"),
 `?expand=0` disables the crack-closing clip overdraw, `?backend=webgl` rasterizes
 meshes through the shared WebGL blitter (also a live header select; the stats line
-names the active backend), `?clipping=0` turns clipping attachments back off (they
-are then counted and skipped, as before v0.6 — try it on `?anim=portal`), and
-`?time=1.2` seeks every instance to the same pose for deterministic captures.
+names the active backend), `?clipping=0` turns clips back off (they are then
+counted and skipped), and `?time=1.2` seeks every instance to the same pose for
+deterministic captures.
 
 ## Tests
 
@@ -620,19 +472,13 @@ bun run test   # builds + serves the demo, then runs chromium + webkit
 ```
 
 Playwright drives the demo (`tests/`, config in `playwright.config.ts`; CI
-runs the same suite on ubuntu, **once per supported spine-core minor**). That
-matrix is what the compatibility table above is made of: each column installs
-that minor over the lockfile's, fetches the matching spine-runtimes branch's
-example exports, and runs everything. `SPINE_ASSETS_BRANCH=4.2 bun run
-fetch-assets` gets those exports locally, and `SPINE_CORE_MINOR` tells the run
-which minor it is against — anything but the typed one builds without
-`tsc --noEmit`, since the package is typed against one generation and runs on
-several. Two checks in `tests/package.spec.ts` are skipped, with the reason
-printed, where the **installed peer alone** already fails them: importing
-`spine-core` 4.0 in plain Node, and typechecking a consumer of `spine-core` 4.1
-under `nodenext`. Both are the upstream packaging defect described in the
-compatibility section, both are probed rather than keyed on a version, and
-nothing is relaxed in the columns that can run them. The visual check is
+runs the same suite on ubuntu). Two stages carry the same frame loop and stats
+line: the demo, over the gallery builds and the model path, and
+`tests/spine-stage.html`, over spineboy posed by spine-core and read into the
+same frame record by the test suite (`tests/skeletonFrame.ts`) — that is where
+the additive-blend and clipping scenes live, which no gallery build carries.
+spine-core (4.3) is a devDependency for that reference side only; nothing the
+package ships names it. The visual check is
 **A/B within one run**:
 no golden snapshots are committed (they rot across platforms/GPUs) — instead
 the same deterministic pose (`?time` + `?timescale=0`) is screenshotted with
@@ -643,6 +489,15 @@ Hairline seams are guarded by a deterministic canary (`?expand=0` must
 change the canvas2d raster), and counter tests pin the dirty-skip /
 grow-only-backing / clip-counter invariants plus spine-core's region corner
 order (BL, UL, UR, BR).
+
+**The frame gate** (`tests/frames.spec.ts`, node-side) is what the model path
+rests on. Every gallery build is posed twice from the two pairs of files the
+build wrote — the Spine pair by spine-core 4.3 on rigc's render recipe, the
+model pair by `rig-c/core`'s live track through the package's own adapter —
+and the two frames are compared field by field at **tolerance 0**: draw order,
+every region's corners and page UVs, every mesh's vertices, page UVs and
+triangles, tint, blend, clip. Every animation, `dt = 1/12`, through the loop's
+wrap; one page per part and packed. The run prints the counts it compared.
 
 Clipping gets its own oracle (`tests/clipping.spec.ts`), because a clip-path
 that went through the wrong transform still parses and still counts as applied.
@@ -677,27 +532,22 @@ So `tests/oracle.spec.ts` compares against the official runtime. The same
 export, the same frozen pose, the same size, the same atlas page, drawn by
 `@esotericsoftware/spine-webgl` into a canvas whose orthographic camera is
 solved to land world space on exactly the pixels the DOM stage lands it on —
-then both are screenshotted and diffed. Thirteen cells: the rigid tier, the mesh
-tier on both backends, the exporter's own premultiplied page (`spineboy-pma`)
-on all three, a clipping pose, an additive-blend pose, a mesh-deform pose on
-both backends, a per-slot rgba/alpha pose, and a whole-skeleton tint.
+then both are screenshotted and diffed. Thirteen spineboy cells: the rigid tier,
+the mesh tier on both backends, the exporter's own premultiplied page
+(`spineboy-pma`) on all three, a clipping pose, an additive-blend pose on both
+backends, a mesh-deform pose on both backends, a per-slot rgba/alpha pose, and a
+whole-skeleton tint — the renderer under a spine-core pose. And twelve gallery
+cells, which are the package end to end: the DOM side loads the build's
+`skeleton.model.json` and plays it with `RigPlayer`, posed by `rig-c/core`; the
+reference draws the `skeleton.json` and atlas the same build wrote, posed by
+spine-core.
 
 It earned its keep on the first run: the rigid tier was drawing every
 90°-packed atlas region 180° round (#49), in every release up to 0.7.0, and no
-comparison of this package against itself could have seen it. Rotated packing is
-held there now — the example exports rotate 17 regions on the 4.0 and 4.1
-branches and ten on the 4.2 branch where the 4.3 branch's rotate none, so the
-older columns are what keep the restore honest, and each cell logs how many
-regions its atlas rotated so a green run on an unrotated one cannot be mistaken
-for the proof.
-
-The deform cell is the one chosen for what the *data* carries rather than for a
-feature of the renderer: `hoverboard` is the only animation in spineboy-pro with
-mesh deform keys, it is the section whose JSON key moved between 4.0 and 4.1,
-and the pose drives two of the four bones whose inheritance mode moved between
-4.1 and 4.2. On the older columns it is therefore a deformed mesh posed through
-bones only the matching runtime reads, diffed against that runtime's own
-reference.
+comparison of this package against itself could have seen it. The cut's own
+guard (`tests/regions.spec.ts`) asserts a rotated cut's pixels against the page
+texels its UVs name, independently of any rendered pose; each oracle cell logs
+how many regions its atlas rotated.
 
 Two things make it evidence rather than decoration. The camera match is
 **derived** — solved against the DOM mapping, not fitted to a picture — and
@@ -798,15 +648,18 @@ perf oracle is the demo's stats line on a real device.
 
 ## How it works
 
-1. `@esotericsoftware/spine-core` loads the skeleton and drives `AnimationState`,
-   constraints, and physics — all CPU-side, renderer-agnostic.
-2. At load time each atlas region is cut into its own bitmap (rotation restored), one
-   blob URL per region — except regions that already cover their whole page, which are
-   used as they are.
-3. Per frame, for each slot in draw order: `computeWorldVertices` yields the region's
-   four corners in world space (order **BL, UL, UR, BR** — note the comments inside
-   `computeWorldVertices` are stale). Flip Y (Spine is Y-up), derive the affine from
-   three corners, write one `matrix()` string. That's the whole render path.
+1. `loadModel` reads the rig's compiled model document (`rig-c/core`'s `readModel`),
+   and `RigPlayer` opens an animation on a live track (`openTrack`): bones,
+   constraints, physics, deform and draw order are posed by the core — all
+   CPU-side, renderer-agnostic — one `dt` at a time.
+2. At load time each region of the document's `pages` section is cut into its own
+   bitmap (rotation restored), one blob URL per region — except regions that already
+   cover their whole page, which are used as they are.
+3. Per frame, the pose becomes a `PosedFrame`: for each slot in draw order, a region's
+   four world corners (order **BL, UL, UR, BR**) or a mesh's world vertices, page UVs
+   and triangles, its tint, blend and clip. For a region: flip Y (the frame is Y-up),
+   derive the affine from three corners, write one `matrix()` string. That's the
+   whole rigid render path.
 
 ## License
 

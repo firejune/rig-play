@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>spine-html — Spine skeletons rendered as plain DOM</title>
+    <title>spine-html — rigc rigs rendered as plain DOM</title>
     <style>
       :root {
         color-scheme: dark;
@@ -85,15 +85,10 @@
   </head>
   <body>
     <header>
-      <h1>spine-html <span>— skeletons as plain DOM, one CSS matrix per slot</span></h1>
-      <label>skeleton
-        <select id="skel">
-          <option value="pro">spineboy-pro (meshes)</option>
-          <option value="ess">spineboy-ess (rigid only)</option>
-        </select>
-      </label>
+      <h1>spine-html <span>— rigc rigs as plain DOM, one CSS matrix per slot</span></h1>
+      <label>rig <select id="rig"></select></label>
       <label>animation <select id="anim"></select></label>
-      <label>skeletons <input id="count" type="number" min="1" max="50" value="1" /></label>
+      <label>rigs <input id="count" type="number" min="1" max="50" value="1" /></label>
       <label>mesh raster
         <select id="backend">
           <option value="canvas2d">canvas2d</option>

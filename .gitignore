@@ -9,3 +9,5 @@ bench-results/
 # Spine example assets are fetched, not redistributed — see NOTICE.md
 public/spineboy/
 .DS_Store
+# rigc gallery builds — built from a pinned rigc tag by scripts/fetch-assets.sh
+public/rigs/

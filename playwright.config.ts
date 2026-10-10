@@ -29,24 +29,18 @@ import { defineConfig } from '@playwright/test';
  *
  * Typecheck policy (`SPINE_CORE_MINOR`):
  *
- * - The package is typed against one spine-core generation (4.3) and *runs* on
- *   several, through the seam in `src/coreCompat.ts`. So `tsc --noEmit` over
- *   `src/` and `tests/` is only meaningful in the column whose installed core
- *   is the one the code is typed for; under an older core it reports the
- *   difference the seam exists to absorb, which is not a defect and must not
- *   be made to look like one by loosening the types.
- * - `SPINE_CORE_MINOR` names the spine-core minor a run is against (the CI
- *   matrix sets it; a local swap can too). Anything other than the typed minor
- *   builds the pages without the typecheck. Unset — every ordinary local run —
- *   is the typed path, unchanged.
- * - What is NOT skipped anywhere is the typecheck of what npm actually ships:
- *   `tests/package.spec.ts` compiles a consumer against the built `dist/` and
- *   the installed core, in every column. The emitted `.d.ts` names only types
- *   that exist across the supported range, so that check is a real assertion in
- *   an older column rather than a formality.
+ * - `src/` reads no Spine runtime since #60; `tests/` and `bench/` do — the
+ *   reference side (the oracle, the frame gate, the renderer specs) — and are
+ *   typed against spine-core 4.3, the generation the rigc gallery builds are
+ *   exported in. `SPINE_CORE_MINOR` names the minor a run is against (CI sets
+ *   it, to 4.3 only now); anything other than the typed minor builds the pages
+ *   without the typecheck. Unset — every ordinary local run — is the typed
+ *   path. The knob goes with the matrix in #63.
+ * - What npm ships is typechecked by `tests/package.spec.ts` regardless: it
+ *   compiles a consumer against the built `dist/` with nothing else installed.
  */
 const DEFAULT_PORT = 4321;
-/** The spine-core minor `src/` and `tests/` are typed against. */
+/** The spine-core minor `tests/` is typed against (`src/` reads none). */
 const TYPED_CORE_MINOR = '4.3';
 
 function resolveTestPort(raw: string | undefined): number {
@@ -63,13 +57,11 @@ function resolveTestPort(raw: string | undefined): number {
 const port = resolveTestPort(process.env.TEST_PORT);
 
 /**
- * True when this run is against a spine-core other than the one `src/` and
- * `tests/` are typed against, so a type *check* of them would report the
- * difference the seam absorbs rather than a defect. Exported because
- * `tests/package.spec.ts` needs the same answer, and one knob read in two
- * places is one knob — a second copy of the rule is how the two would drift.
+ * True when this run is against a spine-core other than the one `tests/` is
+ * typed against, so a type *check* would report a generation difference
+ * rather than a defect.
  */
-export const UNTYPED_CORE =
+const UNTYPED_CORE =
   !!process.env.SPINE_CORE_MINOR && process.env.SPINE_CORE_MINOR !== TYPED_CORE_MINOR;
 
 const buildScript = UNTYPED_CORE ? 'build:pages' : 'build';
