@@ -1,31 +1,17 @@
-# CI: the playwright suite (chromium + webkit), against spine-core 4.3.
+# CI: the playwright suite (chromium + webkit), one job.
 #
 # The visual tests are A/B within one run and one engine (no golden files),
 # so they are platform-independent by design — ubuntu results are valid even
 # though local dev is macOS. Headless numbers are never performance
 # evidence; nothing here asserts timing.
 #
-# ## Why there is one column
-#
-# The package used to read spine-core itself, through a generation seam, and
-# this file ran the suite once per supported minor (4.3, 4.2, 4.1, 4.0), each
-# column against that version's own example exports. Since #60 the package
-# reads no Spine runtime: it poses a rig's compiled model document through
-# `rig-c/core` (a devDependency bundled into the build), and nothing under
-# `src/` imports `@esotericsoftware/*` — `tests/package.spec.ts` holds that on
-# the shipped bytes. What spine-core still does here is the *reference* side:
-# the pixel oracle draws with spine-webgl, the frame gate (tests/frames.spec.ts)
-# poses each rigc gallery build's Spine pair with spine-core and holds the
-# model path to it at tolerance 0, and the renderer specs read spineboy. The
-# gallery builds are 4.3 exports (`rigc build` writes Spine 4.3 data), and a
-# runtime reads only its own generation's data, so the reference runs 4.3 and
-# only 4.3. The matrix keeps its shape — one column — until #63 removes the
-# peer dependency and the matrix machinery with it.
-#
-# The pixel oracle (tests/oracle.spec.ts) needs spine-webgl of the *same*
-# generation as spine-core; the lockfile pins the pair, and the guard step
-# checks there is no nested second copy of spine-core under spine-webgl, the
-# one shape that would quietly give the oracle's two sides different maths.
+# The package poses a rig's compiled model document through `rig-c/core` (a
+# devDependency pinned to one version and bundled into the build), and since
+# #63 nothing in the repository reads a Spine runtime either: the gate is the
+# package's own two render modes drawing the same picture (tests/parity.spec.ts)
+# plus the renderer's counters and probes. There is no spine-core matrix to run —
+# the four columns this file used to carry measured the generation seam #60
+# deleted — and a pose doubt is a rigc issue, answered by rig-c's own gate.
 name: ci
 
 on:
@@ -50,59 +36,13 @@ on:
 
 jobs:
   test:
-    name: test (spine-core ${{ matrix.core }})
+    name: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      # One column (see the header); kept a matrix until #63 removes it.
-      fail-fast: false
-      matrix:
-        include:
-          - core: '4.3'
-            typed: true
-    env:
-      # Which minor this run is against: turns off `tsc --noEmit` outside the
-      # typed column (playwright.config.ts) and picks the matching exports
-      # (scripts/fetch-assets.sh).
-      SPINE_CORE_MINOR: ${{ matrix.core }}
-      SPINE_ASSETS_BRANCH: ${{ matrix.core }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
-
-      - name: Install this column's spine-core and its matching reference runtime
-        if: ${{ !matrix.typed }}
-        run: |
-          bun add --no-save \
-            "@esotericsoftware/spine-core@${{ matrix.core }}" \
-            "@esotericsoftware/spine-webgl@${{ matrix.core }}"
-
-      # Two facts the column would otherwise only imply: that the swap took,
-      # and that it left the repository's own manifest and lockfile alone. A
-      # silently-unswapped column would test 4.3 twice and call it coverage.
-      - name: The installed core and reference are the column's, and nothing was committed
-        run: |
-          installed=$(node -p "require('./node_modules/@esotericsoftware/spine-core/package.json').version")
-          reference=$(node -p "require('./node_modules/@esotericsoftware/spine-webgl/package.json').version")
-          echo "spine-core $installed / spine-webgl $reference"
-          case "$installed" in
-            ${{ matrix.core }}.*) ;;
-            *) echo "expected spine-core ${{ matrix.core }}.x, got $installed"; exit 1 ;;
-          esac
-          case "$reference" in
-            ${{ matrix.core }}.*) ;;
-            *) echo "expected spine-webgl ${{ matrix.core }}.x, got $reference"; exit 1 ;;
-          esac
-          # One spine-core, and it is the one above: a nested copy under
-          # spine-webgl would hand the oracle's two sides different runtimes.
-          if [ -d node_modules/@esotericsoftware/spine-webgl/node_modules ]; then
-            echo "spine-webgl brought its own spine-core:"
-            ls node_modules/@esotericsoftware/spine-webgl/node_modules
-            exit 1
-          fi
-          git diff --exit-code -- package.json bun.lock
-
       - run: bunx playwright install --with-deps chromium webkit
       - run: bun run test
         env:
@@ -112,7 +52,7 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.core }}
+          name: test-results
           path: test-results/
           if-no-files-found: ignore
       # The dump is the point of such a run, so it must be uploaded whether the
@@ -131,6 +71,6 @@ jobs:
       - if: ${{ (success() || failure()) && github.event_name == 'workflow_dispatch' && inputs.parity_dump }}
         uses: actions/upload-artifact@v4
         with:
-          name: parity-dump-${{ matrix.core }}
+          name: parity-dump
           path: test-results/
           if-no-files-found: ignore

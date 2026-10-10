@@ -17,11 +17,16 @@ import { CHANNEL_TOLERANCE, diffInPage } from './pixelDiff';
  *
  * ## The fixture
  *
- * Built in the test, not committed: the page that ships, with
- * `rgb = round(rgb * a / 255)` written into it, served under the same atlas text
- * plus a `pma: true` line. Rendered correctly the twin and the original are the
- * same picture, so every cell here is an A/B of two encodings of one artwork —
- * no golden, nothing platform-specific, exactly the parity suite's strategy.
+ * Built in the test, not committed: the shared page of the figure test rig's
+ * `--pack` build (tests/rigs/figure — soft halos, so every alpha band is
+ * populated), with `rgb = round(rgb * a / 255)` written into it, served under
+ * the same page layout declared `pma: true` and drawn from the same frame with
+ * every slot's `pma` set, which is what a premultiplied document hands the
+ * renderer. Rendered correctly the twin and the original are the same picture,
+ * so every cell here is an A/B of two encodings of one artwork — no golden,
+ * nothing platform-specific, exactly the parity suite's strategy. (rigc's own
+ * packer writes `pma: false`; a premultiplied page reaches a rigc build only
+ * through `--atlas-in`, so the twin is made here rather than built.)
  *
  * The twin's PNG is encoded byte by byte in the harness rather than through
  * `canvas.toBlob`, because a 2D canvas stores premultiplied colour and would
@@ -184,9 +189,9 @@ async function openHarness(page: Page): Promise<void> {
 
 /** Every tier that reads a page, and the page scales they must compose with. */
 const CELLS = [
-  { name: 'rigid tier (spineboy-ess)', skeleton: 'ess', backend: 'canvas2d', pageScale: 1 },
-  { name: 'canvas2d mesh tier (spineboy-pro)', skeleton: 'pro', backend: 'canvas2d', pageScale: 1 },
-  { name: 'webgl mesh tier (spineboy-pro)', skeleton: 'pro', backend: 'webgl', pageScale: 1 },
+  { name: 'rigid tier (figure, rigid slots)', skeleton: 'ess', backend: 'canvas2d', pageScale: 1 },
+  { name: 'canvas2d mesh tier (figure)', skeleton: 'pro', backend: 'canvas2d', pageScale: 1 },
+  { name: 'webgl mesh tier (figure)', skeleton: 'pro', backend: 'webgl', pageScale: 1 },
   // The two rules compose: un-premultiply the image, then cut in its own frame.
   { name: 'rigid tier, 0.5× page', skeleton: 'ess', backend: 'canvas2d', pageScale: 0.5 },
   { name: 'canvas2d mesh tier, 0.5× page', skeleton: 'pro', backend: 'canvas2d', pageScale: 0.5 },

@@ -79,7 +79,8 @@ default stays `dom`.
 - ✅ Region attachments (rigid parts): exact affine mapping, draw-order via `z-index`,
   attachment swaps, alpha
 - ✅ Atlas unpacking at load time (90°-packed regions restored to the orientation
-  spine-core's UVs name, held by the pixel oracle on exports whose packer rotated),
+  the region's UVs name, held against hand-written UVs on a rigc build whose region
+  is packed turned),
   so the rigid per-frame path never touches a canvas — a region that covers its whole
   page is passed through uncut, and `revokeRegions()` frees the rest when a skeleton
   is unloaded
@@ -105,8 +106,8 @@ default stays `dom`.
   (one active clip at a time, applied from the clip's slot through its end slot
   inclusive), with the polygon expressed in each element's own local frame — the
   inverse of the `<img>` matrix for rigid slots, the canvas translate for mesh
-  slots. Covers **part masks** (a clip with a real end slot, like this repository's
-  own `portal` animation) and **whole-skeleton clips** (an end slot that never
+  slots. Covers **part masks** (a clip with a real end slot, like the figure test
+  rig's `mask` animation) and **whole-skeleton clips** (an end slot that never
   arrives, which takes a fast path: one `clip-path` on the root instead of one per
   element). **Inverse clips** are supported too: the region they keep has a hole
   in it, so it needs two rings, and `polygon()` carries only one — a box and a
@@ -490,11 +491,10 @@ bun run dev
 The demo plays rigc's own gallery rigs (`walk`, `flex`, `squash`, `portrait`,
 `nod`, `look`, `ride`), each built by `rigc build` from a pinned rigc tag into
 `public/rigs/<name>/` on first `dev`/`build` — and each again with `--pack` into
-`public/rigs/<name>-packed/`. The same step downloads the official spineboy
-example assets, which the test suite's reference side reads (they are owned by
-Esoteric Software and not redistributed in this repository — see
-[NOTICE.md](NOTICE.md)); `bun run fetch-assets` runs it manually, and it is
-idempotent.
+`public/rigs/<name>-packed/`. The same step builds this repository's test rigs
+(`tests/rigs/`: `figure`, `glow`, `turned`), which `?rig=` also reaches; nothing
+is downloaded but the rigc tag's gallery sources. `bun run fetch-assets` runs it
+manually, and it is idempotent.
 
 Debug knobs (query string): `?rig=flex` `?anim=wave` `?count=10` pick the scene,
 `?tint=ff8080` tints the whole rig, `?dpr=2` overrides the mesh-canvas backing
@@ -512,32 +512,33 @@ bun run test   # builds + serves the demo, then runs chromium + webkit
 ```
 
 Playwright drives the demo (`tests/`, config in `playwright.config.ts`; CI
-runs the same suite on ubuntu). Two stages carry the same frame loop and stats
-line: the demo, over the gallery builds and the model path, and
-`tests/spine-stage.html`, over spineboy posed by spine-core and read into the
-same frame record by the test suite (`tests/skeletonFrame.ts`) — that is where
-the additive-blend and clipping scenes live, which no gallery build carries.
-spine-core (4.3) is a devDependency for that reference side only; nothing the
-package ships names it. The visual check is
-**A/B within one run**:
-no golden snapshots are committed (they rot across platforms/GPUs) — instead
-the same deterministic pose (`?time` + `?timescale=0`) is screenshotted with
-`?backend=canvas2d` and `?backend=webgl` in the same engine and the buffers
-are diffed directly with a shift-tolerant comparison, so missing parts,
-wrong colors, and tint/blend divergence fail regardless of platform.
-Hairline seams are guarded by a deterministic canary (`?expand=0` must
-change the canvas2d raster), and counter tests pin the dirty-skip /
-grow-only-backing / clip-counter invariants plus spine-core's region corner
-order (BL, UL, UR, BR).
+runs the same suite on ubuntu, one job). Every scene is a rig built by
+`rigc build` and posed by `rig-c/core` through `RigPlayer` — rigc's gallery rigs,
+and three test rigs authored in this repository (`tests/rigs/`) for what the
+gallery does not carry: `figure` (clipping attachments in rigc's format —
+convex, inverse, nested, whole-skeleton — rigid parts on turned bones, two grid
+meshes), `glow` (additive slots with slot colours over two weighted meshes) and
+`turned` (a region packed turned 90° on a hand-packed page). No Spine runtime
+is installed or compared against: the pose is rig-c's, held to spine-core at
+tolerance 0 by rig-c's own CI, and a pose doubt is a rigc issue. The visual
+checks are **A/B within one run**: no golden snapshots are committed (they rot
+across platforms/GPUs) — instead the same deterministic pose (`?time` +
+`?timescale=0`) is screenshotted twice in the same engine and the buffers are
+diffed directly with a shift-tolerant comparison, so missing parts, wrong
+colors, and tint/blend/clip divergence fail regardless of platform.
 
-**The frame gate** (`tests/frames.spec.ts`, node-side) is what the model path
-rests on. Every gallery build is posed twice from the two pairs of files the
-build wrote — the Spine pair by spine-core 4.3 on rigc's render recipe, the
-model pair by `rig-c/core`'s live track through the package's own adapter —
-and the two frames are compared field by field at **tolerance 0**: draw order,
-every region's corners and page UVs, every mesh's vertices, page UVs and
-triangles, tint, blend, clip. Every animation, `dt = 1/12`, through the loop's
-wrap; one page per part and packed. The run prints the counts it compared.
+**The picture gate** is the two render modes drawing the same picture: every
+scene captured in the DOM mode and in the canvas mode and diffed — bad pixels at
+most 1.5% of drawn content on the test-rig scenes (measured floors 0.007–0.524%,
+macOS Chromium; each scene's own feature dropped from the canvas mode — tint,
+additive blend, clipping, a mesh — scores 4.2–77%) and 2.5% on the gallery
+scenes (floors 0.585–1.553%, Chromium and WebKit). The DOM tier's two mesh
+backends get the same A/B (`?backend=canvas2d` against `?backend=webgl`, at most
+0.5%). Hairline seams are guarded by a deterministic canary (`?expand=0` must
+change the canvas2d raster), the canvas2d source sub-rect by another (expand 32
+against 8), and counter tests pin the dirty-skip / grow-only-backing /
+clip-counter invariants plus the region corner order (BL, UL, UR, BR) and the
+turned-region UVs, read off rig-c's pose against hand-written numbers.
 
 Clipping gets its own oracle (`tests/clipping.spec.ts`), because a clip-path
 that went through the wrong transform still parses and still counts as applied.
@@ -561,51 +562,7 @@ resolving, so blob ownership — every unpacked URL freed, nothing the caller
 owns touched, nothing stranded by a failed load — is asserted rather than
 assumed.
 
-### The pixel oracle: a reference that is not us
-
-Everything above compares this package against itself. That catches one mesh
-backend drifting from the other and, by construction, cannot catch a defect
-they **share** — which is what happened with `pma: true` pages, drawn one
-multiply too dark in every tier while the suite stayed green for months.
-
-So `tests/oracle.spec.ts` compares against the official runtime. The same
-export, the same frozen pose, the same size, the same atlas page, drawn by
-`@esotericsoftware/spine-webgl` into a canvas whose orthographic camera is
-solved to land world space on exactly the pixels the DOM stage lands it on —
-then both are screenshotted and diffed. Thirteen spineboy cells: the rigid tier,
-the mesh tier on both backends, the exporter's own premultiplied page
-(`spineboy-pma`) on all three, a clipping pose, an additive-blend pose on both
-backends, a mesh-deform pose on both backends, a per-slot rgba/alpha pose, and a
-whole-skeleton tint — the renderer under a spine-core pose. And twelve gallery
-cells, which are the package end to end: the DOM side loads the build's
-`skeleton.model.json` and plays it with `RigPlayer`, posed by `rig-c/core`; the
-reference draws the `skeleton.json` and atlas the same build wrote, posed by
-spine-core.
-
-It earned its keep on the first run: the rigid tier was drawing every
-90°-packed atlas region 180° round (#49), in every release up to 0.7.0, and no
-comparison of this package against itself could have seen it. The cut's own
-guard (`tests/regions.spec.ts`) asserts a rotated cut's pixels against the page
-texels its UVs name, independently of any rendered pose; each oracle cell logs
-how many regions its atlas rotated.
-
-Two things make it evidence rather than decoration. The camera match is
-**derived** — solved against the DOM mapping, not fitted to a picture — and
-then **proved by driving it**: a deliberate one-world-unit offset of one side
-must change the diff, which it does by 3.3× and 6.5×. And what is forgiven is
-antialiasing and texture filtering and nothing else, so the stage sits where
-one atlas texel is one CSS pixel and neither runtime resamples. Limits are
-ratios of drawn content, plus a darker-minus-lighter excess on the
-premultiplied cells, because that defect class can only go one way — never an
-absolute per-pixel precision number, which is a platform's number and not a
-package's.
-
-spine-webgl is a **development dependency**. It is named by one file under
-`tests/`, it is in neither `dependencies` nor `peerDependencies`, and
-`tests/package.spec.ts` asserts that nothing the published package contains so
-much as mentions it.
-
-## Benchmark: side by side with the official runtime
+## Benchmark: DOM mode vs canvas mode
 
 ```bash
 bun run bench:dev     # the page, for a person to watch (and for Safari)
@@ -613,60 +570,44 @@ bun run bench         # drives it in a headed Chromium and writes a report
 ```
 
 `bench/` is a separate vite project — not part of the library, and not part of
-what `bun run build` emits — that runs the same skeleton in both runtimes side
-by side, each with its own stats line in the demo's style. Scenes by query
-string: `?scene=mesh` (the deform tier working every frame), `?scene=held` (a
-frozen pose, where unchanged meshes reuse their raster and the reference
-redraws regardless), `?scene=rigid`, and `?scene=many&count=N` independent
-players. All four take `&count=N` up to 64 (a page limit, so that a cell stays
+what `bun run build` emits — that plays the same rigc gallery build in both
+render modes side by side, each with its own stats line in the demo's style.
+Scenes by query string: `?scene=mesh` (`portrait-packed` turning its head, the
+deform tier working every frame), `?scene=held` (the same pose frozen, where
+unchanged meshes reuse their raster and an unchanged frame is reused),
+`?scene=rigid` (`walk-packed`, region attachments only) and
+`?scene=many&count=N` independent players; `?rig=` and `?model=` name another
+build. All four take `&count=N` up to 64 (a page limit, so that a cell stays
 something you can see), laid out on one grid whose per-rig scale shrinks with
 the column count, so a step up in count adds rigs rather than cropping the ones
 already there.
 
-**The two sides draw the same picture, and each draws it the way its own
-runtime is written.** Those are separate rules and the first runs of this page
-broke both:
-
-- **One grid, one clip.** A rig is clipped to exactly the rect the reference's
-  canvas covers for it — `overflow: hidden` on a box, the way a page embeds a
-  player. Without it the DOM rigs composite over their neighbours while the
-  reference's viewport discards the same pixels for free, so the two sides
-  aren't showing the same picture and the DOM side is carrying layers the
-  reference never pays for. Placement is derived once and read by both sides,
-  and then *checked*: each side reports `origin Δpx`, the largest gap between
-  where the grid puts a rig and where that side drew it, and the report table
-  carries it per row. (`contain: layout paint` is deliberately not used: paint
-  containment clips to the same edge `overflow: hidden` does, and what it adds
-  past the clip — a stacking context, a containing block, an independent
-  formatting context — changes how one side is composited and buys the
-  comparison nothing. Skipping work outside the box is `content-visibility`,
-  not containment.)
-- **The reference gets its own architecture.** For a grid of rigs it draws into
-  **one** canvas through one batched `SceneRenderer`, which is how a spine-webgl
-  application is written and is its home ground; 64 rigs leave as a handful of
-  draw calls. One WebGL context per player is right only for `?scene=many`,
-  which is *about* the browser's ~16-context cap — the page counts the contexts
-  it was refused and the ones the browser took back, says so in the header, and
-  keeps going rather than dying at the cap. Each stats line names which shape it
-  is in: `shared canvas` or `context per player`, with the alive count.
+**The two sides draw the same picture.** Both place rigs with one derivation and
+clip each to the same rect — the pane for a grid, the rig's own cell for `many`
+— with `overflow: hidden` on a box, the way a page embeds a player, and then
+*check* it: each side reports `origin Δpx`, the largest gap between where the
+grid puts a rig and where that side drew it, and the report table carries it per
+row. (`contain: layout paint` is deliberately not used: paint containment clips
+to the same edge `overflow: hidden` does, and what it adds past the clip — a
+stacking context, a containing block, an independent formatting context —
+changes how one side is composited and buys the comparison nothing.) Both modes
+share the package's single WebGL context however many players there are; the
+canvas side's stats line says how many contexts the page holds.
 
 `scripts/bench.mjs` walks `bench/scenes.json`, opens each scene in a **headed**
 Chromium (a hidden page throttles `requestAnimationFrame`, so a headless
-reading would be the browser's power policy rather than either runtime's cost),
-runs a fixed number of frames per runtime — one at a time, because rAF has a
-single cadence per document — and writes JSON plus a markdown table with the
+reading would be the browser's power policy rather than either mode's cost),
+runs a fixed number of frames per mode — one at a time, because rAF has a single
+cadence per document — and writes JSON plus a markdown table with the
 conditions attached: browser version, device pixel ratio, window size, GPU
 string, and the load average before and after. Over a threshold it stamps the
 whole report `INVALID: load average too high` and exits non-zero, because a
 benchmark on a busy machine measures the machine. `--corpus <dir>` points it at
-local rigs that never enter this repository.
+local rigc builds that never enter this repository.
 
-> **Numbers pending.** No comparison table is published yet. The instrument is
-> fair in both directions now and its scenes step far enough to leave a desktop
-> GPU's vsync ceiling, but a reading taken on a loaded machine, a CI runner or
-> a headless browser would not be worth printing — and every reading taken
-> while the instrument was being repaired has been discarded rather than
-> quoted. The table will be taken the way every other number in this README
+> **Numbers pending.** No comparison table is published yet. A reading taken on
+> a loaded machine, a CI runner or a headless browser would not be worth
+> printing. The table will be taken the way every other number in this README
 > was: the two stats lines read on a real device, on a quiet machine, per scene
 > and per engine — including Safari, which stays manual because no automation
 > preserves what is being measured there. Until then the instrument exists and
@@ -705,11 +646,8 @@ perf oracle is the demo's stats line on a real device.
 
 The code in this repository is MIT licensed.
 
-It depends on the [Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes)
-(`@esotericsoftware/spine-core`), which are licensed under the
-[Spine Runtimes License](https://esotericsoftware.com/spine-runtimes-license):
-**integrating the Spine Runtimes — including through this project — requires each user
-to have their own valid Spine Editor license.** See [NOTICE.md](NOTICE.md).
-
-Example assets (spineboy) are owned by Esoteric Software and are fetched from the
-official repository at setup time, not redistributed here.
+Neither the package nor this repository depends on the
+[Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes): rigs are posed
+by `rig-c/core` (MIT), bundled into the package, and no package of Esoteric
+Software's npm scope is a dependency of any kind. No example assets are fetched or
+redistributed. See [NOTICE.md](NOTICE.md).

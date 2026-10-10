@@ -105,27 +105,6 @@ const RIM_PX = 3;
  */
 const CONTENT_ALPHA = 64;
 
-/**
- * Whether the installed spine-core can express an inverse clip at all.
- *
- * `ClippingAttachment.inverse` arrived in 4.3 and no older editor exports one,
- * so on an older core `src/coreCompat.ts` answers `false` rather than reading a
- * property that is not there. The probe for it sets the flag by hand, which on
- * such a core would be writing a field nothing reads and then asserting a
- * clip-path shape that cannot occur — an absent feature, not a wrong
- * behaviour. Detected off the class rather than off a version string, for the
- * same reason the seam is, and phrased as a *feature* so that the day the
- * supported range's floor moves, this simply starts running again.
- *
- * Asked of the *page* rather than constructed here, because plain node cannot
- * import spine-core 4.0 at all and Playwright loads a spec file's imports with
- * node's resolver — see the header of tests/invariants.spec.ts.
- */
-async function inverseClippingSupported(page: Page): Promise<boolean> {
-  return (await page.evaluate(() => window.rigPlayHarness.regionGeometryProbe()))
-    .inverseClipping;
-}
-
 interface MaskMetrics {
   width: number;
   height: number;
@@ -297,8 +276,8 @@ async function maskMetrics(
       };
 
       // Artwork is whatever is not transparent. Unambiguous in a way a
-      // color-distance test is not: spineboy's outfit is nearly black, so
-      // against a dark backdrop "dark" and "absent" would be the same answer.
+      // color-distance test is not: against a dark backdrop, dark artwork and
+      // no artwork would be the same answer.
       const isContent = (p: Uint8ClampedArray, i: number): boolean => p[i + 3] > contentAlpha;
 
       /**
@@ -653,12 +632,13 @@ test.beforeEach(async ({ page }) => {
   await page.waitForFunction(() => Boolean(window.rigPlayHarness));
 });
 
-test('part mask: the repository asset clips exactly the slots in its range', async ({ page }) => {
+test("part mask: the rig's own clip covers exactly the slots in its range", async ({ page }) => {
   const result = await page.evaluate(() => window.rigPlayHarness.clipPartMaskProbe());
 
-  // The scene is the one the demo and the parity suite already use.
-  expect(result.startSlot).toBe('clipping');
-  expect(result.endSlot).toBe('head-bb');
+  // The scene is the one the invariant and parity suites already use: the
+  // figure test rig's `mask` animation, its clip authored in rigc's format.
+  expect(result.startSlot).toBe('clip');
+  expect(result.endSlot).toBe('head');
   expect(result.inRangeSlots.length).toBeGreaterThan(5);
   expect(result.outOfRangeSlots.length).toBeGreaterThan(5);
   expect(result.counters.clipCount).toBe(1);
@@ -679,27 +659,21 @@ test('part mask: the repository asset clips exactly the slots in its range', asy
 
   const [clipped, unclipped] = await capturesOf(page, result.clipped, result.unclipped);
   const m = await maskMetrics(page, clipped, unclipped, result.clipped, result.polygon, false);
-  await report('part mask (spineboy-pro portal)', m, clipped, unclipped);
+  await report('part mask (figure mask)', m, clipped, unclipped);
 
   // Not vacuous: something is drawn, and the clip visibly removes part of it.
   //
-  // Alone in this file, this cell's polygon is the ASSET's — the clipping
-  // attachment in spineboy's own `portal` animation — so how much it removes is
-  // a property of the export, not of the renderer, and it moves when the suite
-  // runs against another spine-core's example assets (measured at the same
-  // pose: 2465 / 2426 cut of 6235 / 6198 content on the 4.3 exports, chromium /
-  // webkit; 2070 / 1999 of 6689 / 6617 on the 4.2 ones — the 4.2 portal poses
-  // the character differently under the same mask). The guard is therefore a
-  // proportion rather than a pixel count: it says what it always meant — the
-  // clip takes a substantial bite out of what was drawn — in terms no export
-  // version owns. Every cell around it authors its polygon in world space and
+  // Alone in this file, this cell's polygon is the rig's own part mask over a
+  // walking pose, so how much it removes is a property of the rig and the
+  // pose, not of the renderer. The guard is therefore a proportion rather than
+  // a pixel count: it says what it always meant — the clip takes a substantial
+  // bite out of what was drawn. Every cell around it clips the setup pose and
   // keeps its absolute numbers.
   expect(m.content).toBeGreaterThan(5000);
   expect(m.cutPixels).toBeGreaterThan(m.content / 4);
   // The residue is the rim, and only the rim.
   // The two absolute claims: the clip removed everything outside it, and kept
-  // everything inside it. Neither is a comparison of two rasterizations, and
-  // neither moves with the export — both held unchanged on 4.2.
+  // everything inside it. Neither is a comparison of two rasterizations.
   expect(m.contentOutsideClip).toBe(0);
   expect(m.contentMissingInsideClip).toBe(0);
 });
@@ -734,7 +708,7 @@ test('rigid tier: a tilted clip over rotated <img> matrices', async ({ page }) =
   );
 
   const m = await maskMetrics(page, clipped, unclipped, result.clipped, result.polygon, false);
-  await report('rigid tier (tilted quad over spineboy-ess)', m, clipped, unclipped);
+  await report('rigid tier (tilted quad over the figure)', m, clipped, unclipped);
 
   expect(m.content).toBeGreaterThan(5000);
   expect(m.cutPixels).toBeGreaterThan(2000);
@@ -779,12 +753,12 @@ test('whole-skeleton clip: one clip-path on the root, and the root style given b
 });
 
 test('inverse clip: even-odd against the element box keeps what is outside', async ({ page }) => {
-  test.skip(
-    !(await inverseClippingSupported(page)),
-    'the installed spine-core has no inverse clipping',
-  );
   const result = await page.evaluate(() => window.rigPlayHarness.clipInverseProbe());
 
+  // The rig's attachment says `inverse: true`, and the frame's clip has to say
+  // so too — the flag arrived through the build and the adapter, or the
+  // assertions below would be about an ordinary clip.
+  expect(result.inverse).toBe(true);
   expect(result.counters.clipCount).toBe(1);
   expect(result.counters.clipSkipCount).toBe(0);
   expect(result.elementsWithClipPath).toBeGreaterThan(5);
@@ -848,14 +822,15 @@ test('clipping = false counts the clip and leaves no clip-path behind', async ({
   expect(result.reEnabled.elementsWithClipPath).toBe(result.inRangeElements);
 });
 
-test('a second clip met while one is active is ignored, as in spine-core', async ({ page }) => {
+test('a second clip met while one is active is ignored, as in the runtime', async ({ page }) => {
   const result = await page.evaluate(() => window.rigPlayHarness.clipCountersProbe());
 
-  // SkeletonClipping.clipStart opens with `if (this.clipAttachment) return` —
-  // the second clip does not nest and does not replace, it is dropped. Which
-  // slots a clip covers is decided where the frame is read (the package's
-  // adapter, `clipCover`, held on hand-made poses by tests/frames.spec.ts; the
-  // skeleton reader here), so the renderer sees one clip and applies it.
+  // The runtime's SkeletonClipping.clipStart opens with
+  // `if (this.clipAttachment) return` — the second clip does not nest and does
+  // not replace, it is dropped. Which slots a clip covers is decided where the
+  // frame is read (the package's adapter, `clipCover`), so the renderer sees
+  // one clip and applies it; the figure rig's `nested` case shows both clips
+  // in the pose and the frame carries one.
   expect(result.nested.clipsIgnored).toBe(1);
   expect(result.nested.clipCount).toBe(1);
   expect(result.nested.clipSkipCount).toBe(0);

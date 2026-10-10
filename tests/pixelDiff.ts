@@ -5,7 +5,8 @@ import type { Page } from '@playwright/test';
  *
  * It was written inside `tests/parity.spec.ts` and copied into
  * `tests/pma.spec.ts` when that file needed the same compare with a directional
- * split; `tests/oracle.spec.ts` would have been the third copy. Three differs
+ * split; the pixel oracle the suite carried until #63 would have been the
+ * third copy. Three differs
  * are three calibrations, and a fix to one of them silently leaves the other
  * two measuring something else — so it lives here, as the union of what those
  * files ask of it, and every caller gets the same arithmetic.

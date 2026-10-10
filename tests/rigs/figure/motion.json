@@ -1,0 +1,404 @@
+{
+  "spec": "rigc-motion/1",
+  "archetype": "figure",
+  "cut": "test-figure",
+  "easings": {"swing": [0.37, 0, 0.63, 1]},
+  "animations": {
+    "walk": {
+      "duration": 1.6,
+      "loop": true,
+      "note": "Limbs swing in opposition and the torso bobs twice a cycle. The pose the renderer specs freeze is t = 1.2.",
+      "tracks": [
+        {
+          "bone": "leg_b",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [16], "ease": "swing"},
+            {"t": 0.8, "v": [-16], "ease": "swing"},
+            {"t": 1.6, "v": [16]}
+          ]
+        },
+        {
+          "bone": "leg_f",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-16], "ease": "swing"},
+            {"t": 0.8, "v": [16], "ease": "swing"},
+            {"t": 1.6, "v": [-16]}
+          ]
+        },
+        {
+          "bone": "arm_b_up",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-20], "ease": "swing"},
+            {"t": 0.8, "v": [20], "ease": "swing"},
+            {"t": 1.6, "v": [-20]}
+          ]
+        },
+        {
+          "bone": "arm_f_up",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [22], "ease": "swing"},
+            {"t": 0.8, "v": [-22], "ease": "swing"},
+            {"t": 1.6, "v": [22]}
+          ]
+        },
+        {
+          "bone": "arm_b_lo",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [12], "ease": "swing"},
+            {"t": 0.8, "v": [-12], "ease": "swing"},
+            {"t": 1.6, "v": [12]}
+          ]
+        },
+        {
+          "bone": "arm_f_lo",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-14], "ease": "swing"},
+            {"t": 0.8, "v": [14], "ease": "swing"},
+            {"t": 1.6, "v": [-14]}
+          ]
+        },
+        {
+          "bone": "head",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [5], "ease": "swing"},
+            {"t": 0.8, "v": [-5], "ease": "swing"},
+            {"t": 1.6, "v": [5]}
+          ]
+        },
+        {
+          "bone": "cape",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-6], "ease": "swing"},
+            {"t": 0.8, "v": [6], "ease": "swing"},
+            {"t": 1.6, "v": [-6]}
+          ]
+        },
+        {
+          "bone": "torso",
+          "property": "translate",
+          "keys": [
+            {"t": 0, "v": [0, 0], "ease": "swing"},
+            {"t": 0.4, "v": [0, 10], "ease": "swing"},
+            {"t": 0.8, "v": [0, 0], "ease": "swing"},
+            {"t": 1.2000000000000002, "v": [0, 10], "ease": "swing"},
+            {"t": 1.6, "v": [0, 0]}
+          ]
+        }
+      ]
+    },
+    "mask": {
+      "duration": 1.6,
+      "loop": true,
+      "note": "walk under a convex part mask: the clip in slot `clip` covers every slot up to and including `head`, and nothing drawn after it.",
+      "tracks": [
+        {
+          "slot": "clip",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "mask"}, {"t": 1.6, "v": "mask"}]
+        },
+        {
+          "bone": "leg_b",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [16], "ease": "swing"},
+            {"t": 0.8, "v": [-16], "ease": "swing"},
+            {"t": 1.6, "v": [16]}
+          ]
+        },
+        {
+          "bone": "leg_f",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-16], "ease": "swing"},
+            {"t": 0.8, "v": [16], "ease": "swing"},
+            {"t": 1.6, "v": [-16]}
+          ]
+        },
+        {
+          "bone": "arm_b_up",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-20], "ease": "swing"},
+            {"t": 0.8, "v": [20], "ease": "swing"},
+            {"t": 1.6, "v": [-20]}
+          ]
+        },
+        {
+          "bone": "arm_f_up",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [22], "ease": "swing"},
+            {"t": 0.8, "v": [-22], "ease": "swing"},
+            {"t": 1.6, "v": [22]}
+          ]
+        },
+        {
+          "bone": "arm_b_lo",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [12], "ease": "swing"},
+            {"t": 0.8, "v": [-12], "ease": "swing"},
+            {"t": 1.6, "v": [12]}
+          ]
+        },
+        {
+          "bone": "arm_f_lo",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-14], "ease": "swing"},
+            {"t": 0.8, "v": [14], "ease": "swing"},
+            {"t": 1.6, "v": [-14]}
+          ]
+        },
+        {
+          "bone": "head",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [5], "ease": "swing"},
+            {"t": 0.8, "v": [-5], "ease": "swing"},
+            {"t": 1.6, "v": [5]}
+          ]
+        },
+        {
+          "bone": "cape",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-6], "ease": "swing"},
+            {"t": 0.8, "v": [6], "ease": "swing"},
+            {"t": 1.6, "v": [-6]}
+          ]
+        },
+        {
+          "bone": "torso",
+          "property": "translate",
+          "keys": [
+            {"t": 0, "v": [0, 0], "ease": "swing"},
+            {"t": 0.4, "v": [0, 10], "ease": "swing"},
+            {"t": 0.8, "v": [0, 0], "ease": "swing"},
+            {"t": 1.2000000000000002, "v": [0, 10], "ease": "swing"},
+            {"t": 1.6, "v": [0, 0]}
+          ]
+        }
+      ]
+    },
+    "detail": {
+      "duration": 1.6,
+      "loop": true,
+      "note": "walk with the line-art armour shown (`plate`, `greave`, `visor`): one-texel hairlines, the detail tests/cut-rule.spec.ts compares cut rules on. Kept out of every other animation — see tests/rigs/make_parts.ts.",
+      "tracks": [
+        {
+          "slot": "plate",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "plate"}, {"t": 1.6, "v": "plate"}]
+        },
+        {
+          "slot": "greave",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "greave"}, {"t": 1.6, "v": "greave"}]
+        },
+        {
+          "slot": "visor",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "visor"}, {"t": 1.6, "v": "visor"}]
+        },
+        {
+          "bone": "leg_b",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [16], "ease": "swing"},
+            {"t": 0.8, "v": [-16], "ease": "swing"},
+            {"t": 1.6, "v": [16]}
+          ]
+        },
+        {
+          "bone": "leg_f",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-16], "ease": "swing"},
+            {"t": 0.8, "v": [16], "ease": "swing"},
+            {"t": 1.6, "v": [-16]}
+          ]
+        },
+        {
+          "bone": "arm_b_up",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-20], "ease": "swing"},
+            {"t": 0.8, "v": [20], "ease": "swing"},
+            {"t": 1.6, "v": [-20]}
+          ]
+        },
+        {
+          "bone": "arm_f_up",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [22], "ease": "swing"},
+            {"t": 0.8, "v": [-22], "ease": "swing"},
+            {"t": 1.6, "v": [22]}
+          ]
+        },
+        {
+          "bone": "arm_b_lo",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [12], "ease": "swing"},
+            {"t": 0.8, "v": [-12], "ease": "swing"},
+            {"t": 1.6, "v": [12]}
+          ]
+        },
+        {
+          "bone": "arm_f_lo",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-14], "ease": "swing"},
+            {"t": 0.8, "v": [14], "ease": "swing"},
+            {"t": 1.6, "v": [-14]}
+          ]
+        },
+        {
+          "bone": "head",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [5], "ease": "swing"},
+            {"t": 0.8, "v": [-5], "ease": "swing"},
+            {"t": 1.6, "v": [5]}
+          ]
+        },
+        {
+          "bone": "cape",
+          "property": "rotate",
+          "keys": [
+            {"t": 0, "v": [-6], "ease": "swing"},
+            {"t": 0.8, "v": [6], "ease": "swing"},
+            {"t": 1.6, "v": [-6]}
+          ]
+        },
+        {
+          "bone": "torso",
+          "property": "translate",
+          "keys": [
+            {"t": 0, "v": [0, 0], "ease": "swing"},
+            {"t": 0.4, "v": [0, 10], "ease": "swing"},
+            {"t": 0.8, "v": [0, 0], "ease": "swing"},
+            {"t": 1.2000000000000002, "v": [0, 10], "ease": "swing"},
+            {"t": 1.6, "v": [0, 0]}
+          ]
+        }
+      ]
+    },
+    "bare": {
+      "duration": 1,
+      "loop": true,
+      "note": "The setup pose with no clip — the frame a clip-path is handed back after.",
+      "tracks": [
+        {
+          "slot": "badge",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "badge"}, {"t": 1, "v": "badge"}]
+        }
+      ]
+    },
+    "tilted": {
+      "duration": 1,
+      "loop": true,
+      "note": "The setup pose under a tilted quad that covers every slot after `clip` through the last one.",
+      "tracks": [
+        {
+          "slot": "clip",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "tilted"}, {"t": 1, "v": "tilted"}]
+        }
+      ]
+    },
+    "tilted_moved": {
+      "duration": 1,
+      "loop": true,
+      "note": "tilted with its polygon moved 7 units along both axes.",
+      "tracks": [
+        {
+          "slot": "clip",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "tilted_moved"}, {"t": 1, "v": "tilted_moved"}]
+        }
+      ]
+    },
+    "nudge": {
+      "duration": 1,
+      "loop": true,
+      "note": "tilted_moved with one leaf bone (`badge`, one drawn slot, no children) moved 13 units.",
+      "tracks": [
+        {
+          "slot": "clip",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "tilted_moved"}, {"t": 1, "v": "tilted_moved"}]
+        },
+        {
+          "bone": "badge",
+          "property": "translate",
+          "keys": [{"t": 0, "v": [13, 0]}, {"t": 1, "v": [13, 0]}]
+        }
+      ]
+    },
+    "cover": {
+      "duration": 1,
+      "loop": true,
+      "note": "The setup pose under a clip far larger than the figure: every slot carries a clip-path and none loses a pixel.",
+      "tracks": [
+        {
+          "slot": "clip",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "cover"}, {"t": 1, "v": "cover"}]
+        }
+      ]
+    },
+    "window": {
+      "duration": 1,
+      "loop": true,
+      "note": "A clip whose end slot is its own slot never ends, so it covers every slot: the whole-skeleton case.",
+      "tracks": [
+        {
+          "slot": "clip",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "window"}, {"t": 1, "v": "window"}]
+        }
+      ]
+    },
+    "inverse": {
+      "duration": 1,
+      "loop": true,
+      "note": "An inverse clip over every slot: what is outside the polygon stays.",
+      "tracks": [
+        {
+          "slot": "clip",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "inverse"}, {"t": 1, "v": "inverse"}]
+        }
+      ]
+    },
+    "nested": {
+      "duration": 1,
+      "loop": true,
+      "note": "tilted, and a second clip in `clip_inner` met while it is in force — ignored by the draw loop, not nested.",
+      "tracks": [
+        {
+          "slot": "clip",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "tilted"}, {"t": 1, "v": "tilted"}]
+        },
+        {
+          "slot": "clip_inner",
+          "property": "attachment",
+          "keys": [{"t": 0, "v": "inner"}, {"t": 1, "v": "inner"}]
+        }
+      ]
+    }
+  }
+}

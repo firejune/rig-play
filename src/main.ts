@@ -12,6 +12,13 @@ import { type RenderMode, RigPlayer } from './player.js';
 const GALLERY = ['walk', 'flex', 'squash', 'portrait', 'nod', 'look', 'ride'] as const;
 /** Each gallery rig as the gallery ships it (one page per part) and built with `--pack`. */
 const RIGS = GALLERY.flatMap((rig) => [rig, `${rig}-packed`]);
+/**
+ * The repository's test rigs (`tests/rigs/`, built beside the gallery): what
+ * no gallery rig carries — a clipping attachment, additive slots, a region
+ * turned on its page. Reachable by `?rig=` for the parity and invariant
+ * scenes, and left out of the picker, which shows the gallery.
+ */
+const TEST_RIGS = ['figure', 'figure-packed', 'glow', 'glow-packed', 'turned'];
 type RigName = string;
 const STAGE_SCALE = 0.4;
 
@@ -55,6 +62,13 @@ function main(firstRig: RigName, firstAssets: ModelAssets): void {
     const option = document.createElement('option');
     option.value = name;
     option.textContent = name;
+    rigSelect.appendChild(option);
+  }
+  if (!RIGS.includes(firstRig)) {
+    // A test rig named by ?rig= is shown as the current choice, not offered.
+    const option = document.createElement('option');
+    option.value = firstRig;
+    option.textContent = firstRig;
     rigSelect.appendChild(option);
   }
   rigSelect.value = firstRig;
@@ -270,8 +284,7 @@ function main(firstRig: RigName, firstAssets: ModelAssets): void {
 
 /**
  * The canvas mode's part of the stats line: the mode, its counters summed over
- * the players, and the backend that actually drew — shared by the demo and the
- * spineboy stage so a reading names its path the same way on both.
+ * the players, and the backend that actually drew, so a reading names its path.
  */
 function canvasNote(renderers: ReadonlyArray<unknown>): string {
   let drawn = 0;
@@ -308,7 +321,7 @@ function canvasNote(renderers: ReadonlyArray<unknown>): string {
 }
 
 const rigParam = params.get('rig');
-const firstRig: RigName = RIGS.includes(rigParam ?? '') ? (rigParam as RigName) : 'walk';
+const firstRig: RigName = [...RIGS, ...TEST_RIGS].includes(rigParam ?? '') ? (rigParam as RigName) : 'walk';
 loadModel({ modelUrl: rigUrl(firstRig) })
   .then((assets) => main(firstRig, assets))
   .catch((err) => {

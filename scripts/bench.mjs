@@ -11,28 +11,27 @@
  * perf oracle is a stats line read on a real device, and headless numbers are
  * not evidence (headless WebKit is a software rasterizer, measured up to 28×
  * off real Safari). This script only makes the reading repeatable and the
- * conditions impossible to lose.
+ * conditions impossible to lose. What it compares is this package's two
+ * render modes — the DOM tier and the canvas mode — on the same rigs.
  *
  * ## Why it opens a visible window
  *
  * A hidden or headless page is throttled: `requestAnimationFrame` drops to a
  * crawl or stops, and the fps this measures is then the browser's power policy
- * rather than either runtime's cost. So Chromium is launched **headed**, and
+ * rather than either mode's cost. So Chromium is launched **headed**, and
  * the run says so in every output it writes. Safari is not driven at all — it
  * has no automation that preserves the thing being measured, so it stays a
  * person, a device and the page's clickable stats line.
  *
  * ## What each row says it compared
  *
- * Two runtimes are only comparable if they drew the same picture, each in the
- * shape it is actually written in, so every row carries both: the `mode`
- * column names how the reference drew (one shared, batched canvas for a grid
- * of rigs; one canvas and one WebGL context per player for `many`) and what
- * the DOM side was clipped to, which is that canvas's own rect. `origin Δpx`
- * is the largest gap between where the page's grid put a rig and where that
- * side drew it — a counter rather than a timing, so it means the same thing on
- * any machine, and anything but ~0 says the row is comparing two placements
- * rather than two runtimes. `bench/bench.ts` carries the reasoning.
+ * Two modes are only comparable if they drew the same picture, so every row
+ * carries what both were clipped to (the pane for a grid of rigs, each rig's
+ * cell for `many` — the same rect on both sides) and `origin Δpx`, the largest
+ * gap between where the page's grid put a rig and where that side drew it — a
+ * counter rather than a timing, so it means the same thing on any machine, and
+ * anything but ~0 says the row is comparing two placements rather than two
+ * modes. `bench/bench.ts` carries the reasoning.
  *
  * ## The INVALID stamp
  *
@@ -46,14 +45,14 @@
  * Usage:
  *   node scripts/bench.mjs [--frames N] [--out DIR] [--port N]
  *                          [--scenes FILE] [--corpus DIR] [--max-load N]
- *                          [--runtimes dom,canvas,reference]
+ *                          [--runtimes dom,canvas]
  *
  *   --runtimes     which page loads each scene gets, comma-separated: `dom`
- *                  (this package's DOM tier), `canvas` (its canvas render
- *                  mode) and `reference` (spine-webgl). All three by default.
+ *                  (this package's DOM tier) and `canvas` (its canvas render
+ *                  mode). Both by default.
  *
- *   --corpus DIR   a directory holding its own scenes.json plus the rigs it
- *                  names, for real-world skeletons that never enter this
+ *   --corpus DIR   a directory holding its own scenes.json plus the rigc
+ *                  builds it names, for real-world rigs that never enter this
  *                  repository. The page is served from there instead.
  */
 import { spawn } from 'node:child_process';
@@ -76,7 +75,7 @@ function parseArgs(argv) {
     // workstation. 1.0 is "the machine already has a full core of work per
     // core"; a benchmark under that is measuring the queue.
     maxLoad: 1.0,
-    runtimes: ['dom', 'canvas', 'reference'],
+    runtimes: ['dom', 'canvas'],
   };
   for (let i = 0; i < argv.length; i++) {
     const [flag, inline] = argv[i].split('=', 2);
@@ -90,8 +89,8 @@ function parseArgs(argv) {
       case '--max-load': args.maxLoad = Number(value()); break;
       case '--runtimes': {
         args.runtimes = value().split(',').map((r) => r.trim()).filter(Boolean);
-        const unknown = args.runtimes.filter((r) => !['dom', 'canvas', 'reference'].includes(r));
-        if (unknown.length || !args.runtimes.length) throw new Error(`--runtimes takes dom, canvas, reference; got ${unknown.join(', ') || 'nothing'}`);
+        const unknown = args.runtimes.filter((r) => !['dom', 'canvas'].includes(r));
+        if (unknown.length || !args.runtimes.length) throw new Error(`--runtimes takes dom, canvas; got ${unknown.join(', ') || 'nothing'}`);
         break;
       }
       case '--help':
@@ -222,13 +221,13 @@ async function main() {
       for (const runtime of args.runtimes) {
         const url = `http://localhost:${args.port}/?${queryString(scene.query, runtime)}`;
         await page.goto(url);
-        await page.waitForFunction(() => Boolean(window.spineHtmlBench), null, { timeout: 60_000 });
+        await page.waitForFunction(() => Boolean(window.rigPlayBench), null, { timeout: 60_000 });
         // Warm-up frames first: the first raster of a scene is not its steady
         // state (fresh bitmaps, shader compiles, grow-only backing still
         // growing), and a reading that includes them is a reading of the
         // warm-up.
-        await page.evaluate((n) => window.spineHtmlBench.run(n), Math.ceil(args.frames / 6));
-        const reading = await page.evaluate((n) => window.spineHtmlBench.run(n), args.frames);
+        await page.evaluate((n) => window.rigPlayBench.run(n), Math.ceil(args.frames / 6));
+        const reading = await page.evaluate((n) => window.rigPlayBench.run(n), args.frames);
         rows.push({ scene: scene.name, why: scene.why ?? null, runtime, url, reading });
       }
     }
@@ -242,7 +241,7 @@ async function main() {
     loadBefore.perCore > args.maxLoad || loadAfter.perCore > args.maxLoad
       ? `INVALID: load average too high — ${loadBefore.perCore.toFixed(2)} before and ` +
         `${loadAfter.perCore.toFixed(2)} after, per core, over a ${args.maxLoad.toFixed(2)} ` +
-        `threshold. These numbers measure the machine's queue, not either runtime.`
+        `threshold. These numbers measure the machine's queue, not either mode.`
       : null;
 
   const report = {
@@ -274,25 +273,13 @@ async function main() {
   process.exitCode = invalid ? 1 : 0;
 }
 
-/**
- * What this row compared: how the reference drew, or what the DOM side was
- * clipped to — the two halves of the same rule, since the clip rect *is* the
- * reference canvas's rect. A reading from before the page reported either is
- * left as a dash rather than guessed at.
- */
-function mode(reading, dom) {
-  if (dom) return reading.clipTarget ? `clipped to ${reading.clipTarget}` : '—';
-  if (!reading.referenceMode) return '—';
-  return reading.referenceMode === 'shared' ? 'shared canvas' : 'context per player';
-}
-
 function markdown(report) {
   const { conditions, rows, invalid } = report;
   const lines = [];
   if (invalid) {
     lines.push(`> **${invalid}**`, '');
   }
-  lines.push('# spine-html vs spine-webgl', '');
+  lines.push('# DOM mode vs canvas mode', '');
   lines.push('## Conditions', '');
   lines.push('| | |', '| --- | --- |');
   for (const [key, value] of Object.entries(conditions)) {
@@ -307,35 +294,30 @@ function markdown(report) {
   );
   lines.push('## Readings', '');
   lines.push(
-    '| scene | runtime | mode | fps | stats line | origin Δpx | contexts refused | contexts lost |',
+    '| scene | mode | rig | clipped to | fps | stats line | origin Δpx | GL contexts |',
     '| --- | --- | --- | --- | --- | --- | --- | --- |',
   );
   for (const row of rows) {
     const r = row.reading;
-    // The canvas mode draws in the DOM pane and publishes through its slots.
-    const dom = row.runtime === 'dom' || row.runtime === 'canvas';
-    const fps = dom ? r.domFps : r.referenceFps;
-    const stats = dom ? r.domStats : r.referenceStats;
-    const delta = dom ? r.domOriginDeltaPx : r.referenceOriginDeltaPx;
+    const dom = row.runtime === 'dom';
+    const fps = dom ? r.domFps : r.canvasFps;
+    const stats = dom ? r.domStats : r.canvasStats;
+    const delta = dom ? r.domOriginDeltaPx : r.canvasOriginDeltaPx;
     lines.push(
-      `| ${row.scene} | ${row.runtime} | ${mode(r, dom)} | ` +
+      `| ${row.scene} | ${row.runtime} | ${r.model} ${r.animation} | ${r.clipTarget} | ` +
         `${fps === null ? '—' : fps.toFixed(1)} | ${stats} | ` +
-        `${delta === null || delta === undefined ? '—' : delta} | ` +
-        `${r.contextsRefused} | ${r.contextsLost} |`,
+        `${delta === null || delta === undefined ? '—' : delta} | ${r.glContexts} |`,
     );
   }
   lines.push('');
   lines.push(
-    'Each row is its own page load with only that runtime animating, because',
+    'Each row is its own page load with only that mode animating, because',
     'requestAnimationFrame has one cadence per document — two panes running',
-    'together report the page\'s fps, not either runtime\'s.',
+    'together report the page\'s fps, not either mode\'s.',
     '',
-    'Both sides place rigs on one grid and each is clipped to the rect the',
-    'reference\'s canvas covers for it, so the two draw the same visible area;',
-    '`origin Δpx` is how far either side landed from that grid. The reference',
-    'draws a grid of rigs the way an application would — one canvas, one',
-    'context, one batched pass — and takes a context per player only in the',
-    '`many` scene, which is about the browser\'s ~16-context cap.',
+    'Both modes place rigs on one grid and clip each to the same rect, so the',
+    'two draw the same visible area; `origin Δpx` is how far either side landed',
+    'from that grid.',
     '',
   );
   return `${lines.join('\n')}\n`;

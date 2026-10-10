@@ -2,29 +2,19 @@
 
 ## Spine Runtimes
 
-This project depends on `@esotericsoftware/spine-core`, part of the
-[Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes),
-Copyright (c) 2013-2025 Esoteric Software LLC, licensed under the
-[Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license).
-
-Key obligation that propagates to users of this project: integration of the Spine
-Runtimes into software (including via this renderer) is permitted **provided that each
-user of the resulting product obtains their own Spine Editor license**, and any
-redistribution includes the Spine Runtimes license and copyright notice.
-
-`@esotericsoftware/spine-webgl`, the official WebGL runtime, is part of the same
-Spine Runtimes and carries the same licence. It is a **development-only
-dependency of this repository** and is never shipped: the pixel oracle draws the
-same skeleton with it and diffs the two pictures (`tests/oracle.spec.ts`), and
-the benchmark page puts the two runtimes side by side (`bench/`). It appears in
-`devDependencies` only — not in `dependencies`, not in `peerDependencies` — and
-`tests/package.spec.ts` asserts that nothing the published package contains so
-much as names it, so installing `spine-html` never brings a second runtime with
-it.
+Neither this package nor this repository depends on the
+[Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes) any more.
+`@esotericsoftware/spine-core` and `@esotericsoftware/spine-webgl` are not
+dependencies of any kind — not `dependencies`, not `peerDependencies`, not
+`devDependencies` — and no lockfile entry names them: the player poses rigs built
+by rigc through `rig-c/core` (MIT), which the build bundles into the package, and
+the test suite and the benchmark compare the package's two render modes with each
+other. `tests/package.spec.ts` asserts all of that, and that nothing the published
+package contains names an `@esotericsoftware/` package.
 
 ## Example assets
 
-The spineboy skeleton exports (JSON and binary), atlas, and images used by the test
-suite and the benchmark are owned by Esoteric Software. They are **not redistributed** in this
-repository; `scripts/fetch-assets.sh` downloads them from the official spine-runtimes
-repository for local evaluation.
+None are fetched or redistributed. The rigs the demo, the tests and the benchmark
+read are rigc's gallery rigs — rigc's own procedural art, built from a pinned rigc
+tag by `scripts/fetch-assets.sh` — and this repository's test rigs under
+`tests/rigs/`, whose parts `tests/rigs/make_parts.ts` paints.

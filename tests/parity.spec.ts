@@ -75,35 +75,36 @@ import { CHANNEL_TOLERANCE, diffInPage } from './pixelDiff';
 
 const POSE = 'time=1.2&timescale=0&count=1&dpr=1';
 
-/** The spineboy stage — spine-core skeletons through the package's renderer (tests/spine-stage.html). */
-const SPINEBOY = '/tests/spine-stage.html';
-/** The demo — rigc gallery builds, posed by rig-c/core through RigPlayer. */
+/** The demo — every scene is a rig built by `rigc build`, posed by rig-c/core through RigPlayer. */
 const DEMO = '/';
 
 /**
  * Scenes cover the element-level features both backends must agree on. The
- * spineboy scenes are the ones the limits below were calibrated on, and carry
- * what no gallery build does (additive blend, clipping); the gallery scenes
- * put the model path — loadModel, RigPlayer, the frame adapter — under the
- * same two backends, one part per page and packed.
+ * test-rig scenes (tests/rigs/) carry what no gallery build does — additive
+ * blend, clipping — and the whole-rig tint; the gallery scenes put contour,
+ * grid and deform meshes under the same two backends, one part per page and
+ * packed. Every scene goes through the model path: loadModel, RigPlayer, the
+ * frame adapter.
  */
 const SCENES = [
-  // Hoverboard exhaust uses BlendMode.Additive → mix-blend-mode: plus-lighter.
-  { name: 'hoverboard (additive glow)', stage: SPINEBOY, query: `skel=pro&anim=hoverboard&${POSE}` },
-  // Portal carries a ClippingAttachment, applied as a per-element clip-path.
-  // Clipping is element-level, so it must land identically on both backends.
-  { name: 'portal (clipping)', stage: SPINEBOY, query: `skel=pro&anim=portal&${POSE}` },
-  // Whole-skeleton tint rides the feColorMatrix filter on <img> and <canvas>.
-  { name: 'walk (tint filter)', stage: SPINEBOY, query: `skel=pro&anim=walk&tint=ff9060&${POSE}` },
+  // Additive slots (halo, flame, sparks) → mix-blend-mode: plus-lighter, over
+  // two weighted meshes the flame chain bends triangle by triangle.
+  { name: 'glow (additive glow)', kind: 'test', query: `rig=glow&anim=burn&${POSE}` },
+  // A clipping attachment over the walking figure, applied as a per-element
+  // clip-path. Clipping is element-level, so it must land identically on both
+  // backends.
+  { name: 'figure mask (clipping)', kind: 'test', query: `rig=figure&anim=mask&${POSE}` },
+  // Whole-rig tint rides the feColorMatrix filter on <img> and <canvas>.
+  { name: 'figure walk (tint filter)', kind: 'test', query: `rig=figure&anim=walk&tint=ff9060&${POSE}` },
   // Contour meshes waved by bones and rippled by a deform.
-  { name: 'gallery flex (contour meshes)', stage: DEMO, query: `rig=flex&anim=wave&${POSE}` },
+  { name: 'gallery flex (contour meshes)', kind: 'gallery', query: `rig=flex&anim=wave&${POSE}` },
   // The same rig packed: every mesh samples a shared page through page UVs.
-  { name: 'gallery flex, packed (shared page)', stage: DEMO, query: `rig=flex-packed&anim=wave&${POSE}` },
+  { name: 'gallery flex, packed (shared page)', kind: 'gallery', query: `rig=flex-packed&anim=wave&${POSE}` },
   // A deform-squashed mesh with slot rgba keys, under the player's tint.
-  { name: 'gallery squash (deform + tint)', stage: DEMO, query: `rig=squash&anim=bounce&tint=ff9060&${POSE}` },
+  { name: 'gallery squash (deform + tint)', kind: 'gallery', query: `rig=squash&anim=bounce&tint=ff9060&${POSE}` },
   // Grid meshes keyed as a projection, and a depth-mapped face under sliders.
-  { name: 'gallery portrait (deform projection)', stage: DEMO, query: `rig=portrait&anim=turn&${POSE}` },
-  { name: 'gallery look, packed (sliders, physics)', stage: DEMO, query: `rig=look-packed&anim=turn&${POSE}` },
+  { name: 'gallery portrait (deform projection)', kind: 'gallery', query: `rig=portrait&anim=turn&${POSE}` },
+  { name: 'gallery look, packed (sliders, physics)', kind: 'gallery', query: `rig=look-packed&anim=turn&${POSE}` },
 ] as const;
 
 /**
@@ -153,12 +154,23 @@ const SCENES = [
  * the derived pad that shipped — identical counts, and the whole suite green
  * there under this one limit; the mechanism inside that rasterizer is still
  * not identified.]
+ *
+ * ## The scenes those numbers were read on are gone
+ *
+ * Every figure above (hoverboard, portal, walk + tint) was measured on Spine's
+ * own example export, drawn through a spine-core skeleton. Since #63 the
+ * repository links no Spine runtime and fetches no example asset, and the
+ * three scenes are the test rigs' (tests/rigs/): glow (additive), figure mask
+ * (clipping), figure walk + tint. MEASURED, macOS chromium 1234, one run:
+ * 0.007% / 0.000% / 0.000%, maxDelta 36 / 15 / 7 — the floor the limit was
+ * calibrated against, with the same ~10× and more. WebKit is not measured
+ * locally (CI runs it), and the `- 1` relapse was not re-run on these scenes.
  */
 /*
  * ## The gallery scenes sit much closer to it — measured, not yet re-calibrated
  *
  * The gallery scenes (added with the model path, #60) run under this same
- * limit, and their floors are an order of magnitude above spineboy's: macOS
+ * limit, and their floors are an order of magnitude above the test rigs': macOS
  * chromium / webkit, flex 0.191% / 0.313%, flex packed 0.197% / 0.320%, look
  * packed 0.290% / 0.485%, squash and portrait 0.000%. The contour meshes'
  * hard outlines are where the two rasterizers' edge antialiasing disagrees.
@@ -172,8 +184,9 @@ const BAD_RATIO_LIMIT = 0.005;
 /**
  * Allowed relative difference in drawn-content pixel counts — the
  * missing-part guard. Measured noise ≤ 0.22%, except linux WebKit at ≤ 0.40%;
- * blanking even the smallest spineboy-pro mesh moves it past ~1.6%, a dropped
- * tint ~6%.
+ * blanking even the smallest mesh of the Spine example export these limits
+ * were first read on moved it past ~1.6%, a dropped tint ~6%. On the test
+ * rigs (macOS chromium) the noise reads 0.000–0.038%.
  */
 const CONTENT_MISMATCH_LIMIT = 0.015;
 
@@ -210,8 +223,8 @@ async function captureStage(
 
 for (const scene of SCENES) {
   test(`canvas2d / webgl parity: ${scene.name}`, async ({ page }, testInfo) => {
-    const canvas2d = await captureStage(page, scene.stage, scene.query, 'canvas2d');
-    const webgl = await captureStage(page, scene.stage, scene.query, 'webgl');
+    const canvas2d = await captureStage(page, DEMO, scene.query, 'canvas2d');
+    const webgl = await captureStage(page, DEMO, scene.query, 'webgl');
     const m = await diffInPage(page, canvas2d, webgl, { ...PARITY_DIFF, withMask: DUMP });
 
     const badRatio = m.bad / Math.max(1, m.contentUnion);
@@ -303,12 +316,16 @@ for (const scene of SCENES) {
  * frame as the DOM tier through a different machine: every slot as GL
  * triangles from its atlas page into one canvas, against `<img>` cuts under CSS
  * matrices, per-part canvases, `feColorMatrix` tints, `mix-blend-mode` and
- * `clip-path`. So these cells are the oracle suite's kind of comparison rather
- * than the backend A/B above: two different rasterizers of one picture, whose
- * residue is antialiasing and texture filtering and lives on silhouettes. They
- * run on the same frozen poses as the cells above, with the DOM side on its
- * default canvas2d mesh backend, and measure the same two ratios of drawn
- * content.
+ * `clip-path`. So these cells are a different comparison from the backend A/B
+ * above: two different rasterizers of one picture, whose residue is
+ * antialiasing and texture filtering and lives on silhouettes. They run on the
+ * same frozen poses as the cells above, with the DOM side on its default
+ * canvas2d mesh backend, and measure the same two ratios of drawn content.
+ *
+ * They are the repository's picture gate: the two render modes draw the same
+ * picture, within the bounds below. Nothing here is compared with a Spine
+ * runtime — the pose both modes draw is rig-c's, held to spine-core at
+ * tolerance 0 by rig-c's own gate, and a pose doubt is a rigc issue.
  */
 
 /** Waits for a frozen scene to settle in either mode, then captures the stage. */
@@ -327,52 +344,57 @@ async function captureMode(page: Page, stage: string, query: string, mode: 'dom'
 
 /**
  * Shift-tolerant bad pixels allowed between the two modes, as a fraction of
- * drawn content — one limit for the spineboy scenes and one for the gallery
- * scenes, because their floors sit a factor of ~2.5 apart (the contour meshes'
+ * drawn content — one limit for the test-rig scenes and one for the gallery
+ * scenes, because their floors sit a factor of ~2–3 apart (the contour meshes'
  * hard outlines are where two rasterizers' edge antialiasing disagrees, as the
  * backend cells above found too).
  *
  * MEASURED, macOS, chromium 1234 / webkit 2336, one run per cell:
  *
- * - spineboy floor: hoverboard 0.268% / 0.536%, portal 0.237% / 0.217%,
- *   walk + tint 0.606% / 0.178%;
  * - gallery floor: flex 0.836% / 1.051%, flex packed 0.841% / 1.057%, squash
- *   0.762% / 0.209%, portrait 0.585% / 1.377%, look packed 0.952% / 1.553%.
+ *   0.762% / 0.209%, portrait 0.585% / 1.377%, look packed 0.952% / 1.553%;
+ * - test-rig floor (chromium only — webkit is measured in CI): glow 0.007%,
+ *   figure mask 0.524%, figure walk + tint 0.204%.
  *
  * Against those, mutants of the canvas mode (one source edit each, the run
  * repeated):
  *
- * - RGB tint dropped: walk + tint 87.6% / 88.6%, squash 64.7% / 66.5%,
- *   hoverboard 5.7% / 5.8%, portal 3.07% / 2.90% (slot colours);
- * - additive slots drawn as Normal: hoverboard 2.88% / 3.16%;
- * - clipping never applied: portal 18.9% / 18.8%;
- * - the first mesh of each frame not drawn: hoverboard 11.5%, walk + tint
- *   2.81% / 2.45%, portal 1.30% / 1.29%; gallery look packed 8.8% / 9.4%,
- *   portrait 6.5% / 7.3%, squash 4.3% / 3.7%, flex 2.17% / 2.32%.
+ * - RGB tint dropped: figure walk + tint 77.0%, glow 8.4% (slot colours);
+ *   gallery squash 64.7% / 66.5%;
+ * - additive slots drawn as Normal: glow 4.2%;
+ * - clipping never applied: figure mask 16.0%;
+ * - the first mesh of each frame not drawn: glow 10.9%, figure mask 12.4%,
+ *   figure walk + tint 7.3%; gallery look packed 8.8% / 9.4%, portrait
+ *   6.5% / 7.3%, squash 4.3% / 3.7%, flex 2.17% / 2.32%.
  *
- * 0.015 on spineboy is 2.5× over its worst floor and under every mutant but
- * the missing small mesh on portal (1.3%), which hoverboard and walk catch.
+ * 0.015 on the test rigs is 2.9× over their worst chromium floor and 2.8×
+ * under the quietest mutant of the feature each scene carries (additive on
+ * glow).
  * 0.025 on the gallery is 1.6× over its worst floor and under every mutant but
  * the missing mesh on flex (2.2–2.3%), which portrait, look and squash catch.
- * That margin is what two rasterizers leave; Linux is unmeasured.
+ * (Until #63 the first limit was calibrated on the Spine example export —
+ * floors 0.178–0.606%, the same 0.015.) That margin is what two rasterizers
+ * leave; Linux is unmeasured.
  */
-const MODE_BAD_RATIO_LIMIT_SPINEBOY = 0.015;
+const MODE_BAD_RATIO_LIMIT_TEST_RIGS = 0.015;
 const MODE_BAD_RATIO_LIMIT_GALLERY = 0.025;
 /**
  * The missing-part guard between the modes. MEASURED floor 0.000–1.401% (the
- * top is chromium's walk + tint; webkit reads 0.157% there); the tint mutant
- * moves it to 6.1–11.2% and the clip mutant to 6.6%. 0.03 is 2.1× over the
- * floor. A missing mesh does not reliably move it (0.03–6.7%), which is the
- * bad-ratio limit's job.
+ * top was chromium's walk + tint on the Spine example export; webkit read
+ * 0.157% there); the test rigs read 0.030–1.029% (glow's additive halo) and
+ * the gallery 0.000–0.507%. The clip mutant moves it to 23.9% and the missing
+ * mesh to 10.8–11.3% on the figure scenes. 0.03 is 2.1× over the worst floor
+ * ever read. A missing mesh does not reliably move it everywhere (glow:
+ * 0.17%), which is the bad-ratio limit's job.
  */
 const MODE_CONTENT_MISMATCH_LIMIT = 0.03;
 
 for (const scene of SCENES) {
   test(`dom / canvas parity: ${scene.name}`, async ({ page }, testInfo) => {
-    const dom = await captureMode(page, scene.stage, scene.query, 'dom');
-    const canvas = await captureMode(page, scene.stage, scene.query, 'canvas');
+    const dom = await captureMode(page, DEMO, scene.query, 'dom');
+    const canvas = await captureMode(page, DEMO, scene.query, 'canvas');
     const m = await diffInPage(page, dom, canvas, { ...PARITY_DIFF, withMask: DUMP });
-    const MODE_BAD_RATIO_LIMIT = scene.stage === DEMO ? MODE_BAD_RATIO_LIMIT_GALLERY : MODE_BAD_RATIO_LIMIT_SPINEBOY;
+    const MODE_BAD_RATIO_LIMIT = scene.kind === 'gallery' ? MODE_BAD_RATIO_LIMIT_GALLERY : MODE_BAD_RATIO_LIMIT_TEST_RIGS;
     const badRatio = m.bad / Math.max(1, m.contentUnion);
     const contentMismatch = Math.abs(m.contentA - m.contentB) / Math.max(1, m.contentA, m.contentB);
     console.log(
@@ -401,9 +423,9 @@ test('seam canary: the canvas2d crack-closing overdraw is alive', async ({ page 
   // fully deterministic, so if the overdraw stopped doing anything the two
   // captures would be bit-identical (rawBad = 0). Today they differ on the
   // ~half-pixel silhouette ring plus any engine clip-AA seams.
-  const query = `skel=pro&anim=hoverboard&${POSE}`;
-  const withExpand = await captureStage(page, SPINEBOY, query, 'canvas2d');
-  const withoutExpand = await captureStage(page, SPINEBOY, `${query}&expand=0`, 'canvas2d');
+  const query = `rig=glow&anim=canary&${POSE}`;
+  const withExpand = await captureStage(page, DEMO, query, 'canvas2d');
+  const withoutExpand = await captureStage(page, DEMO, `${query}&expand=0`, 'canvas2d');
   const m = await diffInPage(page, withExpand, withoutExpand, PARITY_DIFF);
   console.log(`[parity] ${test.info().project.name} seam canary: rawBad=${m.rawBad}`);
   expect(m.rawBad).toBeGreaterThanOrEqual(10);
@@ -420,24 +442,30 @@ test('overdraw canary: the canvas2d source sub-rect tracks the clip expansion', 
   // how the seams the overdraw exists to close come back.
   //
   // At the shipped expansion that has no signature — 0.5 px reaches ~0.26
-  // texels on a typical spineboy triangle (measured across all 424 hoverboard
-  // triangles: ~0.26 median, 8.6 on the most foreshortened one), so any
-  // plausible fixed pad still covers it. So this canary drives the knob
+  // texels on a typical triangle (measured across the 424 triangles of a Spine
+  // example export's meshes: ~0.26 median, 8.6 on the most foreshortened one),
+  // so any plausible fixed pad still covers it. So this canary drives the knob
   // instead, the way the seam canary above does: same engine, same frozen pose,
   // canvas2d at expand=32 against canvas2d at expand=8. Both renders are
   // deterministic, so the count is exact, not statistical.
   //
-  // A rect that follows the expansion keeps both bands whole, and the captures
-  // differ by the band's whole area: rawBad 2758 (chromium) / 2802 (macOS
-  // webkit), which is what the whole-page draw this replaced also measured
-  // (2758 / 2806). A fixed pad truncates both bands at the same few texels, so
-  // the two captures collapse toward each other: 661 / 714 with a 2-texel pad,
-  // 428 / 475 with none. The limit sits between the two populations, ~1.8×
-  // under the real floor and ~2.1× over the loudest mutant.
-  const query = `skel=pro&anim=hoverboard&${POSE}`;
-  const wide = await captureStage(page, SPINEBOY, `${query}&expand=32`, 'canvas2d');
-  const narrow = await captureStage(page, SPINEBOY, `${query}&expand=8`, 'canvas2d');
+  // The scene is the glow rig's `canary` animation, which shows `plate`: a
+  // slit ring of 46 triangles whose hull sits well inside its opaque art, so a
+  // band drawn past the hull reveals texels — on the ring's inner edge inside
+  // the mesh canvas, where the canvas's own bounds do not cut it off. A rect
+  // that follows the expansion keeps both bands whole, and the captures differ
+  // by the band's whole area: rawBad 4795 (macOS chromium). A fixed 2-texel pad
+  // truncates both bands at the same few texels, so the two captures collapse
+  // toward each other: 1350. The limit sits between the two populations, 1.9×
+  // under the real floor and 1.85× over the mutant. (Until #63 the scene was a
+  // Spine example export, read at 2758 against 661–714, under a limit of 1500,
+  // which on the ring would sit only 1.11× over the mutant — hence the move to
+  // the geometric middle of the new populations.) WebKit is measured in CI
+  // only.
+  const query = `rig=glow&anim=canary&${POSE}`;
+  const wide = await captureStage(page, DEMO, `${query}&expand=32`, 'canvas2d');
+  const narrow = await captureStage(page, DEMO, `${query}&expand=8`, 'canvas2d');
   const m = await diffInPage(page, wide, narrow, PARITY_DIFF);
   console.log(`[parity] ${test.info().project.name} overdraw canary: rawBad=${m.rawBad}`);
-  expect(m.rawBad).toBeGreaterThanOrEqual(1500);
+  expect(m.rawBad).toBeGreaterThanOrEqual(2500);
 });
