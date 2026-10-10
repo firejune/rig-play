@@ -22,10 +22,61 @@ Every push to `main` runs `release.yml`, which hands the new commits to
   one commit. To force a version, put `Release-As: 1.0.0` in a commit footer.
 - **That pull request is merged** → the merge is a push to `main`, so
   `release.yml` runs again; this time release-please tags `vX.Y.Z`, creates the
-  GitHub release, and the same run publishes the package.
+  GitHub release, and the same run publishes the package — under both of its
+  names (*Two names, one tarball*, below).
 
 Squash-merge the release pull request, so the commit on `main` keeps the
 `release: vX.Y.Z` subject this repository has used since v0.2.0.
+
+## Two names, one tarball
+
+The package is **`rig-play`**, the `name` in `package.json`, from 1.0. Every
+version up to 0.8.0 shipped as **`spine-html`**, and that name stays published
+as an **alias** (#65): every cut publishes both names from one run, with the
+same files, because links outside this repository — the npm page, forum
+threads, articles, badges other READMEs copied — point at the old name, and
+nothing but the alias keeps its npm page current. GitHub redirects the old
+repository URL; nothing redirects an npm page.
+
+- **One tarball's files.** After `npm publish` has published `rig-play` from the
+  checkout — gated by `prepublishOnly`, which builds `dist/` from the tagged
+  tree — the next step runs `node scripts/alias-tarball.mjs pack --out
+  "$RUNNER_TEMP/alias"`: it packs the same checkout with scripts ignored (the
+  `dist/` that was just published), extracts the tarball into the runner's temp
+  directory, rewrites the one `"name"` line of the extracted `package.json` to
+  `spine-html`, packs that again, and prints the path only after reading the two
+  tarballs as the same files. `npm publish <that tarball> --ignore-scripts`
+  publishes it with provenance. The checkout is never modified.
+- **The comparison.** The two tarballs never share a `dist.shasum` — one line of
+  one file differs by design, and the tar and gzip headers with it — so "the
+  same files" is read off the unpacked tarballs: the same set of paths, every
+  file byte-identical, and `package/package.json` identical once the alias's
+  `name` line is put back. `node scripts/alias-tarball.mjs compare <a.tgz>
+  <b.tgz>` is that reading on its own; it exits 0 and prints `PASS
+  ALIAS_SAME_CONTENT: spine-html carries the N file(s) of rig-play, byte for
+  byte but for the name line of package/package.json`, or exits 1 naming each
+  path that differs. `tests/package.spec.ts` runs the pack over a temp build on
+  every CI run, diffs the two manifests itself, and plants a one-byte
+  difference the comparison has to name.
+- **The confirmation.** The last step of the release run fetches both names at
+  the released version from the registry (retrying for up to 15 minutes each
+  while the registry catches up), prints `npm view` for each, and runs
+  `compare` on the two tarballs the registry served — so what is held equal is
+  the published bytes, not this tree's. A version not served in time is a red
+  that says the confirmation was not taken; it does not un-publish anything.
+- **The alias never has its own version.** No step publishes `spine-html`
+  alone, and no version of it is made by hand: it is `rig-play`'s files at
+  `rig-play`'s version, or nothing. No lifecycle script runs on it, by design:
+  `npm publish <tarball>` runs none, and the alias is the gated publish's files,
+  held to them by the comparison before its path is printed.
+- **It is kept, not retired.** No `npm deprecate` — a banner on every install
+  is a retirement under an alias's name. The README's first paragraph names the
+  package's name, and the same file is the alias's npm page. Retiring the alias
+  is a separate card, opened only after three answers are written down in it:
+  what npm history is lost (download counts, the package page, the provenance
+  links of every version under that name), an inventory of the external links
+  and where each resolves after a retirement, and what the alias says until
+  then (#65).
 
 ## One-time setup (owner, GitHub)
 
@@ -43,15 +94,18 @@ Issues and PullRequests write under a read-only repository default).
 
 ## One-time setup (owner, npmjs.com)
 
-Do this once, before the first automated cut. It cannot be done from here — it
-needs the account.
+Do this once per name, before the first cut that publishes it. It cannot be
+done from here — it needs the account. npm keys a trusted publisher to the
+package, so there is **one form per name**, and both are filled in the same way.
 
-1. npmjs.com → **spine-html** → **Settings** → **Trusted Publisher** →
-   *GitHub Actions*.
-2. Fill in, exactly (the fields are case-sensitive, and npm does not validate
-   them on save — a typo only surfaces as a failed publish):
+1. npmjs.com → **rig-play** → **Settings** → **Trusted Publisher** →
+   *GitHub Actions*; and again under **spine-html**, whose existing form named
+   the repository by its old name and has to name the renamed one — the OIDC
+   token a run presents carries the repository it ran in, `firejune/rig-play`.
+2. Fill in each, exactly (the fields are case-sensitive, and npm does not
+   validate them on save — a typo only surfaces as a failed publish):
    - Organization or user: `firejune`
-   - Repository: `spine-html`
+   - Repository: `rig-play`
    - Workflow filename: `release.yml`
    - Environment name: *leave blank* (the workflow declares no environment; a
      value here that the workflow does not match rejects the publish)
@@ -60,20 +114,31 @@ needs the account.
    **Settings → Publishing access → Require two-factor authentication and
    disallow tokens**. Trusted publishing keeps working under that setting; it
    is what closes the door behind the classic tokens. Setting it first would
-   leave no way back if the OIDC path needs a fix.
+   leave no way back if the OIDC path needs a fix. The setting is per package:
+   each name gets it once that name has published from the workflow.
+
+Until `rig-play`'s form exists, the first publish of a cut is refused on
+authentication and the alias step after it never runs, so a cut waits for that
+form rather than going out under one name. The precedent for a renamed package
+is rig-c's (rigc RELEASING.md, *The package name is `rig-c`*): its first version
+under the new name went up by hand, from the old name's registry tarball with
+the `name` line changed and nothing else, before the workflow took over — the
+path to take if npmjs.com offers no settings page for a name it does not hold
+yet. `node scripts/alias-tarball.mjs compare` reads such a pair the same way.
 
 Two properties of that configuration are load-bearing in the workflow:
 
-- The publish step must live in **`release.yml`**. Renaming the file, or moving
-  the publish into another workflow, breaks the trusted publisher until the
-  form is updated to match.
+- Both publish steps must live in **`release.yml`**. Renaming the file, or
+  moving either publish into another workflow, breaks that name's trusted
+  publisher until its form is updated to match.
 - It must run on a **GitHub-hosted runner**. npm does not support trusted
   publishing from self-hosted runners, so this job never moves to a private
   machine.
 
 ## Cutting a release
 
-0. Once, before the first cut: both setup sections above.
+0. Once, before the first cut: both setup sections above, with one trusted
+   publisher form per name.
 1. Land the work on `main` as usual, with conventional-commit subjects. CI runs
    on every push.
 2. Wait for the `release` run to open or update the `release: vX.Y.Z` pull
@@ -81,16 +146,17 @@ Two properties of that configuration are load-bearing in the workflow:
 3. Read the diff — the version and the generated changelog are the whole review.
    Run the suite against the release branch — read the branch name off the
    pull request, it carries the package name
-   (`release-please--branches--main--components--spine-html`): **Actions → ci →
+   (`release-please--branches--main--components--rig-play`): **Actions → ci →
    Run workflow**, or `gh workflow run ci.yml --ref <that branch>` (see below
-   for why it is not automatic). One dispatch runs the one `test` job — there
-   is no spine-core matrix since #63, because the package declares no peer and
-   the repository installs no Spine runtime — and the release needs it green.
-   A skip in its log is not expected and should be read.
+   for why it is not automatic). The release needs it green. A skip in its log
+   is not expected and should be read.
 4. **Merge it.** That is the cut.
-5. Watch the second `release` run: it tags, releases, and publishes.
-6. Confirm: `npm view spine-html version`, and the npm page shows the
-   provenance attestation linking the tarball to the workflow run.
+5. Watch the second `release` run: it tags, releases, publishes `rig-play`,
+   publishes the alias, and confirms the two names serve the same files — its
+   last step prints the comparison line.
+6. Confirm: `npm view rig-play version` and `npm view spine-html version` print
+   the same version, and each npm page shows a provenance attestation of the
+   same workflow run.
 
 ## Why the release pull request shows no CI check
 
@@ -107,7 +173,7 @@ exact: there are two ways to get a green on the release commit itself —
   `gh workflow run ci.yml --ref <release branch>`), which is what v0.5.0 did
   (84 passed on the release commit before the merge); or
 - approve the held run (`gh api -X POST
-  repos/firejune/spine-html/actions/runs/<id>/approve`).
+  repos/firejune/rig-play/actions/runs/<id>/approve`).
 
 The usual way to make the check automatic is a personal access token or a
 GitHub App, and this repository deliberately does not use one:
@@ -125,7 +191,7 @@ GitHub App, and this repository deliberately does not use one:
 
 If a rendered check on the pull request is ever wanted anyway, it takes no edit
 to `release.yml`: create a fine-grained personal access token scoped to the
-`firejune/spine-html` repository with **Contents: read and write** and **Pull
+`firejune/rig-play` repository with **Contents: read and write** and **Pull
 requests: read and write**, store it as the repository secret
 `RELEASE_PLEASE_TOKEN`, and the workflow picks it up
 (`secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN`). The cost is a

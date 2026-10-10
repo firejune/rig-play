@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -19,12 +20,12 @@ import { expect, test } from '@playwright/test';
  * What npm ships, checked the way a consumer meets it — node-side, no browser.
  *
  * The package is DOM-only at *run* time, but an *import* must succeed outside
- * a browser: anything that leaves spine-html external and hands it to Node (a
+ * a browser: anything that leaves rig-play external and hands it to Node (a
  * server-side render pass importing a module that imports it, a test runner in
  * a node environment, a plain script) resolves it with Node's ESM resolver,
  * which — unlike every bundler — requires an explicit file extension on a
  * relative specifier. That is issue #16: `dist/*.js` carried extensionless
- * specifiers and `import('spine-html')` died with ERR_MODULE_NOT_FOUND, while
+ * specifiers and an `import()` of the package by name died with ERR_MODULE_NOT_FOUND, while
  * the demo, the harness and every browser build resolved it fine.
  *
  * ⚠️ This spec must NEVER build into the repository's own `dist/`. During a
@@ -32,7 +33,7 @@ import { expect, test } from '@playwright/test';
  * `build:lib` starts with `rm -rf dist` — a lib build here would pull the
  * ground out from under every other spec in the same run. So the library is
  * built to a temp directory instead, and assembled there into a throwaway
- * installed-package layout (`node_modules/spine-html`, alone), which is
+ * installed-package layout (`node_modules/rig-play`, alone), which is
  * also the only way to exercise the `exports` map: resolution by *package
  * name* is the thing under test, and a relative import of `../dist/index.js`
  * would not touch `exports` at all.
@@ -51,7 +52,7 @@ import { expect, test } from '@playwright/test';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const tscBin = resolve(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc');
 
-/** The throwaway consumer directory; `node_modules/spine-html` lives under it. */
+/** The throwaway consumer directory; `node_modules/rig-play` lives under it. */
 let sandbox = '';
 /** The built package's `dist` inside that sandbox. */
 let pkgDist = '';
@@ -128,8 +129,8 @@ function writeConsumer(name: string, source: string, mode: ModuleMode): string {
 }
 
 test.beforeAll(() => {
-  sandbox = mkdtempSync(resolve(tmpdir(), 'spine-html-pkg-'));
-  const pkgRoot = resolve(sandbox, 'node_modules', 'spine-html');
+  sandbox = mkdtempSync(resolve(tmpdir(), 'rig-play-pkg-'));
+  const pkgRoot = resolve(sandbox, 'node_modules', 'rig-play');
   pkgDist = resolve(pkgRoot, 'dist');
   mkdirSync(pkgRoot, { recursive: true });
 
@@ -146,11 +147,11 @@ test.beforeAll(() => {
   // directory can decide how these probes are parsed.
   writeFileSync(
     resolve(sandbox, 'package.json'),
-    `${JSON.stringify({ name: 'spine-html-consumer', private: true, type: 'module' }, null, 2)}\n`,
+    `${JSON.stringify({ name: 'rig-play-consumer', private: true, type: 'module' }, null, 2)}\n`,
   );
 
   // Nothing but the package is installed: the claim every import below rests on.
-  expect(readdirSync(resolve(sandbox, 'node_modules'))).toEqual(['spine-html']);
+  expect(readdirSync(resolve(sandbox, 'node_modules'))).toEqual(['rig-play']);
 });
 
 test.afterAll(() => {
@@ -160,9 +161,9 @@ test.afterAll(() => {
 test('the package entry resolves by name in node and exposes its public API', () => {
   const run = probe(
     'probe-index.mjs',
-    "const m = await import('spine-html');\nconsole.log(JSON.stringify(Object.keys(m).sort()));\n",
+    "const m = await import('rig-play');\nconsole.log(JSON.stringify(Object.keys(m).sort()));\n",
   );
-  expect(run.status, `import('spine-html') failed:\n${run.stderr}`).toBe(0);
+  expect(run.status, `import('rig-play') failed:\n${run.stderr}`).toBe(0);
   // Exhaustive on purpose: what the root entry exports is the package's API.
   expect(JSON.parse(run.stdout)).toEqual([
     'CanvasRenderer',
@@ -177,7 +178,7 @@ test('the package entry resolves by name in node and exposes its public API', ()
 test('the binary subpath is gone: the package reads compiled models, not Spine exports', () => {
   const run = probe(
     'probe-binary.mjs',
-    "try {\n  await import('spine-html/binary');\n  console.log(JSON.stringify({ code: 'RESOLVED' }));\n} catch (error) {\n  console.log(JSON.stringify({ code: error.code }));\n}\n",
+    "try {\n  await import('rig-play/binary');\n  console.log(JSON.stringify({ code: 'RESOLVED' }));\n} catch (error) {\n  console.log(JSON.stringify({ code: error.code }));\n}\n",
   );
   expect(run.status, `probe crashed:\n${run.stderr}`).toBe(0);
   expect(JSON.parse(run.stdout).code).toBe('ERR_PACKAGE_PATH_NOT_EXPORTED');
@@ -188,7 +189,7 @@ test('an unlisted subpath is refused by the exports map', () => {
   // going through, not a bare directory walk that would resolve anything.
   const run = probe(
     'probe-subpath.mjs',
-    "try {\n  await import('spine-html/dist/index.js');\n  console.log(JSON.stringify({ code: 'RESOLVED' }));\n} catch (error) {\n  console.log(JSON.stringify({ code: error.code }));\n}\n",
+    "try {\n  await import('rig-play/dist/index.js');\n  console.log(JSON.stringify({ code: 'RESOLVED' }));\n} catch (error) {\n  console.log(JSON.stringify({ code: error.code }));\n}\n",
   );
   expect(run.status, `probe crashed:\n${run.stderr}`).toBe(0);
   expect(JSON.parse(run.stdout).code).toBe('ERR_PACKAGE_PATH_NOT_EXPORTED');
@@ -283,6 +284,91 @@ test('the manifest declares no Spine runtime and no peer, and pins rig-c exactly
   expect(typeof manifest.devDependencies?.['rig-c']).toBe('string');
   expect(manifest.devDependencies['rig-c']).toMatch(/^\d+\.\d+\.\d+$/);
   expect(Object.keys(manifest.dependencies ?? {})).not.toContain('rig-c');
+});
+
+/**
+ * The registry name the package first shipped under, kept as an alias (#65):
+ * every version of `rig-play` is published again as `spine-html`, and the two
+ * must carry the same files, byte for byte, but for the `name` line of
+ * `package.json`. `scripts/alias-tarball.mjs` makes that tarball and holds it
+ * to the package's before `release.yml` publishes it; this runs the script
+ * over the temp build, then reads the two tarballs itself rather than taking
+ * the script's word, and plants a difference the script has to name.
+ */
+const ALIAS = 'spine-html';
+const aliasScript = resolve(repoRoot, 'scripts', 'alias-tarball.mjs');
+
+/** What `tar -xzf` puts in `into`, as sorted relative file paths. */
+function unpack(tgz: string, into: string): string[] {
+  mkdirSync(into, { recursive: true });
+  const r = spawnSync('tar', ['-xzf', tgz, '-C', into], { encoding: 'utf8' });
+  expect(r.status, `tar -xzf ${tgz}: ${r.stderr}`).toBe(0);
+  return readdirSync(into, { recursive: true })
+    .map((entry) => String(entry).split(sep).join('/'))
+    .filter((path) => !statSync(resolve(into, path)).isDirectory())
+    .sort();
+}
+
+test('the alias tarball is the package tarball under the old name, and nothing else', () => {
+  // The package directory npm would pack, from the temp build: the real
+  // manifest and the files its `files` list and npm's own rules take.
+  const src = resolve(sandbox, 'alias-src');
+  mkdirSync(src, { recursive: true });
+  cpSync(pkgDist, resolve(src, 'dist'), { recursive: true });
+  for (const file of ['package.json', 'NOTICE.md', 'README.md', 'LICENSE']) {
+    cpSync(resolve(repoRoot, file), resolve(src, file));
+  }
+  const primaryDir = resolve(sandbox, 'alias-primary');
+  mkdirSync(primaryDir, { recursive: true });
+  const packed = spawnSync(
+    'npm',
+    ['pack', src, '--ignore-scripts', '--pack-destination', primaryDir, '--loglevel=error'],
+    { cwd: sandbox, encoding: 'utf8' },
+  );
+  expect(packed.status, `npm pack failed:\n${packed.stdout}${packed.stderr}`).toBe(0);
+  const primary = resolve(primaryDir, readdirSync(primaryDir).find((file) => file.endsWith('.tgz')) as string);
+
+  const made = node([aliasScript, 'pack', '--tarball', primary, '--out', resolve(sandbox, 'alias-out')], sandbox);
+  expect(made.status, `alias-tarball pack failed:\n${made.stdout}${made.stderr}`).toBe(0);
+  expect(made.stderr).toContain(`PASS  ALIAS_SAME_CONTENT: ${ALIAS} carries the`);
+  const aliasTgz = made.stdout.trim().split('\n').pop() as string;
+  expect(existsSync(aliasTgz), aliasTgz).toBe(true);
+
+  // Read independently of the script: the same paths, every file the same
+  // bytes, and in the manifest exactly one line apart — the name.
+  const a = resolve(sandbox, 'alias-read', 'package');
+  const b = resolve(sandbox, 'alias-read', 'alias');
+  const left = unpack(primary, a);
+  const right = unpack(aliasTgz, b);
+  expect(right).toEqual(left);
+  expect(left).toContain('package/NOTICE.md');
+  expect(left).toContain('package/dist/index.js');
+  for (const path of left) {
+    if (path === 'package/package.json') continue;
+    expect(readFileSync(resolve(b, path)).equals(readFileSync(resolve(a, path))), path).toBe(true);
+  }
+  const mine = readFileSync(resolve(a, 'package/package.json'), 'utf8').split('\n');
+  const theirs = readFileSync(resolve(b, 'package/package.json'), 'utf8').split('\n');
+  expect(theirs.length).toBe(mine.length);
+  const differing = mine.flatMap((line, i) => (line === theirs[i] ? [] : [[line, theirs[i]]]));
+  expect(differing).toEqual([['  "name": "rig-play",', `  "name": "${ALIAS}",`]]);
+
+  // The comparison can fail: one byte changed in the bundle is named by path.
+  const planted = resolve(sandbox, 'alias-planted');
+  unpack(aliasTgz, planted);
+  const bundle = resolve(planted, 'package/dist/index.js');
+  const bytes = readFileSync(bundle);
+  bytes[bytes.length - 2] ^= 1;
+  writeFileSync(bundle, bytes);
+  const plantedTgz = resolve(sandbox, 'alias-planted.tgz');
+  expect(spawnSync('tar', ['-czf', plantedTgz, '-C', planted, 'package']).status).toBe(0);
+  const caught = node([aliasScript, 'compare', primary, plantedTgz], sandbox);
+  expect(caught.status, caught.stdout + caught.stderr).toBe(1);
+  expect(caught.stdout).toContain('package/dist/index.js differs');
+
+  // And a tarball under the package's own name is not an alias of it.
+  const self = node([aliasScript, 'compare', primary, primary], sandbox);
+  expect(self.status, self.stdout + self.stderr).toBe(1);
 });
 
 /** Strips `//` and `/* *\/` comments without eating string or template contents. */
@@ -393,8 +479,8 @@ test('the bundle imports nothing: rig-c/core is inside it, and no node built-in 
  * offers, reached by package name through the shipped `.d.ts`.
  */
 const CONSUMER_SOURCE = [
-  "import { CanvasRenderer, DomRenderer, loadModel, revokeRegions, RigPlayer, unpackRegions } from 'spine-html';",
-  "import type { ModelAssets, PosedFrame, PosedSlot, RigPlayerOptions } from 'spine-html';",
+  "import { CanvasRenderer, DomRenderer, loadModel, revokeRegions, RigPlayer, unpackRegions } from 'rig-play';",
+  "import type { ModelAssets, PosedFrame, PosedSlot, RigPlayerOptions } from 'rig-play';",
   'export const surface = [CanvasRenderer, DomRenderer, RigPlayer, loadModel, unpackRegions, revokeRegions];',
   'export function drawCanvas(renderer: CanvasRenderer, frame: PosedFrame): number { renderer.render(frame); return renderer.drawCalls; }',
   'export function draw(renderer: DomRenderer, frame: PosedFrame): PosedSlot[] { renderer.render(frame); return frame.order; }',

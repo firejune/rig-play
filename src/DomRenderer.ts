@@ -1014,7 +1014,7 @@ export class DomRenderer {
       this.tintDefs = svg;
     }
     const filter = document.createElementNS(SVG_NS, 'filter');
-    view.tintId = `spine-html-tint-${tintFilterSeq++}`;
+    view.tintId = `rig-play-tint-${tintFilterSeq++}`;
     filter.setAttribute('id', view.tintId);
     // Filter math must happen in sRGB to match Spine's color multiply
     // (SVG filters default to linearRGB).

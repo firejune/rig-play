@@ -5,11 +5,15 @@
 # conventional-commit subjects, CHANGELOG.md generated, package.json bumped.
 # Merging that PR is the release: the resulting push runs this workflow again,
 # release-please tags vX.Y.Z and cuts the GitHub release, and the same run
-# publishes to npm over OIDC (trusted publishing) — no npm token, no OTP.
+# publishes to npm over OIDC (trusted publishing) — no npm token, no OTP. It
+# publishes the package twice, under two names (#65): `rig-play`, the name in
+# package.json, and `spine-html`, the name it first shipped under, kept as an
+# alias carrying the same files at every version.
 #
 # Two constraints are load-bearing, do not "simplify" them away:
-#   - The publish must stay in THIS file. npm's trusted publisher for
-#     spine-html is pinned to the workflow filename `release.yml`.
+#   - Both publishes must stay in THIS file. npm's trusted publisher for each
+#     name — rig-play and spine-html, one form per package on npmjs.com — is
+#     pinned to the workflow filename `release.yml`.
 #   - It must stay on a GitHub-hosted runner. npm does not support OIDC from
 #     self-hosted runners.
 name: release
@@ -27,7 +31,9 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 20 minutes covered the publish; the confirmation below may wait up to 15
+    # more for the registry to serve each name, so the ceiling sits above both.
+    timeout-minutes: 40
     permissions:
       contents: write # release commit, tag, GitHub release
       pull-requests: write # open and update the release PR
@@ -81,3 +87,60 @@ jobs:
       - name: Publish to npm
         if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm publish --provenance --access public
+
+      # The alias (#65): the same files under the name the package first
+      # shipped as, so every link that points at `spine-html` keeps receiving
+      # every version. `scripts/alias-tarball.mjs` packs this checkout — the
+      # tagged tree the step above built `dist/` in and published from, with
+      # scripts ignored so nothing is rebuilt — into the runner's temp
+      # directory, rewrites the one `"name"` line of the extracted
+      # package.json, packs that again, and prints the path only after holding
+      # the result to the package tarball file by file. The checkout is never
+      # modified.
+      #
+      # No lifecycle script runs here, and that is the design rather than a
+      # gap: `npm publish <tarball>` runs none (`--ignore-scripts` says so
+      # explicitly), so `prepublishOnly` gates the step above and only that
+      # one. The alias is that publish's files, and the script holds it to them.
+      - name: Publish the alias spine-html
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        run: |
+          set -euo pipefail
+          alias_tgz="$(node scripts/alias-tarball.mjs pack --out "$RUNNER_TEMP/alias")"
+          npm publish "$alias_tgz" --provenance --access public --ignore-scripts
+
+      # The confirmation: both names, at the version just released, fetched
+      # from the registry and compared unpacked — the same paths, every byte
+      # the same but the manifest's name line — and the comparison line
+      # printed. It reads what the registry serves, not what this tree packs.
+      # The registry can take minutes to serve what was just published (~45 s
+      # after the workflow on v0.6.0), so each fetch is retried for up to 15
+      # minutes; a version still not served at the end is a red that says the
+      # confirmation was not taken, not that the package is wrong. A red here
+      # does not un-publish anything; it says the cut needs a follow-up.
+      - name: Confirm both names serve the same files
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          TAG_NAME: ${{ steps.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG_NAME#v}"
+          dest="$RUNNER_TEMP/confirm"
+          mkdir -p "$dest/rig-play" "$dest/spine-html"
+          fetch() {
+            local name="$1" attempt
+            for attempt in $(seq 1 30); do
+              if npm pack "$name@$version" --pack-destination "$dest/$name" --loglevel=error > /dev/null 2>&1; then
+                echo "fetched $name@$version on attempt $attempt"
+                return 0
+              fi
+              sleep 30
+            done
+            echo "::error::$name@$version was not served within 15 minutes: confirmation NOT taken"
+            return 1
+          }
+          fetch rig-play
+          fetch spine-html
+          npm view "rig-play@$version" version
+          npm view "spine-html@$version" version
+          node scripts/alias-tarball.mjs compare "$dest"/rig-play/*.tgz "$dest"/spine-html/*.tgz

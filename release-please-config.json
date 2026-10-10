@@ -7,7 +7,7 @@
   "pull-request-title-pattern": "release: v${version}",
   "packages": {
     ".": {
-      "package-name": "spine-html",
+      "package-name": "rig-play",
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false
     }
