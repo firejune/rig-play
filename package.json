@@ -1,23 +1,23 @@
 {
-  "name": "spine-html",
+  "name": "rig-play",
   "version": "0.8.0",
-  "description": "Render Spine skeletal animations as plain DOM — rigid slots as <img> posed by CSS matrix, deform meshes on small per-part canvases, interleaved in one stacking context.",
+  "description": "Plays skeleton.model.json written by rigc build as plain DOM elements — rigid slots as <img> posed by CSS matrix, deform meshes on small per-part canvases — or as one canvas.",
   "type": "module",
   "license": "MIT",
   "author": "firejune",
   "repository": {
     "type": "git",
-    "url": "https://github.com/firejune/spine-html.git"
+    "url": "https://github.com/firejune/rig-play.git"
   },
-  "homepage": "https://github.com/firejune/spine-html#readme",
+  "homepage": "https://github.com/firejune/rig-play#readme",
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/firejune"
   },
-  "bugs": "https://github.com/firejune/spine-html/issues",
+  "bugs": "https://github.com/firejune/rig-play/issues",
   "keywords": [
-    "spine",
-    "spine2d",
+    "rigc",
+    "rig-c",
     "skeletal-animation",
     "mesh-deformation",
     "dom",

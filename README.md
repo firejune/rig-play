@@ -1,32 +1,43 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="spine-html - DOM-first Spine 2D runtime" width="100%" />
+  <img src="assets/banner.svg" alt="rig-play - plays rigc's compiled model as DOM elements or one canvas" width="100%" />
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/spine-html"><img src="https://img.shields.io/npm/v/spine-html.svg?style=flat-square&color=FF6B4A" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/spine-html"><img src="https://img.shields.io/npm/dm/spine-html.svg?style=flat-square&color=EC4899" alt="npm downloads" /></a>
+  <a href="https://www.npmjs.com/package/rig-play"><img src="https://img.shields.io/npm/v/rig-play.svg?style=flat-square&color=FF6B4A" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/rig-play"><img src="https://img.shields.io/npm/dm/rig-play.svg?style=flat-square&color=EC4899" alt="npm downloads" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-38BDF8.svg?style=flat-square" alt="license" /></a>
 </p>
 
-Render [Spine](https://esotericsoftware.com/) skeletal animations as **plain DOM** — one
-absolutely-positioned `<img>` per slot, posed with a single CSS `matrix()` write per frame.
-No canvas, no WebGL for the rigid tier.
+Plays the rigs [rigc](https://github.com/firejune/rigc) builds — the compiled model
+document `rigc build` writes, `skeleton.model.json` — as **plain DOM**: one
+absolutely-positioned `<img>` per rigid slot, posed with a single CSS `matrix()` write
+per frame, deforming meshes on small per-part canvases; or as **one canvas** per player.
+`spine-html` is the same package under the name it first shipped as.
 
 ## Why
 
-Every Spine web runtime rasterizes into a canvas. But `spine-core` is fully
-renderer-independent: it computes bone world transforms — and even deformed mesh
-vertices — on the CPU. For **region attachments** (the rigid parts of a skeleton), a bone
-transform is a plain affine map, and CSS `transform: matrix()` expresses that *exactly*.
-So the rigid tier of a Spine skeleton can live in the DOM, composited by the browser,
-inspectable in devtools, styled with CSS.
+The package began in 0.x as `spine-html`, an experiment in drawing Spine skeletons
+without a canvas. Every Spine web runtime rasterizes into one, yet the pose itself is
+computed on the CPU, and for a **region attachment** (a rigid part) the bone transform is
+a plain affine map that CSS `transform: matrix()` expresses *exactly* — so the rigid tier
+could live in the DOM, composited by the browser, inspectable in devtools, styled with
+CSS. The idea had been floated on the Spine forum three times since 2014 and never built;
+the blockers named were meshes, clipping and DOM update overhead, and the 0.x line
+answered each of them (per-part mesh canvases, element-level `clip-path`, dirty-skip).
 
-The idea has been floated on the official forum three times since 2014 and was never
-built — the blockers named were meshes, clipping, and DOM update overhead. This project
-is the experiment: how far does the DOM actually go, and how cheap is it?
+At 1.0 it stopped being a Spine runtime. It plays the model document `rigc build` writes,
+poses it through `rig-c/core` — rigc's own posing core, bundled into the package — and
+links nothing from Esoteric Software; a Spine export is refused by name. It gained a
+second render mode that draws the whole frame into one canvas. And it took the name
+`rig-play`, which says what it is; `spine-html` keeps being published with the same
+files, so links to the old name keep working.
 
-Measured so far (PoC, Apple silicon — headless and on-device numbers are labeled,
-they do **not** substitute for each other):
+### Measured
+
+Measured on the 0.x line, on the spineboy exports it then played (PoC, Apple silicon —
+headless and on-device numbers are labeled, they do **not** substitute for each other).
+The renderer tiers they describe carried over; they have not been re-measured since the
+player moved to rigc's model (#60):
 
 - Rigid only (spineboy-ess), headless Chromium: 10 skeletons / 180 slot images at
   **~0.03 ms skeleton math + ~0.22 ms DOM writes per frame** — about 1.5% of a
@@ -148,7 +159,8 @@ default stays `dom`.
 ## Install
 
 ```bash
-npm i spine-html
+npm i rig-play
+npm i -D rig-c    # the build tool: `rigc build` writes the model rig-play loads
 ```
 
 The package plays rigs built by [rigc](https://github.com/firejune/rigc):
@@ -161,7 +173,7 @@ the skeleton, the animations, and where every region sits on its page — so the
 is nothing else to install.
 
 ```ts
-import { loadModel, RigPlayer } from 'spine-html';
+import { loadModel, RigPlayer } from 'rig-play';
 
 const assets = await loadModel({ modelUrl: '/rigs/walk/skeleton.model.json' });
 
@@ -200,7 +212,7 @@ else. A document whose `spec` is not one `rig-c/core` reads is refused with the
 core's own sentence plus "build it with `rigc build`", and so is a
 `rigc-compiled/1` document, which predates the `pages` section.
 
-`spine-html` is a third-party renderer and is not affiliated with or endorsed by
+`rig-play` is a third-party renderer and is not affiliated with or endorsed by
 Esoteric Software.
 
 ### Drawing your own frames
@@ -209,7 +221,7 @@ Esoteric Software.
 record, so anything that can produce one can draw through it:
 
 ```ts
-import { DomRenderer, type PosedFrame } from 'spine-html';
+import { DomRenderer, type PosedFrame } from 'rig-play';
 
 const renderer = new DomRenderer(rootElement, assets.regionImages, assets.pageImages);
 renderer.render(frame); // frame: PosedFrame
@@ -644,10 +656,30 @@ perf oracle is the demo's stats line on a real device.
 
 ## License
 
-The code in this repository is MIT licensed.
+rig-play's own code is MIT (see [LICENSE](LICENSE)). That says nothing about Spine,
+so here is what is true of this package and this repository, stated plainly:
 
-Neither the package nor this repository depends on the
-[Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes): rigs are posed
-by `rig-c/core` (MIT), bundled into the package, and no package of Esoteric
-Software's npm scope is a dependency of any kind. No example assets are fetched or
-redistributed. See [NOTICE.md](NOTICE.md).
+1. The published package — `rig-play`, and `spine-html`, the same files — **links
+   nothing from Esoteric Software**. Its one module bundles the renderer and
+   `rig-c/core` (MIT), which poses rigc's model document; no part of the
+   [Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes) is in it or
+   required beside it.
+2. This repository links no Spine runtime either, since #63: no package of Esoteric
+   Software's npm scope is a dependency of any kind, and the lockfile names none.
+   `tests/package.spec.ts` asserts both.
+3. `rigc build`, which this repository runs to make its fixtures, also writes Spine
+   skeleton data (`skeleton.json` and `skeleton.atlas`) beside each model document.
+   Nothing here reads it, and it is neither committed nor published.
+4. A product that plays that Spine data with a Spine Runtime has integrated the Spine
+   Runtimes, whose licence permits it **under Section 2 of the
+   [Spine Editor License Agreement](https://esotericsoftware.com/spine-editor-license)**,
+   or otherwise on the condition that **each user of the product obtains their own
+   Spine Editor license** — the licence's own two routes, restated, not a term of
+   this project.
+
+> **What a consumer does with rigc's Spine-format output is governed by Esoteric
+> Software's terms**, not by this package — rig-play neither adds those terms nor
+> removes them.
+
+No example assets of Esoteric Software's are fetched or redistributed. See
+[NOTICE.md](NOTICE.md) for the full notice.

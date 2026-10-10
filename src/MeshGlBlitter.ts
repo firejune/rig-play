@@ -524,7 +524,7 @@ class MeshGlBlitter {
    * flush that binds the page does it) — this only counts, so that the last
    * release() can free the texture instead of the module holding it forever.
    * Callers retain once per page and hand the same page back exactly once;
-   * SpineHtmlRenderer keeps that ledger and settles it in dispose().
+   * DomRenderer and CanvasRenderer each keep that ledger and settle it in dispose().
    */
   retain(page: HTMLImageElement): void {
     const entry = this.textures.get(page);

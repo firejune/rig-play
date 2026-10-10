@@ -79,12 +79,12 @@
   <g transform="translate(280, 0)">
     <!-- Main Title -->
     <text x="0" y="110" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="54" font-weight="800" letter-spacing="-1.5">
-      <tspan fill="url(#text-grad)">spine</tspan><tspan fill="#64748B">-</tspan><tspan fill="url(#html-grad)">html</tspan>
+      <tspan fill="url(#text-grad)">rig</tspan><tspan fill="#64748B">-</tspan><tspan fill="url(#html-grad)">play</tspan>
     </text>
 
     <!-- Subtitle / Tagline -->
     <text x="2" y="150" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="16.5" font-weight="500" fill="#94A3B8" letter-spacing="-0.2">
-      DOM-first Spine 2D skeletal animations via CSS transforms
+      Plays rigc&#8217;s compiled model as DOM elements or one canvas
     </text>
 
     <!-- Badges / Accurate Feature Pills -->

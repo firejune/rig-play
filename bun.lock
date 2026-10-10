@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "spine-html",
+      "name": "rig-play",
       "devDependencies": {
         "@playwright/test": "1.62.1",
         "@types/node": "^22",
