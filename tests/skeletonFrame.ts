@@ -66,10 +66,27 @@ function arraysOf(attachment: MeshAttachment, index: number): { uvs: number[]; t
   return kept;
 }
 
+/** One region attachment's sequence UVs, copied once so a frame hands the same object every time (`PosedRegion.uvs`). */
+const regionArrays = new WeakMap<object, Map<number, number[]>>();
+
+function regionUvsOf(attachment: RegionAttachment, index: number): number[] {
+  let byIndex = regionArrays.get(attachment);
+  if (!byIndex) {
+    byIndex = new Map();
+    regionArrays.set(attachment, byIndex);
+  }
+  let kept = byIndex.get(index);
+  if (!kept) {
+    kept = Array.from(attachment.sequence.getUVs(index));
+    byIndex.set(index, kept);
+  }
+  return kept;
+}
+
 /** What `frameOfSkeleton` read besides the frame. */
 export interface SkeletonFrame {
   frame: PosedFrame;
-  /** Every page image a mesh of the frame draws from, by page name. */
+  /** Every page image a region or mesh of the frame draws from, by page name. */
   pages: Map<string, HTMLImageElement>;
   /** Clipping attachments the draw loop met and did not start: another clip in force, or an inactive bone. */
   clipsIgnored: number;
@@ -86,7 +103,7 @@ export interface SkeletonFrame {
  *   nothing; every other slot is covered by the clip in force and ends it if it
  *   is the end slot;
  * - a region's four corners from `computeWorldVertices` with the sequence's
- *   offsets, a mesh's world vertices and the sequence's UVs for the resolved
+ *   offsets and its page UVs from the sequence, a mesh's world vertices and the sequence's UVs for the resolved
  *   frame, the page off the region's page;
  * - tint = skeleton colour × slot colour × attachment colour, the blend the
  *   slot data's.
@@ -113,7 +130,7 @@ export function frameOfSkeleton(skeleton: Skeleton): SkeletonFrame {
       if (slot.bone.active && !clip) {
         const polygon: number[] = new Array(attachment.worldVerticesLength).fill(0);
         attachment.computeWorldVertices(skeleton, slot, 0, attachment.worldVerticesLength, polygon, 0, 2);
-        clip = { end: attachment.endSlot, posed: { polygon, inverse: attachment.inverse } };
+        clip = { end: attachment.endSlot, posed: { polygon, inverse: attachment.inverse, convex: attachment.convex } };
       } else {
         clipsIgnored++;
       }
@@ -133,7 +150,9 @@ export function frameOfSkeleton(skeleton: Skeleton): SkeletonFrame {
     if (attachment instanceof RegionAttachment) {
       const index = attachment.sequence.resolveIndex(pose);
       const region = attachment.sequence.regions[index] as TextureAtlasRegion | null;
+      const image = region?.page.texture?.getImage() as HTMLImageElement | undefined;
       if (region) {
+        if (image) pages.set(region.page.name, image);
         const corners: number[] = new Array(8).fill(0);
         attachment.computeWorldVertices(slot, attachment.getOffsets(pose), corners, 0, 2);
         const c = attachment.color;
@@ -143,6 +162,9 @@ export function frameOfSkeleton(skeleton: Skeleton): SkeletonFrame {
           kind: 'region',
           region: region.name,
           corners,
+          page: region.page.name,
+          pma: region.page.pma,
+          uvs: regionUvsOf(attachment, index),
         });
       }
     } else if (attachment instanceof MeshAttachment) {

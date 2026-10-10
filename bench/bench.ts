@@ -18,7 +18,7 @@ import type { RegionImage } from '../src/DomTexture';
 // suite's reader (tests/skeletonFrame.ts), so both panes pose the same export
 // with the same runtime and only the drawing differs.
 import { advanceSkeleton } from '../tests/skeletonFrame';
-import { DomTexture, loadSkeletonJson, SkeletonRenderer, unpackAtlas } from '../tests/spineDom';
+import { DomTexture, loadSkeletonJson, SkeletonCanvasRenderer, SkeletonRenderer, unpackAtlas } from '../tests/spineDom';
 
 /**
  * The side-by-side benchmark page — an instrument for a person, not a test.
@@ -43,7 +43,9 @@ import { DomTexture, loadSkeletonJson, SkeletonRenderer, unpackAtlas } from '../
  * `requestAnimationFrame` has one cadence per document, so two panes animating
  * in one page report *the same* fps — the page's, not either runtime's. A
  * side-by-side of that number would be a comparison of nothing. So
- * `?runtime=dom` and `?runtime=reference` each give the whole frame budget to
+ * `?runtime=dom`, `?runtime=canvas` (this package's canvas render mode, drawn
+ * in the same pane through the same grid) and `?runtime=reference` each give
+ * the whole frame budget to
  * one side, which is what the script drives, and `?runtime=both` (the default)
  * animates both for eyeballing and says so on every stats line, so a reading
  * copied out of that mode cannot be mistaken for a measurement.
@@ -128,7 +130,7 @@ const params = new URLSearchParams(location.search);
 const atlasPath = params.get('atlas') ?? '/spineboy/spineboy.atlas';
 
 type SceneName = 'mesh' | 'held' | 'rigid' | 'many';
-type RuntimeMode = 'both' | 'dom' | 'reference';
+type RuntimeMode = 'both' | 'dom' | 'canvas' | 'reference';
 /** How the reference draws N rigs — see the fairness note above. */
 type ReferenceMode = 'shared' | 'per-player';
 
@@ -209,8 +211,10 @@ const referenceMode: ReferenceMode = scene.reference;
 const CLIP_TARGET: 'pane' | 'cell' = referenceMode === 'shared' ? 'pane' : 'cell';
 const runtime: RuntimeMode = ((): RuntimeMode => {
   const raw = params.get('runtime');
-  return raw === 'dom' || raw === 'reference' ? raw : 'both';
+  return raw === 'dom' || raw === 'canvas' || raw === 'reference' ? raw : 'both';
 })();
+/** How this package's pane draws: elements (`DomRenderer`) or one canvas per rig (`CanvasRenderer`). */
+const drawMode: 'dom' | 'canvas' = runtime === 'canvas' ? 'canvas' : 'dom';
 const backend: MeshBackend = params.get('backend') === 'canvas2d' ? 'canvas2d' : 'webgl';
 const dprOverride = params.get('dpr') !== null ? Number(params.get('dpr')) || 1 : null;
 const pixelRatio = (): number => dprOverride ?? window.devicePixelRatio ?? 1;
@@ -384,7 +388,7 @@ async function domSide(stageEl: HTMLDivElement): Promise<Side> {
 
   const players: Player[] = [];
   const roots: HTMLDivElement[] = [];
-  const renderers: SkeletonRenderer[] = [];
+  const renderers: Array<SkeletonRenderer | SkeletonCanvasRenderer> = [];
   /**
    * The clip boxes — one per rect, mirroring the reference exactly: one box
    * over the pane when it shares a canvas, one box per cell when it does not.
@@ -405,8 +409,8 @@ async function domSide(stageEl: HTMLDivElement): Promise<Side> {
     const root = document.createElement('div');
     root.className = 'skeleton-root';
     clipBoxes[boxIndex].append(root);
-    const renderer = new SkeletonRenderer(root, regionImages);
-    renderer.meshBackend = backend;
+    const renderer = drawMode === 'canvas' ? new SkeletonCanvasRenderer(root) : new SkeletonRenderer(root, regionImages);
+    if (renderer instanceof SkeletonRenderer) renderer.meshBackend = backend;
     players.push(makePlayer(data, i));
     roots.push(root);
     boxOfPlayer.push(boxIndex);
@@ -455,12 +459,40 @@ async function domSide(stageEl: HTMLDivElement): Promise<Side> {
       return updateMs;
     },
     stats(fps, updateMs, renderMs, frames): string {
+      if (drawMode === 'canvas') {
+        let drawn = 0;
+        let reused = 0;
+        let drawCalls = 0;
+        let blendFlushes = 0;
+        let triangles = 0;
+        let blits = 0;
+        let reallocs = 0;
+        for (const renderer of renderers as SkeletonCanvasRenderer[]) {
+          reused += renderer.framesReused;
+          drawn += 1 - renderer.framesReused;
+          drawCalls += renderer.drawCalls;
+          blendFlushes += renderer.blendFlushes;
+          triangles += renderer.trianglesDrawn;
+          blits += renderer.blits;
+          reallocs += renderer.canvasReallocCount;
+        }
+        const first = renderers[0] as SkeletonCanvasRenderer | undefined;
+        return (
+          `${scene.count}/${scene.count} × ${fps.toFixed(0)} fps · mode canvas · ` +
+          `skeleton ${(updateMs / frames).toFixed(2)}ms · ` +
+          `render ${(renderMs / frames).toFixed(2)}ms/frame · ` +
+          `frames ${drawn} drawn / ${reused} reused · ${drawCalls} draw calls · ` +
+          `${blendFlushes} blend flushes · ${triangles} tris · ${blits} blits` +
+          (reallocs ? ` / ${reallocs} realloc'd` : '') +
+          ` · ${first?.backendActive === 'webgl' ? 'webgl' : 'canvas2d fallback'} · clipped to ${CLIP_TARGET}`
+        );
+      }
       let meshes = 0;
       let reused = 0;
       let triangles = 0;
       let backing = 0;
       let reallocs = 0;
-      for (const renderer of renderers) {
+      for (const renderer of renderers as SkeletonRenderer[]) {
         meshes += renderer.meshCount;
         reused += renderer.meshReuseCount;
         triangles += renderer.triangleCount;
@@ -473,9 +505,9 @@ async function domSide(stageEl: HTMLDivElement): Promise<Side> {
             (reallocs ? ` / ${reallocs} realloc'd` : '') +
             ` · backing ${(backing / 1e6).toFixed(1)} Mpx`
           : '';
-      const active = renderers[0]?.meshBackendActive ?? backend;
+      const active = (renderers[0] as SkeletonRenderer | undefined)?.meshBackendActive ?? backend;
       return (
-        `${scene.count}/${scene.count} × ${fps.toFixed(0)} fps · ` +
+        `${scene.count}/${scene.count} × ${fps.toFixed(0)} fps · mode dom · ` +
         `skeleton ${(updateMs / frames).toFixed(2)}ms · ` +
         `render ${(renderMs / frames).toFixed(2)}ms/frame${meshNote} · ${active} · ` +
         `clipped to ${CLIP_TARGET}`
@@ -863,7 +895,7 @@ async function main(): Promise<void> {
   const sceneEl = document.getElementById('scene') as HTMLDivElement;
 
   const runDom = runtime !== 'reference';
-  const runRef = runtime !== 'dom';
+  const runRef = runtime === 'both' || runtime === 'reference';
   const [dom, reference] = await Promise.all([
     runDom ? domSide(domStage) : Promise.resolve(null),
     runRef ? referenceSide(refStage) : Promise.resolve(null),
@@ -880,6 +912,7 @@ async function main(): Promise<void> {
     `runtime=${runtime} reference=${REFERENCE_MODE_LABEL[referenceMode]} ` +
     `dpr=${pixelRatio().toFixed(2)} · ${modeNote}`;
   if (!runDom) domTitle.innerHTML = 'spine-html (DOM) <span class="idle">— idle</span>';
+  else if (drawMode === 'canvas') domTitle.textContent = 'spine-html (canvas mode)';
   if (!runRef) refTitle.innerHTML = 'spine-webgl (reference) <span class="idle">— idle</span>';
 
   for (const el of [domStatsEl, refStatsEl]) {

@@ -14,7 +14,8 @@ import {
   revokeRegions,
   RigPlayer,
 } from '../src/index';
-import { getMeshGlBlitter } from '../src/MeshGlBlitter';
+import { CanvasRenderer } from '../src/CanvasRenderer';
+import { getMeshGlBlitter, glContextCount } from '../src/MeshGlBlitter';
 import { straightAlphaDerivations, straightAlphaSource } from '../src/DomTexture';
 import type { PosedSlot } from '../src/posedFrame';
 import { advanceSkeleton } from './skeletonFrame';
@@ -256,6 +257,29 @@ export interface RigPlayHarness {
   pmaDerivationProbe(): Promise<PmaDerivationProbeResult>;
   pmaStage(options: PmaStageOptions): Promise<PmaStageResult>;
   oracleStage(options: OracleStageOptions): Promise<OracleStageResult>;
+  canvasModeProbe(count: number): Promise<CanvasModeProbeResult>;
+}
+
+export interface CanvasModeProbeResult {
+  webglAvailable: boolean;
+  /** WebGL contexts the package had created before and after drawing `count` canvas-mode players. */
+  contextsBefore: number;
+  contextsAfter: number;
+  /** Players whose canvas renderer drew through the shared context. */
+  webglPlayers: number;
+  /** Players whose visible canvas holds any non-transparent pixel. */
+  drawingPlayers: number;
+  /** Elements in each root: one canvas in the canvas mode. */
+  elementsPerRoot: number[];
+  blits: number;
+  /** The second draw of a held pose: every player reuses its frame. */
+  reusedOnSecondDraw: number;
+  /** Live page textures while drawing and after every player is disposed. */
+  texturesWhileDrawing: number;
+  texturesAfterDispose: number;
+  baselineTextures: number;
+  /** One player swapped dom → canvas → dom in place: element kinds after each step. */
+  swap: Array<{ mode: string; canvases: number; images: number; renderer: string }>;
 }
 
 declare global {
@@ -2789,6 +2813,9 @@ const UNDRAWN_AFTER_CLIP: PosedSlot = {
   kind: 'region',
   region: '__no-such-region',
   corners: [0, 0, 0, 1, 1, 1, 1, 0],
+  page: '__no-such-page',
+  pma: false,
+  uvs: [0, 1, 0, 0, 1, 0, 1, 1],
 };
 
 function clipRenderer(root: HTMLElement, assets: LoadedAssets): SkeletonRenderer {
@@ -4416,7 +4443,97 @@ function regionGeometryProbe(): RegionGeometryProbeResult {
   };
 }
 
+/**
+ * The canvas render mode at the context cap: `count` players on one page, each
+ * a `RigPlayer` in `mode: 'canvas'`, drawn once and then once more on a held
+ * pose. Every one must draw through the package's single shared context —
+ * `glContextCount()` is the accounting — and hand its page textures back.
+ */
+async function canvasModeProbe(count: number): Promise<CanvasModeProbeResult> {
+  const blitter = getMeshGlBlitter();
+  const baselineTextures = liveGlTextures();
+  const contextsBefore = glContextCount();
+  const assets = await loadModel({ modelUrl: '/rigs/walk-packed/skeleton.model.json' });
+  const players: RigPlayer[] = [];
+  const roots: HTMLElement[] = [];
+  for (let i = 0; i < count; i++) {
+    const root = makeGlRoot();
+    root.style.left = `${100 + (i % 10) * 60}px`;
+    root.style.top = `${200 + Math.floor(i / 10) * 200}px`;
+    root.style.transform = 'scale(0.25)';
+    root.style.transformOrigin = '0 0';
+    const player = new RigPlayer(root, assets, { mode: 'canvas' });
+    player.renderer.pixelRatio = 0.25;
+    player.play(assets.animations[0].name);
+    player.seek(0.3 + i * 0.01);
+    player.draw();
+    players.push(player);
+    roots.push(root);
+  }
+  let webglPlayers = 0;
+  let drawingPlayers = 0;
+  let blits = 0;
+  for (const player of players) {
+    const r = player.renderer as CanvasRenderer;
+    if (r.backendActive === 'webgl') webglPlayers++;
+    blits += r.blits;
+    const ctx = r.canvas.getContext('2d');
+    if (ctx && r.canvas.width > 0 && r.canvas.height > 0) {
+      const { data } = ctx.getImageData(0, 0, r.canvas.width, r.canvas.height);
+      for (let k = 3; k < data.length; k += 4) {
+        if (data[k] !== 0) {
+          drawingPlayers++;
+          break;
+        }
+      }
+    }
+  }
+  let reusedOnSecondDraw = 0;
+  for (const player of players) {
+    player.draw();
+    reusedOnSecondDraw += (player.renderer as CanvasRenderer).framesReused;
+  }
+  const contextsAfter = glContextCount();
+  const elementsPerRoot = roots.map((root) => root.children.length);
+  const texturesWhileDrawing = liveGlTextures();
+
+  // The swap: one player, its renderer replaced twice over the same root.
+  const swap: CanvasModeProbeResult['swap'] = [];
+  const first = players[0];
+  const read = (): void => {
+    swap.push({
+      mode: first.mode,
+      canvases: roots[0].querySelectorAll('canvas').length,
+      images: roots[0].querySelectorAll('img').length,
+      renderer: first.renderer instanceof CanvasRenderer ? 'CanvasRenderer' : 'DomRenderer',
+    });
+  };
+  first.mode = 'dom';
+  read();
+  first.mode = 'canvas';
+  read();
+
+  for (const player of players) player.dispose();
+  for (const root of roots) root.remove();
+  assets.dispose();
+  return {
+    webglAvailable: blitter !== null,
+    contextsBefore,
+    contextsAfter,
+    webglPlayers,
+    drawingPlayers,
+    elementsPerRoot,
+    blits,
+    reusedOnSecondDraw,
+    texturesWhileDrawing,
+    texturesAfterDispose: liveGlTextures(),
+    baselineTextures,
+    swap,
+  };
+}
+
 window.rigPlayHarness = {
+  canvasModeProbe,
   unpackProbe,
   regionGeometryProbe,
   passThroughProbe,

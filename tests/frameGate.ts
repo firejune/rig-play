@@ -103,11 +103,15 @@ function compareSlot(c: Compare, a: PosedSlot, b: PosedSlot): void {
   c.same(a.clip === undefined, b.clip === undefined, 'clipped');
   if (a.clip && b.clip) {
     c.same(a.clip.inverse, b.clip.inverse, 'clip inverse');
+    c.same(a.clip.convex, b.clip.convex, 'clip convex');
     c.numbers(a.clip.polygon, b.clip.polygon, 'clip polygon');
   }
   if (a.kind === 'region' && b.kind === 'region') {
     c.same(a.region, b.region, 'region');
     c.numbers(a.corners, b.corners, 'corners');
+    c.same(a.page, b.page, 'page');
+    c.same(a.pma, b.pma, 'pma');
+    c.numbers(a.uvs, b.uvs, 'region uvs');
   } else if (a.kind === 'mesh' && b.kind === 'mesh') {
     c.same(a.page, b.page, 'page');
     c.same(a.pma, b.pma, 'pma');

@@ -63,6 +63,19 @@ deforming) holds **60 fps on every engine measured**, and the 10-skeleton
 stress scene holds 45 fps on the weakest one (Safari, webgl backend). Ships
 with a self-contained test suite (backend visual parity + invariants) and CI.
 
+**Two render modes.** `mode: 'dom'` (the default, everything below) draws a rig
+as elements. `mode: 'canvas'` draws the whole frame into **one `<canvas>`** per
+player: every slot as textured triangles from its atlas page through the same
+shared WebGL context the mesh tier's `webgl` backend uses, into one rect, then
+one `drawImage` onto the player's canvas. Tint and dark (two-colour) tint are
+vertex colours, blend modes are batch state, clips are cut on the CPU by
+`rig-c/core`'s clipper — no `clip-path`, no SVG filter, no per-slot element.
+`RigPlayer` swaps between the two in place (`player.mode = 'canvas'`). The
+canvas mode is held against the DOM tier pixel for pixel on the parity suite's
+frozen poses (bad pixels ≤ 1.6% of drawn content, measured, macOS Chromium and
+WebKit); which mode is faster where is **not measured on a device yet**, so the
+default stays `dom`.
+
 - ✅ Region attachments (rigid parts): exact affine mapping, draw-order via `z-index`,
   attachment swaps, alpha
 - ✅ Atlas unpacking at load time (90°-packed regions restored to the orientation
@@ -205,8 +218,9 @@ renderer.render(frame); // frame: PosedFrame
 PosedFrame { order: PosedSlot[] }                     // the slots that draw, in draw order
 PosedSlot = { slot; z; blend: 'Normal'|'Additive'|'Multiply'|'Screen';
               tint: [r, g, b, a]; dark?: [r, g, b];
-              clip?: { polygon: number[]; inverse: boolean } }   // world space, Y up
-          & ( { kind: 'region'; region: string; corners: number[] /* BL, UL, UR, BR */ }
+              clip?: { polygon: number[]; inverse: boolean; convex: boolean } }   // world space, Y up
+          & ( { kind: 'region'; region: string; corners: number[] /* BL, UL, UR, BR */;
+                page: string; pma: boolean; uvs: number[] /* page UVs at the corners */ }
             | { kind: 'mesh'; page: string; pma: boolean; vertices: number[];
                 uvs: number[]; triangles: number[]; sequence: number } )
 ```
@@ -355,6 +369,32 @@ onto shared pages instead. Both play here, unchanged:
   sample the shared page through page UVs.
 
 ### Runtime knobs and what they cost
+
+- `player.mode` / `new RigPlayer(root, assets, { mode })` — `'dom'` (default)
+  or `'canvas'`. Changing it disposes the current renderer (elements removed,
+  GPU pages handed back) and creates the other over the same root and assets;
+  `pixelRatio` and `clipping` carry over and the held pose is redrawn at once.
+  `player.renderer` is then a `CanvasRenderer`, whose knobs are `pixelRatio`,
+  `clipping`, `viewport` and `backend`. What each mode costs, as counters:
+  - **dom** — one element per drawn slot, one style write per changed slot,
+    and the mesh tier's rasters (the knobs below).
+  - **canvas** — one canvas element per player and, per frame that changed,
+    one pass over every slot: `drawCalls` (one per run of one page under one
+    blend), `blendFlushes` (runs a blend change ended), `trianglesDrawn`,
+    `blits` (one), or `framesReused` (one) when the record did not change and
+    nothing is drawn. It never creates a WebGL context of its own, so any number
+    of players stays under the browser's ~16-context cap (20 players, one
+    context — `tests/canvas-mode.spec.ts`). The canvas covers a rect of the
+    root's coordinates that grows (never shrinks) to what the frames draw —
+    `canvasReallocCount` settles at zero — or a fixed `renderer.viewport` (world
+    units, Y up) when you set one. Blends are composed inside that canvas, which
+    starts transparent: an additive slot adds onto the slots under it and is
+    then composited onto the page normally, where the DOM tier's
+    `plus-lighter` adds onto the page itself. Where WebGL is unavailable or the
+    context is lost, the frame is drawn with canvas2d on the same canvas so it
+    never draws nothing — **alpha tint only, RGB and dark tint unsupported
+    there** — and that fallback is **not the measured path** (`backendActive`
+    says which ran).
 
 - `renderer.pixelRatio` — mesh-canvas backing pixels per CSS pixel (defaults to
   `devicePixelRatio`; if you scale the root element, fold that scale in so the

@@ -11,6 +11,7 @@ import {
   type RawDrawn,
   type RawPose,
   readUvSequences,
+  regionPageUvs,
   type UvSource,
 } from 'rig-c/core';
 
@@ -48,6 +49,13 @@ export interface PosedClip {
   /** Flat x, y pairs, world space. */
   polygon: number[];
   inverse: boolean;
+  /**
+   * The clipping attachment's `convex` flag: a polygon that is not convex is
+   * clipped against its hull rather than decomposed. The DOM tier's CSS
+   * `clip-path` takes the polygon as authored and does not read it; the canvas
+   * mode's triangle cut does (`clipThrough` in `rig-c/core`).
+   */
+  convex: boolean;
 }
 
 interface PosedSlotCommon {
@@ -71,6 +79,21 @@ export interface PosedRegion extends PosedSlotCommon {
   region: string;
   /** Four world corners, bottom-left, upper-left, upper-right, bottom-right: x0 y0 … x3 y3. */
   corners: number[];
+  /**
+   * The page the region sits on — the key into the page image map. The DOM tier
+   * draws the region's own bitmap and never reads it; the canvas mode samples
+   * the page through `uvs`.
+   */
+  page: string;
+  /** Whether the page's texels are premultiplied by their alpha. */
+  pma: boolean;
+  /**
+   * The region's page UVs at its four corners, in the corners' order (u, v
+   * pairs, the page spanning [0, 1]) — the runtime's region UVs, a 90°-packed
+   * region's turn included. The same array object from frame to frame for the
+   * same region.
+   */
+  uvs: number[];
 }
 
 /** A deform slot: world vertices over page UVs, rastered from the page image. */
@@ -113,6 +136,8 @@ export interface FrameSource {
   boneOf: ReadonlyMap<string, string>;
   /** Page UVs kept per placement and attachment UV array, so a mesh's `uvs` is one object for its lifetime. */
   uvs: WeakMap<object, Map<readonly number[], number[]>>;
+  /** Region page UVs kept per placement, so a region's `uvs` is one object for its lifetime. */
+  regionUvs: WeakMap<object, number[]>;
   /** Triangle lists kept per slot and attachment, compared index for index before reuse. */
   triangles: Map<string, number[][]>;
 }
@@ -140,6 +165,7 @@ export function frameSource(doc: CompiledDocument, parsed: unknown): FrameSource
     active: activeBones(doc),
     boneOf: new Map(doc.slots.map((slot) => [slot.name, slot.bone])),
     uvs: new WeakMap(),
+    regionUvs: new WeakMap(),
     triangles: new Map(),
   };
 }
@@ -162,6 +188,16 @@ function meshUvs(source: FrameSource, found: DrawnRegion): number[] {
   if (kept === undefined) {
     kept = meshPageUvs(found.found.region, found.found.page, art);
     byArt.set(art, kept);
+  }
+  return kept;
+}
+
+/** The page UVs a drawn region samples — `regionPageUvs`, kept per placement. */
+function regionUvs(source: FrameSource, found: DrawnRegion): number[] {
+  let kept = source.regionUvs.get(found.found);
+  if (kept === undefined) {
+    kept = regionPageUvs(found.found.region, found.found.page);
+    source.regionUvs.set(found.found, kept);
   }
   return kept;
 }
@@ -212,7 +248,7 @@ export function clipCover(pose: Pick<RawPose, 'clips' | 'shown' | 'drawOrder'>, 
     if (shown !== undefined && g?.kind === 'clipping' && clip !== undefined) {
       if (current !== null && current.end === slot) current = null;
       if (active.has(shown.bone) && current === null) {
-        current = { end: clip.end, clip: { polygon: clip.polygon, inverse: g.inverse } };
+        current = { end: clip.end, clip: { polygon: clip.polygon, inverse: g.inverse, convex: g.convex } };
       }
       continue;
     }
@@ -230,6 +266,8 @@ export function clipCover(pose: Pick<RawPose, 'clips' | 'shown' | 'drawOrder'>, 
  *   in the full draw order.
  * - A region's `corners` are its drawn vertices, which the core writes in the
  *   runtime's corner order: bottom-left, upper-left, upper-right, bottom-right.
+ * - A region's `uvs` are `regionPageUvs` over the region `drawnRegions`
+ *   resolves for it, and its `page`/`pma` that region's page.
  * - A mesh's `uvs` are `meshPageUvs` over the region `drawnRegions` resolves
  *   for it (a sequence frame's own region, a linked mesh's own region over its
  *   source's UVs) and its `page`/`pma` that region's page.
@@ -276,10 +314,18 @@ export function frameOf(
       ...(darkRow === null ? {} : { dark: [channel(darkRow[0], d.slot), channel(darkRow[1], d.slot), channel(darkRow[2], d.slot)] as [number, number, number] }),
       ...(cover.has(d.slot) ? { clip: cover.get(d.slot) as PosedClip } : {}),
     };
+    const page = source.pages.get(found.found.page.name);
     if (d.kind === 'region') {
-      order.push({ ...common, kind: 'region', region: found.region, corners: d.vertices });
+      order.push({
+        ...common,
+        kind: 'region',
+        region: found.region,
+        corners: d.vertices,
+        page: found.found.page.name,
+        pma: page?.pma === true,
+        uvs: regionUvs(source, found),
+      });
     } else {
-      const page = source.pages.get(found.found.page.name);
       order.push({
         ...common,
         kind: 'mesh',

@@ -797,74 +797,7 @@ export class DomRenderer {
     x1: number, y1: number, u1: number, v1: number,
     x2: number, y2: number, u2: number, v2: number,
   ): void {
-    const cx = (x0 + x1 + x2) / 3;
-    const cy = (y0 + y1 + y2) / 3;
-    const expand = this.triangleExpand;
-    const [px0, py0] = expandPoint(x0, y0, cx, cy, expand);
-    const [px1, py1] = expandPoint(x1, y1, cx, cy, expand);
-    const [px2, py2] = expandPoint(x2, y2, cx, cy, expand);
-    ctx.beginPath();
-    ctx.moveTo(px0, py0);
-    ctx.lineTo(px1, py1);
-    ctx.lineTo(px2, py2);
-    ctx.closePath();
-
-    // Edge vectors, in canvas space and in texture space.
-    const ex1 = x1 - x0, ey1 = y1 - y0;
-    const ex2 = x2 - x0, ey2 = y2 - y0;
-    const eu1 = u1 - u0, ev1 = v1 - v0;
-    const eu2 = u2 - u0, ev2 = v2 - v0;
-
-    let det = eu1 * ev2 - eu2 * ev1;
-    if (det === 0) return;
-    det = 1 / det;
-
-    const a = (ev2 * ex1 - ev1 * ex2) * det;
-    const b = (ev2 * ey1 - ev1 * ey2) * det;
-    const c = (eu1 * ex2 - eu2 * ex1) * det;
-    const d = (eu1 * ey2 - eu2 * ey1) * det;
-    const e = x0 - a * u0 - c * v0;
-    const f = y0 - b * u0 - d * v0;
-
-    // Texture-space bounds of the clip polygon. The triangle's own corners
-    // first, then the three expansion offsets carried back through the inverse
-    // of [[a, c], [b, d]] — the clip reaches exactly that far and no further.
-    let minU = Math.min(u0, u1, u2);
-    let maxU = Math.max(u0, u1, u2);
-    let minV = Math.min(v0, v1, v2);
-    let maxV = Math.max(v0, v1, v2);
-    const detM = a * d - b * c;
-    if (detM !== 0) {
-      const im = 1 / detM;
-      const ia = d * im, ic = -c * im, ib = -b * im, id = a * im;
-      let gx = px0 - x0, gy = py0 - y0;
-      let tu = u0 + ia * gx + ic * gy, tv = v0 + ib * gx + id * gy;
-      minU = Math.min(minU, tu); maxU = Math.max(maxU, tu);
-      minV = Math.min(minV, tv); maxV = Math.max(maxV, tv);
-      gx = px1 - x1; gy = py1 - y1;
-      tu = u1 + ia * gx + ic * gy; tv = v1 + ib * gx + id * gy;
-      minU = Math.min(minU, tu); maxU = Math.max(maxU, tu);
-      minV = Math.min(minV, tv); maxV = Math.max(maxV, tv);
-      gx = px2 - x2; gy = py2 - y2;
-      tu = u2 + ia * gx + ic * gy; tv = v2 + ib * gx + id * gy;
-      minU = Math.min(minU, tu); maxU = Math.max(maxU, tu);
-      minV = Math.min(minV, tv); maxV = Math.max(maxV, tv);
-    }
-    // One texel of bilinear support on every side, snapped outward to texel
-    // boundaries, clamped to the page. Source rect and destination rect are the
-    // same rect in texture space, so the affine below maps it exactly as it
-    // mapped the whole page.
-    const sx = Math.max(0, Math.floor(minU - 1));
-    const sy = Math.max(0, Math.floor(minV - 1));
-    const sw = Math.min(img.width, Math.ceil(maxU + 1)) - sx;
-    const sh = Math.min(img.height, Math.ceil(maxV + 1)) - sy;
-    if (!(sw > 0) || !(sh > 0)) return;
-
-    ctx.save();
-    ctx.transform(a, b, c, d, e, f);
-    ctx.clip();
-    ctx.drawImage(img, sx, sy, sw, sh, sx, sy, sw, sh);
-    ctx.restore();
+    drawTexturedTriangle(ctx, img, this.triangleExpand, x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2);
   }
 
   // --- clipping tier ---------------------------------------------------------
@@ -1157,4 +1090,86 @@ export class DomRenderer {
     // write, so the sweep costs one write per element, once.
     this.setClipPath(view, '');
   }
+}
+
+/**
+ * The body of `DomRenderer.drawTriangle` (see it for the mapping, the clip
+ * overdraw and the source sub-rect), as a function so the canvas render mode's
+ * 2d fallback draws its triangles through the same code.
+ *
+ * @internal Not part of the package API.
+ */
+export function drawTexturedTriangle(
+  ctx: CanvasRenderingContext2D, img: PageSource, expand: number,
+  x0: number, y0: number, u0: number, v0: number,
+  x1: number, y1: number, u1: number, v1: number,
+  x2: number, y2: number, u2: number, v2: number,
+): void {
+  const cx = (x0 + x1 + x2) / 3;
+  const cy = (y0 + y1 + y2) / 3;
+  const [px0, py0] = expandPoint(x0, y0, cx, cy, expand);
+  const [px1, py1] = expandPoint(x1, y1, cx, cy, expand);
+  const [px2, py2] = expandPoint(x2, y2, cx, cy, expand);
+  ctx.beginPath();
+  ctx.moveTo(px0, py0);
+  ctx.lineTo(px1, py1);
+  ctx.lineTo(px2, py2);
+  ctx.closePath();
+
+  // Edge vectors, in canvas space and in texture space.
+  const ex1 = x1 - x0, ey1 = y1 - y0;
+  const ex2 = x2 - x0, ey2 = y2 - y0;
+  const eu1 = u1 - u0, ev1 = v1 - v0;
+  const eu2 = u2 - u0, ev2 = v2 - v0;
+
+  let det = eu1 * ev2 - eu2 * ev1;
+  if (det === 0) return;
+  det = 1 / det;
+
+  const a = (ev2 * ex1 - ev1 * ex2) * det;
+  const b = (ev2 * ey1 - ev1 * ey2) * det;
+  const c = (eu1 * ex2 - eu2 * ex1) * det;
+  const d = (eu1 * ey2 - eu2 * ey1) * det;
+  const e = x0 - a * u0 - c * v0;
+  const f = y0 - b * u0 - d * v0;
+
+  // Texture-space bounds of the clip polygon. The triangle's own corners
+  // first, then the three expansion offsets carried back through the inverse
+  // of [[a, c], [b, d]] — the clip reaches exactly that far and no further.
+  let minU = Math.min(u0, u1, u2);
+  let maxU = Math.max(u0, u1, u2);
+  let minV = Math.min(v0, v1, v2);
+  let maxV = Math.max(v0, v1, v2);
+  const detM = a * d - b * c;
+  if (detM !== 0) {
+    const im = 1 / detM;
+    const ia = d * im, ic = -c * im, ib = -b * im, id = a * im;
+    let gx = px0 - x0, gy = py0 - y0;
+    let tu = u0 + ia * gx + ic * gy, tv = v0 + ib * gx + id * gy;
+    minU = Math.min(minU, tu); maxU = Math.max(maxU, tu);
+    minV = Math.min(minV, tv); maxV = Math.max(maxV, tv);
+    gx = px1 - x1; gy = py1 - y1;
+    tu = u1 + ia * gx + ic * gy; tv = v1 + ib * gx + id * gy;
+    minU = Math.min(minU, tu); maxU = Math.max(maxU, tu);
+    minV = Math.min(minV, tv); maxV = Math.max(maxV, tv);
+    gx = px2 - x2; gy = py2 - y2;
+    tu = u2 + ia * gx + ic * gy; tv = v2 + ib * gx + id * gy;
+    minU = Math.min(minU, tu); maxU = Math.max(maxU, tu);
+    minV = Math.min(minV, tv); maxV = Math.max(maxV, tv);
+  }
+  // One texel of bilinear support on every side, snapped outward to texel
+  // boundaries, clamped to the page. Source rect and destination rect are the
+  // same rect in texture space, so the affine below maps it exactly as it
+  // mapped the whole page.
+  const sx = Math.max(0, Math.floor(minU - 1));
+  const sy = Math.max(0, Math.floor(minV - 1));
+  const sw = Math.min(img.width, Math.ceil(maxU + 1)) - sx;
+  const sh = Math.min(img.height, Math.ceil(maxV + 1)) - sy;
+  if (!(sw > 0) || !(sh > 0)) return;
+
+  ctx.save();
+  ctx.transform(a, b, c, d, e, f);
+  ctx.clip();
+  ctx.drawImage(img, sx, sy, sw, sh, sx, sy, sw, sh);
+  ctx.restore();
 }

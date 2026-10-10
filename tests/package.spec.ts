@@ -165,6 +165,7 @@ test('the package entry resolves by name in node and exposes its public API', ()
   expect(run.status, `import('spine-html') failed:\n${run.stderr}`).toBe(0);
   // Exhaustive on purpose: what the root entry exports is the package's API.
   expect(JSON.parse(run.stdout)).toEqual([
+    'CanvasRenderer',
     'DomRenderer',
     'RigPlayer',
     'loadModel',
@@ -199,7 +200,7 @@ test('an unlisted subpath is refused by the exports map', () => {
  * (with its map), and one declaration file (with its map) per source module.
  */
 const EMITTED_BUNDLE = ['index.js', 'index.js.map'];
-const DECLARED_MODULES = ['DomRenderer', 'DomTexture', 'MeshGlBlitter', 'index', 'loadModel', 'player', 'posedFrame'];
+const DECLARED_MODULES = ['CanvasRenderer', 'DomRenderer', 'DomTexture', 'MeshGlBlitter', 'index', 'loadModel', 'player', 'posedFrame'];
 
 test('the library build emits those modules and nothing else', () => {
   /**
@@ -397,9 +398,10 @@ test('the bundle imports nothing: rig-c/core is inside it, and no node built-in 
  * offers, reached by package name through the shipped `.d.ts`.
  */
 const CONSUMER_SOURCE = [
-  "import { DomRenderer, loadModel, revokeRegions, RigPlayer, unpackRegions } from 'spine-html';",
+  "import { CanvasRenderer, DomRenderer, loadModel, revokeRegions, RigPlayer, unpackRegions } from 'spine-html';",
   "import type { ModelAssets, PosedFrame, PosedSlot, RigPlayerOptions } from 'spine-html';",
-  'export const surface = [DomRenderer, RigPlayer, loadModel, unpackRegions, revokeRegions];',
+  'export const surface = [CanvasRenderer, DomRenderer, RigPlayer, loadModel, unpackRegions, revokeRegions];',
+  'export function drawCanvas(renderer: CanvasRenderer, frame: PosedFrame): number { renderer.render(frame); return renderer.drawCalls; }',
   'export function draw(renderer: DomRenderer, frame: PosedFrame): PosedSlot[] { renderer.render(frame); return frame.order; }',
   'export function play(root: HTMLElement, assets: ModelAssets, options: RigPlayerOptions): RigPlayer { const p = new RigPlayer(root, assets, options); p.play(assets.animations[0].name, { loop: true }); return p; }',
   '',

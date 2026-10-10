@@ -320,6 +320,11 @@ numbers.
 
 ## Testing
 
+- **The full suite and the bench run in CI, not on a shared desktop.** A headed
+  Chromium bench (`scripts/bench.mjs`, 64 meshed rigs) run beside the suite took
+  the development Mac to a load average of 287 and WindowServer to 84% (measured
+  2026-10-11). Locally: typecheck, the two builds, and single spec files headless
+  one at a time; `bun run bench` only on a machine that is otherwise idle.
 - `bun run test` — Playwright, chromium + webkit projects; the config builds and
   serves the demo itself (port 4321, and it reuses a server already on that port
   outside CI). So concurrent checkouts — worktrees, a second clone — must each

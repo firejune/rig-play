@@ -296,6 +296,104 @@ for (const scene of SCENES) {
   });
 }
 
+// --- dom vs canvas: the two render modes -----------------------------------
+
+/*
+ * The canvas render mode (`?mode=canvas`, `CanvasRenderer`) draws the same
+ * frame as the DOM tier through a different machine: every slot as GL
+ * triangles from its atlas page into one canvas, against `<img>` cuts under CSS
+ * matrices, per-part canvases, `feColorMatrix` tints, `mix-blend-mode` and
+ * `clip-path`. So these cells are the oracle suite's kind of comparison rather
+ * than the backend A/B above: two different rasterizers of one picture, whose
+ * residue is antialiasing and texture filtering and lives on silhouettes. They
+ * run on the same frozen poses as the cells above, with the DOM side on its
+ * default canvas2d mesh backend, and measure the same two ratios of drawn
+ * content.
+ */
+
+/** Waits for a frozen scene to settle in either mode, then captures the stage. */
+async function captureMode(page: Page, stage: string, query: string, mode: 'dom' | 'canvas'): Promise<Buffer> {
+  if (mode === 'dom') return captureStage(page, stage, query, 'canvas2d');
+  await page.goto(`${stage}?${query}&mode=canvas`);
+  const stats = page.locator('#stats');
+  // Settled when the record stopped changing: the frame is reused, not redrawn.
+  await expect(stats).toContainText(/frames 0 drawn \/ \d+ reused/);
+  // Guard the guard: a canvas cell that fell back to canvas2d would be
+  // measuring the fallback, which is not the mode's path.
+  await expect(stats).toContainText('· webgl');
+  await expect(stats).not.toContainText('fallback');
+  return page.locator('#stage').screenshot();
+}
+
+/**
+ * Shift-tolerant bad pixels allowed between the two modes, as a fraction of
+ * drawn content — one limit for the spineboy scenes and one for the gallery
+ * scenes, because their floors sit a factor of ~2.5 apart (the contour meshes'
+ * hard outlines are where two rasterizers' edge antialiasing disagrees, as the
+ * backend cells above found too).
+ *
+ * MEASURED, macOS, chromium 1234 / webkit 2336, one run per cell:
+ *
+ * - spineboy floor: hoverboard 0.268% / 0.536%, portal 0.237% / 0.217%,
+ *   walk + tint 0.606% / 0.178%;
+ * - gallery floor: flex 0.836% / 1.051%, flex packed 0.841% / 1.057%, squash
+ *   0.762% / 0.209%, portrait 0.585% / 1.377%, look packed 0.952% / 1.553%.
+ *
+ * Against those, mutants of the canvas mode (one source edit each, the run
+ * repeated):
+ *
+ * - RGB tint dropped: walk + tint 87.6% / 88.6%, squash 64.7% / 66.5%,
+ *   hoverboard 5.7% / 5.8%, portal 3.07% / 2.90% (slot colours);
+ * - additive slots drawn as Normal: hoverboard 2.88% / 3.16%;
+ * - clipping never applied: portal 18.9% / 18.8%;
+ * - the first mesh of each frame not drawn: hoverboard 11.5%, walk + tint
+ *   2.81% / 2.45%, portal 1.30% / 1.29%; gallery look packed 8.8% / 9.4%,
+ *   portrait 6.5% / 7.3%, squash 4.3% / 3.7%, flex 2.17% / 2.32%.
+ *
+ * 0.015 on spineboy is 2.5× over its worst floor and under every mutant but
+ * the missing small mesh on portal (1.3%), which hoverboard and walk catch.
+ * 0.025 on the gallery is 1.6× over its worst floor and under every mutant but
+ * the missing mesh on flex (2.2–2.3%), which portrait, look and squash catch.
+ * That margin is what two rasterizers leave; Linux is unmeasured.
+ */
+const MODE_BAD_RATIO_LIMIT_SPINEBOY = 0.015;
+const MODE_BAD_RATIO_LIMIT_GALLERY = 0.025;
+/**
+ * The missing-part guard between the modes. MEASURED floor 0.000–1.401% (the
+ * top is chromium's walk + tint; webkit reads 0.157% there); the tint mutant
+ * moves it to 6.1–11.2% and the clip mutant to 6.6%. 0.03 is 2.1× over the
+ * floor. A missing mesh does not reliably move it (0.03–6.7%), which is the
+ * bad-ratio limit's job.
+ */
+const MODE_CONTENT_MISMATCH_LIMIT = 0.03;
+
+for (const scene of SCENES) {
+  test(`dom / canvas parity: ${scene.name}`, async ({ page }, testInfo) => {
+    const dom = await captureMode(page, scene.stage, scene.query, 'dom');
+    const canvas = await captureMode(page, scene.stage, scene.query, 'canvas');
+    const m = await diffInPage(page, dom, canvas, { ...PARITY_DIFF, withMask: DUMP });
+    const MODE_BAD_RATIO_LIMIT = scene.stage === DEMO ? MODE_BAD_RATIO_LIMIT_GALLERY : MODE_BAD_RATIO_LIMIT_SPINEBOY;
+    const badRatio = m.bad / Math.max(1, m.contentUnion);
+    const contentMismatch = Math.abs(m.contentA - m.contentB) / Math.max(1, m.contentA, m.contentB);
+    console.log(
+      `[parity] ${testInfo.project.name} dom/canvas ${scene.name}: ${m.width}x${m.height}, ` +
+        `content a=${m.contentA} b=${m.contentB} union=${m.contentUnion}, ` +
+        `bad=${m.bad} of ${m.rawBad} raw (${(badRatio * 100).toFixed(3)}% of content, ` +
+        `ch>${CHANNEL_TOLERANCE}), maxDelta=${m.maxDelta}, ` +
+        `contentMismatch=${(contentMismatch * 100).toFixed(3)}% ` +
+        `(limits ${(MODE_BAD_RATIO_LIMIT * 100).toFixed(1)}% / ${(MODE_CONTENT_MISMATCH_LIMIT * 100).toFixed(1)}%)`,
+    );
+    if (DUMP || badRatio > MODE_BAD_RATIO_LIMIT || contentMismatch > MODE_CONTENT_MISMATCH_LIMIT) {
+      writeFileSync(testInfo.outputPath('a-dom.png'), dom);
+      writeFileSync(testInfo.outputPath('b-canvas.png'), canvas);
+      if (m.mask) writeFileSync(testInfo.outputPath('diff-mask.png'), Buffer.from(m.mask.pngBase64, 'base64'));
+    }
+    expect(m.contentUnion).toBeGreaterThan(5000);
+    expect(badRatio).toBeLessThanOrEqual(MODE_BAD_RATIO_LIMIT);
+    expect(contentMismatch).toBeLessThanOrEqual(MODE_CONTENT_MISMATCH_LIMIT);
+  });
+}
+
 test('seam canary: the canvas2d crack-closing overdraw is alive', async ({ page }) => {
   // Hairline cracks are below the A/B noise floor (see header), so the seam
   // guard is exact instead of statistical: same engine, same frozen pose,
