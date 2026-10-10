@@ -21,6 +21,19 @@ name: release
 on:
   push:
     branches: [main]
+  # The alias on its own (#65): when the cut published `rig-play` and the
+  # alias publish failed after it — the first cut did, on a trusted-publisher
+  # form that still named the repository's old name — the release job cannot
+  # be re-run, because its first publish would now be refused as an existing
+  # version before the alias step is reached. This path publishes only the
+  # alias, from the tarball the registry serves for `rig-play` at that
+  # version (never from a rebuild), and takes the same confirmation.
+  workflow_dispatch:
+    inputs:
+      alias_version:
+        description: 'Version already published as rig-play (e.g. 1.0.0) to publish as spine-html'
+        required: true
+        type: string
 
 permissions: {}
 
@@ -30,6 +43,7 @@ concurrency:
 
 jobs:
   release:
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     # 20 minutes covered the publish; the confirmation below may wait up to 15
     # more for the registry to serve each name, so the ceiling sits above both.
@@ -125,6 +139,67 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG_NAME#v}"
+          dest="$RUNNER_TEMP/confirm"
+          mkdir -p "$dest/rig-play" "$dest/spine-html"
+          fetch() {
+            local name="$1" attempt
+            for attempt in $(seq 1 30); do
+              if npm pack "$name@$version" --pack-destination "$dest/$name" --loglevel=error > /dev/null 2>&1; then
+                echo "fetched $name@$version on attempt $attempt"
+                return 0
+              fi
+              sleep 30
+            done
+            echo "::error::$name@$version was not served within 15 minutes: confirmation NOT taken"
+            return 1
+          }
+          fetch rig-play
+          fetch spine-html
+          npm view "rig-play@$version" version
+          npm view "spine-html@$version" version
+          node scripts/alias-tarball.mjs compare "$dest"/rig-play/*.tgz "$dest"/spine-html/*.tgz
+
+  # Dispatch only: see `workflow_dispatch` above.
+  alias:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # OIDC token for npm trusted publishing
+    env:
+      ALIAS_VERSION: ${{ inputs.alias_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.alias_version }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Use an npm that speaks OIDC
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      # The source is the registry's own `rig-play@<version>` tarball, so the
+      # alias is that publish's files whatever the checkout holds; the script
+      # rewrites the one name line and holds the result to it file by file.
+      - name: Publish the alias spine-html from the registry's rig-play tarball
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/src"
+          mkdir -p "$src"
+          npm pack "rig-play@$ALIAS_VERSION" --pack-destination "$src" --loglevel=error
+          alias_tgz="$(node scripts/alias-tarball.mjs pack --out "$RUNNER_TEMP/alias" --tarball "$src"/rig-play-*.tgz)"
+          npm publish "$alias_tgz" --provenance --access public --ignore-scripts
+
+      - name: Confirm both names serve the same files
+        run: |
+          set -euo pipefail
+          version="$ALIAS_VERSION"
           dest="$RUNNER_TEMP/confirm"
           mkdir -p "$dest/rig-play" "$dest/spine-html"
           fetch() {
