@@ -58,9 +58,15 @@ export interface ModelAssets {
   /** Every skin the document declares, in its order. */
   readonly skins: readonly string[];
   /**
-   * The setup pose's box in world units (Y up) as the document states it —
-   * the rig's own framing, for laying out a stage — or null where it states
-   * none.
+   * The document's `stage` section, in world units (Y up): the stage the
+   * build declared — the rig's own framing, for laying out a stage — or null
+   * where the document has none. Where its value comes from is rigc's rule,
+   * not this package's (rigc `docs/AUTHORING.md`, *Where the rebuild's stage
+   * comes from*): a source that states a stage is written as stated, and a
+   * source that states none gets the setup pose's bounding box in its place.
+   * So one rig's `stage` is a declared frame and another's is a box, and the
+   * field does not say which. For the box of what a pose draws, read
+   * `player.bounds()`.
    */
   readonly stage: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null;
   /** How the regions were cut (`LoadModelOptions.regions`): `'none'` means `regionImages` is empty and only the canvas mode can draw. */

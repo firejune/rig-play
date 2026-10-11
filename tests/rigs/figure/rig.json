@@ -52,7 +52,8 @@
     { "name": "eye_r", "bone": "eye_r", "attachment": "eye" },
     { "name": "arm_f_up", "bone": "arm_f_up", "attachment": "arm_up" },
     { "name": "arm_f_lo", "bone": "arm_f_lo", "attachment": "arm_lo" },
-    { "name": "hand_f", "bone": "hand_f", "attachment": "hand" }
+    { "name": "hand_f", "bone": "hand_f", "attachment": "hand" },
+    { "name": "emblem", "bone": "hip", "attachment": "emblem" }
   ],
 
   "skins": {
@@ -135,6 +136,11 @@
       "plate": { "plate": { "image": "plate.png", "y": 100 } },
       "greave": { "greave": { "image": "greave.png", "y": -122 } },
       "visor": { "visor": { "image": "visor.png", "y": 86 } }
+    },
+    "alt": {
+      "emblem": {
+        "emblem": { "image": "visor.png", "y": 40 }
+      }
     }
   }
 }

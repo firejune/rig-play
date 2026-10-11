@@ -39,3 +39,25 @@ test('bone() is the core pose, bit for bit, and bounds() is the box of the frame
   expect(probe.canvasSame).toBe(true);
   expect(probe.unknownBoneError).toContain('no_such_bone');
 });
+
+test('skin can change on a live player: the pose re-resolves, the track keeps its animation and time', async ({ page }) => {
+  const probe = await page.evaluate(() => window.rigPlayHarness.skinProbe());
+
+  expect(probe.skins).toEqual(['default', 'alt']);
+  // Only the alt skin fills the emblem slot (with the visor art).
+  expect(probe.emblemNoSkin).toBeNull();
+  expect(probe.emblemAlt).toBe('visor');
+  expect(probe.drawnAfterSwitch).toBe('visor');
+  expect(probe.emblemBack).toBeNull();
+  expect(probe.setupEmblemAlt).toBe('visor');
+
+  expect(probe.animationKept).toBe(true);
+  expect(probe.timeAfter).toBeCloseTo(probe.timeBefore, 12);
+  // Equal to a player built under that skin and seeked to the same time.
+  expect(probe.boneMismatches).toEqual([]);
+  expect(probe.frameSame).toBe(true);
+
+  expect(probe.unknownError).toContain('no_such_skin');
+  expect(probe.skinAfterUnknown).toBe('alt');
+  expect(probe.emblemAfterUnknown).toBe('visor');
+});
