@@ -233,6 +233,57 @@ export interface RigPlayHarness {
   boneBoundsProbe(): Promise<BoneBoundsProbeResult>;
   adjustProbe(): Promise<AdjustProbeResult>;
   canvasScaledStageProbe(): Promise<CanvasScaledStageProbeResult>;
+  regionLoadingProbe(): Promise<RegionLoadingProbeResult>;
+  skinProbe(): Promise<SkinProbeResult>;
+}
+
+export interface RegionLoadingProbeResult {
+  /** `regions: 'none'`: no cut, no blob, the canvas mode draws, the DOM mode is refused by name. */
+  none: {
+    regionCount: number;
+    createdUrls: number;
+    pageCount: number;
+    domRefusal: string;
+    canvasElements: number;
+    canvasDrew: boolean;
+    switchRefusal: string;
+    modeAfterSwitch: string;
+    revokedOnDispose: number;
+  };
+  /** `regions: 'data'`: every cut is a `data:image/png` URL, nothing minted, nothing freed, the same pixels as the blob cut. */
+  data: {
+    regionCount: number;
+    dataUrls: number;
+    passThroughUrls: number;
+    createdUrls: number;
+    imageCount: number;
+    pixelMismatches: number;
+    comparedRegions: number;
+    revokedOnDispose: number;
+  };
+}
+
+export interface SkinProbeResult {
+  skins: string[];
+  /** What the emblem slot draws under no skin, after `player.skin = 'alt'`, and back. */
+  emblemNoSkin: string | null;
+  emblemAlt: string | null;
+  emblemBack: string | null;
+  /** The switch keeps the animation and the track time. */
+  animationKept: boolean;
+  timeBefore: number;
+  timeAfter: number;
+  /** The switched pose equals a player constructed with that skin and seeked to the same time: bones and every drawn vertex. */
+  boneMismatches: string[];
+  frameSame: boolean;
+  /** The pose after the switch is what the next draw shows. */
+  drawnAfterSwitch: string | null;
+  /** An unknown skin: refused by name, player unchanged. */
+  unknownError: string;
+  skinAfterUnknown: string | undefined;
+  emblemAfterUnknown: string | null;
+  /** A skin set before `play`: the first pose of the track `play` then opens. */
+  setupEmblemAlt: string | null;
 }
 
 /** One canvas-mode renderer's backing store and counters. */
@@ -4708,7 +4759,202 @@ async function canvasScaledStageProbe(): Promise<CanvasScaledStageProbeResult> {
   };
 }
 
+/**
+ * `loadModel({ regions })` (#74, item 2): `'none'` for a canvas-only load and
+ * `'data'` for `data:` URLs in place of `blob:`. The oracle for the `data:`
+ * pixels is the default load's blob cut of the same rig, decoded and compared
+ * byte for byte.
+ */
+async function regionLoadingProbe(): Promise<RegionLoadingProbeResult> {
+  const root = document.getElementById('root');
+  if (!root) throw new Error('#root missing');
+  root.replaceChildren();
+
+  const noneLoad = await trackObjectUrls(() => loadModel({ modelUrl: LOADER_RIG, regions: 'none' }));
+  const none = noneLoad.result;
+  let domRefusal = '';
+  try {
+    new RigPlayer(root, none);
+  } catch (error) {
+    domRefusal = error instanceof Error ? error.message : String(error);
+  }
+  const canvasPlayer = new RigPlayer(root, none, { mode: 'canvas' });
+  canvasPlayer.play(none.animations[0].name);
+  canvasPlayer.seek(1.2);
+  canvasPlayer.draw();
+  const canvasElements = root.querySelectorAll('canvas').length;
+  const canvasRenderer = canvasPlayer.renderer as CanvasRenderer;
+  const canvasDrew = canvasRenderer.blits > 0 || canvasRenderer.drawCalls > 0;
+  let switchRefusal = '';
+  try {
+    canvasPlayer.mode = 'dom';
+  } catch (error) {
+    switchRefusal = error instanceof Error ? error.message : String(error);
+  }
+  const modeAfterSwitch = canvasPlayer.mode;
+  canvasPlayer.dispose();
+  const noneRelease = await trackObjectUrls(async () => none.dispose());
+
+  const blobAssets = await loadModel({ modelUrl: LOADER_RIG });
+  const dataLoad = await trackObjectUrls(() => loadModel({ modelUrl: LOADER_RIG, regions: 'data' }));
+  const data = dataLoad.result;
+  let dataUrls = 0;
+  let passThroughUrls = 0;
+  for (const image of data.regionImages.values()) {
+    if (image.url.startsWith('data:image/png')) dataUrls++;
+    else passThroughUrls++;
+  }
+  root.replaceChildren();
+  const domPlayer = new RigPlayer(root, data);
+  domPlayer.play(data.animations[0].name);
+  domPlayer.seek(1.2);
+  domPlayer.draw();
+  const imageCount = root.querySelectorAll('img').length;
+  domPlayer.dispose();
+
+  const decode = async (url: string): Promise<Uint8ClampedArray> => {
+    const image = await loadImage(url);
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('no 2d context');
+    ctx.drawImage(image, 0, 0);
+    return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  };
+  let pixelMismatches = 0;
+  let comparedRegions = 0;
+  for (const [name, image] of data.regionImages) {
+    const reference = blobAssets.regionImages.get(name);
+    if (!reference) continue;
+    const [a, b] = await Promise.all([decode(image.url), decode(reference.url)]);
+    comparedRegions++;
+    if (a.length !== b.length) {
+      pixelMismatches++;
+      continue;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) {
+        pixelMismatches++;
+        break;
+      }
+    }
+  }
+  const dataRelease = await trackObjectUrls(async () => data.dispose());
+  blobAssets.dispose();
+
+  return {
+    none: {
+      regionCount: none.regionImages.size,
+      createdUrls: noneLoad.created.length,
+      pageCount: none.pageImages.size,
+      domRefusal,
+      canvasElements,
+      canvasDrew,
+      switchRefusal,
+      modeAfterSwitch,
+      revokedOnDispose: noneRelease.revoked.length,
+    },
+    data: {
+      regionCount: data.regionImages.size,
+      dataUrls,
+      passThroughUrls,
+      createdUrls: dataLoad.created.length,
+      imageCount,
+      pixelMismatches,
+      comparedRegions,
+      revokedOnDispose: dataRelease.revoked.length,
+    },
+  };
+}
+
+/**
+ * `RigPlayer.skin` (#74, item 3): the skin changed on a live player. The
+ * figure test rig's `alt` skin alone fills the `emblem` slot (with the visor
+ * art), so a switch is visible as that slot drawing or not. The oracle for
+ * the pose after the switch is a player constructed under that skin and
+ * seeked to the same time.
+ */
+async function skinProbe(): Promise<SkinProbeResult> {
+  const assets = await loadRig('figure');
+  const root = document.getElementById('root');
+  if (!root) throw new Error('#root missing');
+  root.replaceChildren();
+  const emblemOf = (player: RigPlayer): string | null => {
+    const slot = player.posedFrame().order.find((s) => s.slot === 'emblem');
+    return slot && slot.kind === 'region' ? slot.region : null;
+  };
+  const time = 0.7;
+
+  // A skin set before `play` is the one the track `play` opens poses under.
+  const setupPlayer = new RigPlayer(root, assets);
+  setupPlayer.skin = 'alt';
+  setupPlayer.play('walk');
+  const setupEmblemAlt = emblemOf(setupPlayer);
+  setupPlayer.dispose();
+
+  const player = new RigPlayer(root, assets);
+  player.play('walk');
+  player.seek(time);
+  const emblemNoSkin = emblemOf(player);
+  const timeBefore = player.time;
+  player.skin = 'alt';
+  const emblemAlt = emblemOf(player);
+  const timeAfter = player.time;
+  const animationKept = player.current === 'walk';
+  player.draw();
+  const drawnAfterSwitch = emblemOf(player);
+
+  const oracle = new RigPlayer(root, assets, { skin: 'alt' });
+  oracle.play('walk');
+  oracle.seek(time);
+  const boneMismatches: string[] = [];
+  for (const name of ['hip', 'head', 'leg_f', 'arm_f_lo']) {
+    const a = player.bone(name);
+    const b = oracle.bone(name);
+    for (const f of ['x', 'y', 'a', 'b', 'c', 'd', 'scaleX', 'scaleY', 'active'] as const) {
+      if (!Object.is(a[f], b[f])) boneMismatches.push(`${name}.${f}`);
+    }
+  }
+  const geometry = (frame: PosedFrame) =>
+    JSON.stringify(frame.order.map((s) => [s.slot, s.kind === 'region' ? s.region : s.page, s.kind === 'region' ? s.corners : s.vertices]));
+  const frameSame = geometry(player.posedFrame()) === geometry(oracle.posedFrame());
+  oracle.dispose();
+
+  let unknownError = '';
+  try {
+    player.skin = 'no_such_skin';
+  } catch (error) {
+    unknownError = error instanceof Error ? error.message : String(error);
+  }
+  const skinAfterUnknown = player.skin;
+  const emblemAfterUnknown = emblemOf(player);
+
+  player.skin = undefined;
+  const emblemBack = emblemOf(player);
+  player.dispose();
+  assets.dispose();
+  return {
+    skins: [...assets.skins],
+    emblemNoSkin,
+    emblemAlt,
+    emblemBack,
+    animationKept,
+    timeBefore,
+    timeAfter,
+    boneMismatches,
+    frameSame,
+    drawnAfterSwitch,
+    unknownError,
+    skinAfterUnknown,
+    emblemAfterUnknown,
+    setupEmblemAlt,
+  };
+}
+
 window.rigPlayHarness = {
+  regionLoadingProbe,
+  skinProbe,
   canvasScaledStageProbe,
   adjustProbe,
   boneBoundsProbe,

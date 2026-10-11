@@ -338,6 +338,23 @@ calling it twice is a no-op. Load once for the page's lifetime and you can
 ignore it; load and unload repeatedly without it and you leak an atlas per
 cycle.
 
+### Loading for the canvas mode only, and `data:` regions
+
+The region cut makes the rigid tier's bitmaps, which only the DOM mode draws.
+`loadModel({ regions })` says what to do about it:
+
+- `'blob'` (default) — `blob:` URLs the load owns; `assets.dispose()` frees them.
+- `'data'` — `data:` URLs instead, for a content policy or a snapshot that does
+  not carry `blob:`. The same PNG bytes, inline; nothing is minted, so there is
+  nothing to free, and the base64 lives as long as the map does.
+- `'none'` — no cut: the pages load, `assets.regionImages` is empty, and the
+  load is for the canvas mode. A DOM-mode player opened on it — `new RigPlayer`
+  without `mode: 'canvas'`, or `player.mode = 'dom'` — is refused by name, and
+  a refused mode change leaves the player as it was.
+
+`assets.regions` records the choice. `unpackRegions` takes the same thing as
+`{ encoding: 'blob' | 'data' }`.
+
 ### Pages that ship at another resolution
 
 A page image may ship at a resolution its document does not declare — a
@@ -389,7 +406,8 @@ the page's own URL holds premultiplied pixels (see below).
 ### What unloading frees
 
 `revokeRegions()` — and `assets.dispose()`, which calls it — frees the blob URLs
-`unpackRegions` minted, and nothing else. The page images are held by
+`unpackRegions` minted, and nothing else (a `regions: 'data'` or `'none'` load
+minted none, so it frees nothing). The page images are held by
 `assets.pageImages` and by every player drawing from them, so a page is
 released once you drop the assets and every player is disposed. With the
 `webgl` mesh backend the shared blitter also uploads each page image on first
@@ -583,7 +601,7 @@ name, and unloading is still elements first, bitmaps second.
 | holding a pose (the caller stopped advancing) | `player.pause()`, `player.resume()` | `frame` keeps drawing the held pose. |
 | moving to a time (the caller's own, on the spine-core side) | `player.seek(time)`, `RigPlayerOptions.seekStep`, `player.time` | A seek reopens the animation and steps forward in `seekStep` increments (1/60 s by default). Events and completes crossed on the way are not fired. |
 | events (the caller's own listener on the spine-core side) | `player.on('event', listener)`, `player.on('complete', listener)` | `'event'` hands a `RigEvent` (`name`, `time`, `int`, `float`, `string`); `'complete'` hands `{ animation }`. `on` returns a function that removes the listener. |
-| skin (set by the caller on its `Skeleton`) | `RigPlayerOptions.skin` | A constructor option. The names are in `ModelAssets.skins`. Without it the rig is posed with no skin set. |
+| skin (set by the caller on its `Skeleton`) | `RigPlayerOptions.skin`, `player.skin` | A constructor option, and settable on a live player since 1.4.0: the pose re-resolves under the new skin and the track keeps its animation, loop and time (reopened and stepped there, as `seek` does). The names are in `ModelAssets.skins`. Without it the rig is posed with no skin set. |
 | `SpineHtmlRenderer` | `DomRenderer`, reached as `player.renderer` | In `mode: 'dom'`, the default. `mode: 'canvas'` is new and makes `player.renderer` a `CanvasRenderer`. |
 | `new SpineHtmlRenderer(root, regionImages)` | `new DomRenderer(root, regionImages, pages?)` | Only for drawing your own frames; `RigPlayer` constructs its renderer. `pages` is the page-image map the mesh tier samples (`ModelAssets.pageImages`). A hand-built `regionImages` map is still accepted. |
 | `renderer.render(skeleton)` | `renderer.render(frame)` | Takes a `PosedFrame`, not a skeleton. `player.posedFrame()` returns the one the player would draw. |
@@ -618,9 +636,6 @@ export, for which 1.0.0 declares nothing:
   load, several players.
 - **More than one track, mixing between animations, or queueing one after another.**
   `RigPlayer` declares one track; `play` reopens it at the animation's first pose.
-- **Changing the skin after construction.** `skin` is a `RigPlayerOptions` field and
-  `RigPlayer` declares no way to change it later; a second player over the same assets
-  is the declared route.
 - **Changing one slot from code** (its attachment, its colour). `RigPlayer` declares only
   the whole-rig `color`. The frame record is a plain object, so a caller that draws its
   own frames through `DomRenderer.render` or `CanvasRenderer.render` decides what is in

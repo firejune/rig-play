@@ -88,3 +88,33 @@ test('one load, two players: regions are cut once and shared', async ({ page }) 
   expect([...shared.revokedUrls].sort()).toEqual([...shared.createdUrls].sort());
   for (const url of shared.createdUrls) expect(shared.aliveAfter[url]).toBe(false);
 });
+
+test("regions: 'none' loads for the canvas mode only, and refuses the DOM mode by name", async ({ page }) => {
+  const probe = await page.evaluate(() => window.rigPlayHarness.regionLoadingProbe());
+  const none = probe.none;
+
+  expect(none.pageCount).toBeGreaterThan(0);
+  expect(none.regionCount).toBe(0);
+  expect(none.createdUrls).toBe(0);
+  expect(none.domRefusal).toContain("regions: 'none'");
+  expect(none.canvasElements).toBe(1);
+  expect(none.canvasDrew).toBe(true);
+  expect(none.switchRefusal).toContain("regions: 'none'");
+  expect(none.modeAfterSwitch).toBe('canvas');
+  expect(none.revokedOnDispose).toBe(0);
+});
+
+test("regions: 'data' cuts into data: URLs — nothing minted, nothing freed, the blob cut's pixels", async ({ page }) => {
+  const probe = await page.evaluate(() => window.rigPlayHarness.regionLoadingProbe());
+  const data = probe.data;
+
+  // The packed rig cuts every region (nothing passes through), so every URL is inline.
+  expect(data.regionCount).toBeGreaterThan(0);
+  expect(data.dataUrls).toBe(data.regionCount);
+  expect(data.passThroughUrls).toBe(0);
+  expect(data.createdUrls).toBe(0);
+  expect(data.imageCount).toBeGreaterThan(0);
+  expect(data.comparedRegions).toBe(data.regionCount);
+  expect(data.pixelMismatches).toBe(0);
+  expect(data.revokedOnDispose).toBe(0);
+});

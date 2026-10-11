@@ -147,8 +147,10 @@ export class RigPlayer {
   private readonly root: HTMLElement;
   private readonly assets: ModelAssets;
   private readonly meshBackend: MeshBackend | undefined;
-  private readonly view: CompiledDocument;
-  private readonly source: FrameSource;
+  private view: CompiledDocument;
+  private source: FrameSource;
+  private readonly read: ReadDocument;
+  private skinName: string | undefined;
   private readonly seekStep: number;
   private track: LiveTrack | null = null;
   private animation: string | null = null;
@@ -168,6 +170,8 @@ export class RigPlayer {
 
   constructor(root: HTMLElement, assets: ModelAssets, options: RigPlayerOptions = {}) {
     const read = assets.document as ReadDocument;
+    this.read = read;
+    this.skinName = options.skin;
     this.view = options.skin === undefined ? underNoSkin(read.doc) : underSkin(read.doc, options.skin);
     this.source = frameSource(this.view, read.parsed);
     this.seekStep = options.seekStep ?? 1 / 60;
@@ -261,6 +265,11 @@ export class RigPlayer {
     if (this.animation === null) throw new Error('seek before play: no animation is open');
     if (!(time >= 0) || !Number.isFinite(time)) throw new Error(`seek time must be a finite time at or above 0, got ${String(time)}`);
     this.open();
+    this.stepTo(time);
+  }
+
+  /** Steps the freshly opened track forward to `time` in `seekStep` increments, the last one shorter. */
+  private stepTo(time: number): void {
     const track = this.track as LiveTrack;
     const steps = Math.floor(time / this.seekStep);
     for (let i = 0; i < steps; i++) this.pose = track.step(this.seekStep);
@@ -306,6 +315,34 @@ export class RigPlayer {
   draw(): void {
     if (this.pose === null) return;
     this.renderer.render(this.posedFrame());
+  }
+
+  /**
+   * The skin the rig is posed under — `RigPlayerOptions.skin`, or undefined
+   * for no skin set. Setting it re-resolves the pose under the new skin
+   * (which attachment each slot shows, which bones and constraints are
+   * active) and keeps the animation, its loop and its track time: the track
+   * is reopened under the new skin and stepped to the same time the way
+   * `seek` does, so a physics rig's history restarts there and nothing is
+   * fired on the way. The pose is drawn on the next `draw`/`frame`. An
+   * unknown skin is refused by name, and the player is left as it was.
+   */
+  get skin(): string | undefined {
+    return this.skinName;
+  }
+
+  set skin(name: string | undefined) {
+    if (name === this.skinName) return;
+    const view = name === undefined ? underNoSkin(this.read.doc) : underSkin(this.read.doc, name);
+    this.view = view;
+    this.source = frameSource(view, this.read.parsed);
+    this.skinName = name;
+    this.setup = null;
+    if (this.animation !== null && this.track !== null) {
+      const time = this.track.trackTime;
+      this.open();
+      this.stepTo(time);
+    }
   }
 
   /**
