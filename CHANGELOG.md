@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/firejune/rig-play/compare/v1.7.0...v1.8.0) (2026-10-11)
+
+
+### Features
+
+* **player:** entry weight and additive layers on the tracks — play/queue take alpha and additive, setAlpha changes a weight live ([#96](https://github.com/firejune/rig-play/issues/96)) ([5663a36](https://github.com/firejune/rig-play/commit/5663a36b1ce52b460510ee3621873c0ef57f9eb0))
+
 ## [1.7.0](https://github.com/firejune/rig-play/compare/v1.6.0...v1.7.0) (2026-10-11)
 
 
