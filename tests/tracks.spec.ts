@@ -78,3 +78,23 @@ test('tracks: true stands the player on the tracks from the start — no replay,
   for (const track of r.stepEventTracks) expect(track).toBe(0);
   expect(r.completeTracks).toEqual([0]);
 });
+
+test('alpha and additive entries pose as rig-c\'s tracks do; alpha leaves events alone', async ({ page }) => {
+  const r = await page.evaluate(() => window.rigPlayHarness.alphaAdditiveProbe());
+
+  expect(r.checkpoints).toBe(7);
+  expect(r.boneMismatches).toEqual([]);
+  expect(r.frameMismatches).toBe(0);
+  // Not vacuous: the weighted layer sits between the base and the full layer; additive differs from replacing.
+  expect(r.alphaBetween).toBe(true);
+  expect(r.additiveDiffers).toBe(true);
+
+  expect(r.entryAfterSet).toMatchObject({ animation: 'nudge', alpha: 0.6, additive: false });
+  expect(r.entryAfterSetAlpha).toMatchObject({ alpha: 0.85 });
+  expect(r.entryAdditive).toMatchObject({ animation: 'nudge', alpha: 1, additive: true });
+
+  expect(r.hitTracksAtAlphaZero).toEqual([1]);
+  expect(r.alphaOutOfRangeError).toContain('1.5');
+  expect(r.setAlphaEmptyError.length).toBeGreaterThan(0);
+  expect(r.setAlphaComposes).toBe(true);
+});

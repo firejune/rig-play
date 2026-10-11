@@ -300,8 +300,24 @@ player.play('wave', { track: 2, loop: false, mix: 0.1 });   // a one-shot…
 player.queueClear(2, { mix: 0.1 });                         // …mixed back out over its last 0.1 s
 player.queue('idle_b', { track: 0, mix: 0.3 });             // after the current idle cycle completes
 player.clear(1, { mix: 0.2 });                              // the layer gone, the base showing through
-player.entry(2);                                            // { animation, loop, trackTime, animationTime, duration } | null
+player.entry(2);                                            // { animation, loop, trackTime, animationTime, duration, alpha, additive } | null
+player.play('blink', { track: 3, alpha: 0.6 });            // the same clip at a weight…
+player.setAlpha(3, 0.85);                                   // …changed while it plays
+player.play('breath', { track: 4, additive: true });        // adds to what the tracks below posed
 ```
+
+**Weight and additive layers** (rig-c 2.39.0, the runtime's `TrackEntry.alpha` and
+`additive`): `alpha` (0..1, default 1) multiplies every timeline the entry applies;
+`setAlpha(track, alpha)` changes the current entry's weight from the next pose and
+re-poses the held pose. It does not touch events — an entry fires at any alpha, 0
+included, and one mixing out fires none — or attachments: the current entry keeps
+its attachments at any alpha, one mixing out keeps none. `additive: true`, fixed
+when the entry is set or queued, adds the entry's keyed bone and deform values to
+what the tracks below posed instead of replacing them, so a layer keying the same
+bone channels as an idle does not cover its motion; a rotation is added as it
+stands, with no shortest-angle wrap, and an additive entry mixing out fades with its
+alpha and is never held. Colour, attachment and event timelines apply as on a
+replacing entry. A weight below 1 or an additive entry composes, as a mix does.
 
 `play(name)` keeps meaning what it meant: a plain play on track 0 runs on rig-c's
 single live track, which poses everything the core poses. The first call that
@@ -659,7 +675,7 @@ name, and unloading is still elements first, bitmaps second.
 | `new Skeleton(assets.data)` and `new AnimationState(new AnimationStateData(assets.data))` | `new RigPlayer(root, assets, options?)` | The player holds the pose and the track. |
 | `state.setAnimation(0, 'walk', true)` | `player.play('walk', { loop: true })` | `loop` defaults to true. `play` opens the animation at its first pose with the physics reset there. `player.current` names what is playing. |
 | `skeleton.findSlot('x').attachment = null` to hide a slot, or a second skeleton with slots emptied | `RigPlayerOptions.slots`, `player.slots`, `player.posedFrame(slots)` | A draw filter since 1.6.0 — the pose is the whole rig's; a clipping slot left out does not clip. See *Drawing some slots only*. |
-| `state.setAnimation(1, 'smile', false)` with a mix, `addAnimation`, `setEmptyAnimation`, `addEmptyAnimation`, `getCurrent(track)` | `player.play(name, { track, loop, mix })`, `player.queue(name, { track, loop, mix, delay })`, `player.clear(track, { mix })`, `player.queueClear(track, { mix, delay })`, `player.entry(track)` | Since 1.5.0, rig-c's live tracks: the runtime's mixing at tolerance 0. Constraint, sequence, draw-order and path-deform timelines are not mixed and are refused on the tracks. See *Several tracks*. |
+| `state.setAnimation(1, 'smile', false)` with a mix, `addAnimation`, `setEmptyAnimation`, `addEmptyAnimation`, `getCurrent(track)`, `entry.alpha`, `entry.additive` | `player.play(name, { track, loop, mix, alpha, additive })`, `player.queue(name, { track, loop, mix, delay, alpha, additive })`, `player.clear(track, { mix })`, `player.queueClear(track, { mix, delay })`, `player.setAlpha(track, alpha)`, `player.entry(track)` | Since 1.5.0, rig-c's live tracks: the runtime's mixing at tolerance 0. Constraint, sequence, draw-order and path-deform timelines are not mixed and are refused on the tracks. See *Several tracks*. |
 | `state.update(delta)`, `state.apply(skeleton)`, `skeleton.update(delta)`, `skeleton.updateWorldTransform(Physics.update)`, `renderer.render(skeleton)` | `player.frame(dt)` | Or `player.advance(dt)` then `player.draw()`, to time the two apart. |
 | time scale (the caller's own, on the spine-core side) | `player.timeScale` | Multiplies every step. 0 holds the pose without re-posing it; a negative value is not stepped. |
 | holding a pose (the caller stopped advancing) | `player.pause()`, `player.resume()` | `frame` keeps drawing the held pose. |
