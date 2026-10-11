@@ -89,6 +89,22 @@ export interface PlayOptions {
   track?: number;
   /** Seconds the entry this one replaces mixes out over; 0 (the default) cuts. */
   mix?: number;
+  /**
+   * The entry's weight, from 0 to 1 (1 by default), multiplied into every
+   * timeline it applies — the same clip at 0.6 and at 0.85. Change it while
+   * the entry plays with `setAlpha`. It does not touch events (fired at any
+   * alpha, 0 included) or attachments (kept at any alpha).
+   */
+  alpha?: number;
+  /**
+   * The entry adds its keyed bone and deform values to what the tracks below
+   * posed, rather than replacing them — a layer keying the same bone channels
+   * as the base without covering its motion (false by default). Fixed when the
+   * entry is set or queued. A rotation is added as it stands, with no
+   * shortest-angle wrap; mixing out, an additive entry fades with its alpha
+   * and is never held.
+   */
+  additive?: boolean;
 }
 
 export interface QueueOptions extends PlayOptions {
@@ -111,6 +127,10 @@ export interface TrackEntry {
   /** The animation time it applies at now: the track time wrapped, or held at the duration. */
   animationTime: number;
   duration: number;
+  /** The entry's weight as it stands (`PlayOptions.alpha`, `setAlpha`). */
+  alpha: number;
+  /** Whether the entry adds (`PlayOptions.additive`). */
+  additive: boolean;
 }
 
 type Listener<T> = (payload: T) => void;
@@ -352,9 +372,12 @@ export class RigPlayer {
     const track = options.track ?? 0;
     const loop = options.loop ?? true;
     const mix = options.mix ?? 0;
+    const alpha = options.alpha ?? 1;
+    const additive = options.additive ?? false;
     this.paused = false;
-    if (track !== 0 || mix !== 0) this.beyondBase = true;
-    if (this.tracks === null && track === 0 && mix === 0 && !this.trackMode) {
+    const plain = track === 0 && mix === 0 && alpha === 1 && !additive;
+    if (!plain) this.beyondBase = true;
+    if (this.tracks === null && plain && !this.trackMode) {
       // A plain play on track 0: the single live track, reopened at the
       // animation's first pose with the physics reset there.
       this.animation = name;
@@ -364,7 +387,7 @@ export class RigPlayer {
       return;
     }
     const tracks = this.compose();
-    tracks.setAnimation(track, name, { loop, mixDuration: mix });
+    tracks.setAnimation(track, name, { loop, mixDuration: mix, alpha, additive });
     this.trackCount = Math.max(this.trackCount, track + 1);
     if (track === 0) {
       this.animation = name;
@@ -383,7 +406,7 @@ export class RigPlayer {
     const track = options.track ?? 0;
     this.beyondBase = true;
     const tracks = this.compose();
-    tracks.addAnimation(track, name, { loop: options.loop ?? true, mixDuration: options.mix ?? 0, delay: options.delay ?? 0 });
+    tracks.addAnimation(track, name, { loop: options.loop ?? true, mixDuration: options.mix ?? 0, delay: options.delay ?? 0, alpha: options.alpha ?? 1, additive: options.additive ?? false });
     this.trackCount = Math.max(this.trackCount, track + 1);
     this.pose = tracks.step(0);
   }
@@ -415,15 +438,31 @@ export class RigPlayer {
     this.pose = tracks.step(0);
   }
 
+  /**
+   * Sets the weight of `track`'s current entry, from 0 to 1, from the next pose
+   * on — the pose the player holds is re-posed at once, so a held player shows
+   * it on its next `draw`. An entry it is mixing from keeps its own weight. A
+   * track playing nothing, or a weight outside 0..1, is refused in the core's
+   * words. On the single track this composes: the player moves onto the tracks.
+   */
+  setAlpha(track: number, alpha: number): void {
+    this.beyondBase = true;
+    const tracks = this.compose();
+    tracks.setAlpha(track, alpha);
+    this.pose = tracks.step(0);
+  }
+
   /** `track`'s current entry, or null where it plays nothing (and before `play`). */
   entry(track = 0): TrackEntry | null {
     if (this.tracks !== null) {
       const view = this.tracks.current(track);
-      return view === null ? null : { animation: view.animation, loop: view.loop, trackTime: view.trackTime, animationTime: view.animationTime, duration: view.duration };
+      return view === null
+        ? null
+        : { animation: view.animation, loop: view.loop, trackTime: view.trackTime, animationTime: view.animationTime, duration: view.duration, alpha: view.alpha, additive: view.additive };
     }
     const single = this.track;
     if (track !== 0 || single === null) return null;
-    return { animation: this.animation, loop: this.loop, trackTime: single.trackTime, animationTime: single.animationTime, duration: single.duration };
+    return { animation: this.animation, loop: this.loop, trackTime: single.trackTime, animationTime: single.animationTime, duration: single.duration, alpha: 1, additive: false };
   }
 
   /** Whether the player is composed: on the live tracks rather than the single track. */

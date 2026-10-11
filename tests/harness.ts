@@ -238,6 +238,28 @@ export interface RigPlayHarness {
   tracksProbe(): Promise<TracksProbeResult>;
   slotFilterProbe(): Promise<SlotFilterProbeResult>;
   trackModeProbe(): Promise<TrackModeProbeResult>;
+  alphaAdditiveProbe(): Promise<AlphaAdditiveProbeResult>;
+}
+
+export interface AlphaAdditiveProbeResult {
+  /** A base, a layer at alpha 0.6, re-weighted to 0.85, and an additive layer, against the probe's own `openTracks` driven by the same calls at the same step boundaries. */
+  checkpoints: number;
+  boneMismatches: string[];
+  frameMismatches: number;
+  /** The weighted layer's pose lies between the base alone and the layer at full weight; the additive one differs from the replacing one. */
+  alphaBetween: boolean;
+  additiveDiffers: boolean;
+  /** `entry(1)` reports the weight and the flag. */
+  entryAfterSet: unknown;
+  entryAfterSetAlpha: unknown;
+  entryAdditive: unknown;
+  /** A layer at alpha 0 still fires its event, with its track. */
+  hitTracksAtAlphaZero: number[];
+  /** rig-c's refusals, in its words. */
+  alphaOutOfRangeError: string;
+  setAlphaEmptyError: string;
+  /** setAlpha on a single-track player composes: the player moves onto the tracks. */
+  setAlphaComposes: boolean;
 }
 
 export interface TrackModeProbeResult {
@@ -5371,7 +5393,145 @@ async function trackModeProbe(): Promise<TrackModeProbeResult> {
   };
 }
 
+/**
+ * `alpha` and `additive` (#93, second part), rig-c 2.39.0's entry weight and
+ * additive blending through the player: held to the probe's own `openTracks`
+ * driven by the same calls at the same step boundaries — rig-c holds those to
+ * the Spine runtime at tolerance 0 (CO52); this holds the player to rig-c.
+ */
+async function alphaAdditiveProbe(): Promise<AlphaAdditiveProbeResult> {
+  const assets = await loadRig('figure');
+  const read = assets.document as ReadDocument;
+  const view = underNoSkin(read.doc);
+  const source = frameSource(view, read.parsed);
+  const root = document.getElementById('root');
+  if (!root) throw new Error('#root missing');
+  root.replaceChildren();
+  const dt = 1 / 60;
+  const geometry = (frame: PosedFrame) => JSON.stringify(frame.order.map((s) => [s.slot, s.kind === 'region' ? s.corners : s.vertices]));
+  const hipX = (frame: PosedFrame) => {
+    const slot = frame.order.find((s) => s.slot === 'badge');
+    return slot && slot.kind === 'region' ? slot.corners[0] : NaN;
+  };
+
+  const player = new RigPlayer(root, assets, { tracks: true });
+  const own = openTracks(view, { reset: 'animation' });
+  let ownPose: RawPose;
+  const boneMismatches: string[] = [];
+  let frameMismatches = 0;
+  let checkpoints = 0;
+  const check = (label: string) => {
+    checkpoints++;
+    for (const bone of ownPose.bones) {
+      const r = player.bone(bone.name);
+      for (const [f, got, want] of [['x', r.x, bone.worldX], ['y', r.y, bone.worldY], ['a', r.a, bone.a], ['b', r.b, bone.b], ['c', r.c, bone.c], ['d', r.d, bone.d]] as Array<[string, number, number]>) {
+        if (!Object.is(got, want)) boneMismatches.push(`${label} ${bone.name}.${f}`);
+      }
+    }
+    if (geometry(player.posedFrame()) !== geometry(frameOf(source, ownPose, player.color))) frameMismatches++;
+  };
+  const stepBoth = (n: number) => {
+    for (let i = 0; i < n; i++) {
+      player.advance(dt);
+      ownPose = own.step(dt);
+    }
+  };
+
+  player.play('walk');
+  own.setAnimation(0, 'walk', { loop: true, mixDuration: 0 });
+  ownPose = own.start();
+  stepBoth(12);
+  check('base');
+
+  // A replacing layer at full weight, then the same at 0.6, to bracket.
+  const full = openTracks(view, { reset: 'animation' });
+  full.setAnimation(0, 'walk', { loop: true, mixDuration: 0 });
+  full.start();
+  for (let i = 0; i < 12; i++) full.step(dt);
+  full.setAnimation(1, 'nudge', { loop: true, mixDuration: 0 });
+  for (let i = 0; i < 18; i++) full.step(dt);
+  const fullPose = full.step(0);
+
+  player.play('nudge', { track: 1, loop: true, alpha: 0.6 });
+  own.setAnimation(1, 'nudge', { loop: true, mixDuration: 0, alpha: 0.6 });
+  ownPose = own.step(0);
+  check('alpha-0.6-set');
+  const entryAfterSet = player.entry(1);
+  stepBoth(18);
+  check('alpha-0.6');
+  const base = frameAt(assets, 'walk', player.time);
+  const weighted = player.posedFrame();
+  const fullFrame = frameOf(source, fullPose, player.color);
+  const [b, w, f] = [hipX(base), hipX(weighted), hipX(fullFrame)];
+  const alphaBetween = Number.isFinite(b) && Number.isFinite(w) && Number.isFinite(f) && b !== f && Math.min(b, f) <= w && w <= Math.max(b, f);
+
+  player.setAlpha(1, 0.85);
+  own.setAlpha(1, 0.85);
+  ownPose = own.step(0);
+  check('alpha-0.85-set');
+  const entryAfterSetAlpha = player.entry(1);
+  stepBoth(12);
+  check('alpha-0.85');
+
+  const replacingFrame = geometry(player.posedFrame());
+  player.play('nudge', { track: 2, loop: true, additive: true });
+  own.setAnimation(2, 'nudge', { loop: true, mixDuration: 0, additive: true });
+  ownPose = own.step(0);
+  check('additive-set');
+  const entryAdditive = player.entry(2);
+  stepBoth(12);
+  check('additive');
+  const additiveDiffers = geometry(player.posedFrame()) !== replacingFrame;
+
+  let alphaOutOfRangeError = '';
+  try {
+    player.play('nudge', { track: 3, alpha: 1.5 });
+  } catch (error) {
+    alphaOutOfRangeError = error instanceof Error ? error.message : String(error);
+  }
+  player.dispose();
+
+  // An event at alpha 0: nudge keys `hit` at 0.5 s.
+  const z = new RigPlayer(root, assets, { tracks: true });
+  const hitTracksAtAlphaZero: number[] = [];
+  z.on('event', (e) => { if (e.name === 'hit' && e.track !== undefined) hitTracksAtAlphaZero.push(e.track); });
+  z.play('walk');
+  z.play('nudge', { track: 1, loop: false, alpha: 0 });
+  for (let i = 0; i < 40; i++) z.advance(dt);
+  let setAlphaEmptyError = '';
+  try {
+    z.setAlpha(5, 0.5);
+  } catch (error) {
+    setAlphaEmptyError = error instanceof Error ? error.message : String(error);
+  }
+  z.dispose();
+
+  const s1 = new RigPlayer(root, assets);
+  s1.play('walk');
+  s1.advance(dt);
+  s1.setAlpha(0, 0.5);
+  const setAlphaComposes = s1.composed && (s1.entry(0)?.alpha ?? 0) === 0.5;
+  s1.dispose();
+  assets.dispose();
+
+  return {
+    checkpoints,
+    boneMismatches,
+    frameMismatches,
+    alphaBetween,
+    additiveDiffers,
+    entryAfterSet,
+    entryAfterSetAlpha,
+    entryAdditive,
+    hitTracksAtAlphaZero,
+    alphaOutOfRangeError,
+    setAlphaEmptyError,
+    setAlphaComposes,
+  };
+}
+
 window.rigPlayHarness = {
+  alphaAdditiveProbe,
   trackModeProbe,
   slotFilterProbe,
   tracksProbe,
