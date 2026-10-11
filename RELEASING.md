@@ -167,8 +167,9 @@ Two properties of that configuration are load-bearing in the workflow:
 3. Read the diff — the version and the generated changelog are the whole review.
    Run the suite against the release branch — read the branch name off the
    pull request, it carries the package name
-   (it was `release-please--branches--main--components--rig-play` until 1.8;
-   read the scoped name's off the first release pull request): **Actions → ci →
+   (`release-please--branches--main--components--play` since 1.8.1 — the scope
+   is dropped from the component; it was `…--components--rig-play` up to 1.8.0):
+   **Actions → ci →
    Run workflow**, or `gh workflow run ci.yml --ref <that branch>` (see below
    for why it is not automatic). The release needs it green. A skip in its log
    is not expected and should be read.
