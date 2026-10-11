@@ -263,6 +263,30 @@ box, an inverse clip removes nothing, and bounding boxes, paths and points do
 not draw and do not count. Both cost nothing until called and read the same
 numbers in `dom` and `canvas` mode.
 
+### Drawing some slots only
+
+`slots` is a draw filter — an allow list of slot names or a predicate — settable up
+front and on a live player. The pose is the whole rig's whatever the filter:
+bones, constraints, physics, `bone()`, `adjust`, events and tracks see no filter;
+only the draw does, in both modes, and `bounds()` reads the drawn slots. A
+clipping slot the filter leaves out does not clip. An allow list naming a slot
+the document does not have is refused by name.
+
+```ts
+const hand = new RigPlayer(frontRoot, assets, { slots: ['hand_f', 'arm_f_lo'] });
+player.slots = (slot) => !slot.startsWith('weapon');
+```
+
+Two players over one `ModelAssets` share the load but each poses the rig. To
+pose it once and draw it twice — a hand drawn again in front of another
+character — give a second renderer this player's pose under another filter:
+
+```ts
+const front = new DomRenderer(frontRoot, assets.regionImages, assets.pageImages);
+// each frame, after player.frame(dt):
+front.render(player.posedFrame(['hand_f', 'arm_f_lo']));
+```
+
 ### Several tracks
 
 A base on track 0, a layer over it, a one-shot played once and mixed back out —
@@ -628,6 +652,7 @@ name, and unloading is still elements first, bitmaps second.
 | `DomTexture` | none | Not exported; there is no atlas page to attach a texture to. |
 | `new Skeleton(assets.data)` and `new AnimationState(new AnimationStateData(assets.data))` | `new RigPlayer(root, assets, options?)` | The player holds the pose and the track. |
 | `state.setAnimation(0, 'walk', true)` | `player.play('walk', { loop: true })` | `loop` defaults to true. `play` opens the animation at its first pose with the physics reset there. `player.current` names what is playing. |
+| `skeleton.findSlot('x').attachment = null` to hide a slot, or a second skeleton with slots emptied | `RigPlayerOptions.slots`, `player.slots`, `player.posedFrame(slots)` | A draw filter since 1.6.0 — the pose is the whole rig's; a clipping slot left out does not clip. See *Drawing some slots only*. |
 | `state.setAnimation(1, 'smile', false)` with a mix, `addAnimation`, `setEmptyAnimation`, `addEmptyAnimation`, `getCurrent(track)` | `player.play(name, { track, loop, mix })`, `player.queue(name, { track, loop, mix, delay })`, `player.clear(track, { mix })`, `player.queueClear(track, { mix, delay })`, `player.entry(track)` | Since 1.5.0, rig-c's live tracks: the runtime's mixing at tolerance 0. Constraint, sequence, draw-order and path-deform timelines are not mixed and are refused on the tracks. See *Several tracks*. |
 | `state.update(delta)`, `state.apply(skeleton)`, `skeleton.update(delta)`, `skeleton.updateWorldTransform(Physics.update)`, `renderer.render(skeleton)` | `player.frame(dt)` | Or `player.advance(dt)` then `player.draw()`, to time the two apart. |
 | time scale (the caller's own, on the spine-core side) | `player.timeScale` | Multiplies every step. 0 holds the pose without re-posing it; a negative value is not stepped. |

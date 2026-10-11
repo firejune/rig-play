@@ -236,6 +236,32 @@ export interface RigPlayHarness {
   regionLoadingProbe(): Promise<RegionLoadingProbeResult>;
   skinProbe(): Promise<SkinProbeResult>;
   tracksProbe(): Promise<TracksProbeResult>;
+  slotFilterProbe(): Promise<SlotFilterProbeResult>;
+}
+
+export interface SlotFilterProbeResult {
+  /** The filtered frame against the unfiltered frame with the other slots removed, as JSON. */
+  filteredSlots: string[];
+  filteredEqualsRemoved: boolean;
+  unfilteredCount: number;
+  /** Under `mask`'s clip: slots the clip covers with the clip slot kept, and with it filtered out. */
+  coveredWithClipKept: number;
+  coveredWithClipOut: number;
+  clipKeptSameAsUnfiltered: boolean;
+  /** `bounds()` under the filter equals the box of the filtered frame; it differs from the unfiltered box. */
+  boundsMatchFiltered: boolean;
+  boundsDiffer: boolean;
+  /** Both modes draw the filtered set: `<img>`s in the DOM mode, draw calls in the canvas mode. */
+  domImages: number;
+  domImagesAfterLive: number;
+  canvasDrew: boolean;
+  /** An unknown slot name is refused by name; a predicate filter works. */
+  unknownError: string;
+  predicateSlots: string[];
+  /** A second renderer over the same assets drawing this player's pose under its own filter. */
+  secondRootImages: number;
+  /** The whole rig is still posed: a bone the filtered-out slots hang on reads the same. */
+  boneSameUnderFilter: boolean;
 }
 
 export interface TracksProbeResult {
@@ -5132,7 +5158,122 @@ async function tracksProbe(): Promise<TracksProbeResult> {
   };
 }
 
+/**
+ * `RigPlayer.slots` (#88): a draw filter. The pose is the whole rig's and the
+ * frame record is the unfiltered record with the other slots removed — a clip
+ * slot left out no longer clips — in both modes, with `bounds()` reading the
+ * drawn slots, and a second renderer drawing the player's pose under another
+ * filter on another root.
+ */
+async function slotFilterProbe(): Promise<SlotFilterProbeResult> {
+  const assets = await loadRig('figure');
+  const root = document.getElementById('root');
+  if (!root) throw new Error('#root missing');
+  root.replaceChildren();
+  const keep = ['hand_f', 'arm_f_lo', 'arm_f_up'];
+  const strip = (frame: PosedFrame) => JSON.stringify(frame.order);
+
+  const player = new RigPlayer(root, assets);
+  player.play('walk');
+  player.seek(0.7);
+  const unfiltered = player.posedFrame();
+  const boneBefore = JSON.stringify(player.bone('hand_f'));
+  player.slots = keep;
+  const filtered = player.posedFrame();
+  const filteredSlots = filtered.order.map((s) => s.slot);
+  const removed: PosedFrame = { order: unfiltered.order.filter((s) => keep.includes(s.slot)) };
+  const filteredEqualsRemoved = strip(filtered) === strip(removed);
+  const boneSameUnderFilter = JSON.stringify(player.bone('hand_f')) === boneBefore;
+
+  // bounds under the filter
+  const box = (frame: PosedFrame) => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const slot of frame.order) {
+      const pts = slot.kind === 'region' ? slot.corners : slot.vertices;
+      for (let i = 0; i < pts.length; i += 2) {
+        minX = Math.min(minX, pts[i]); maxX = Math.max(maxX, pts[i]);
+        minY = Math.min(minY, pts[i + 1]); maxY = Math.max(maxY, pts[i + 1]);
+      }
+    }
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  };
+  const b = player.bounds();
+  const boundsMatchFiltered = JSON.stringify(b) === JSON.stringify(box(filtered));
+  const boundsDiffer = JSON.stringify(b) !== JSON.stringify(box(unfiltered));
+
+  // DOM mode draws the filtered set, live.
+  // The DOM tier keeps a slot's element and hides it (`display: none`) when a
+  // frame no longer carries the slot, so what is counted is the visible ones.
+  const visibleImages = () => [...root.querySelectorAll('img')].filter((el) => el.style.display !== 'none').length;
+  player.draw();
+  const domImages = visibleImages();
+  player.slots = ['hand_f'];
+  player.draw();
+  const domImagesAfterLive = visibleImages();
+
+  // Canvas mode.
+  player.slots = keep;
+  player.mode = 'canvas'; // the switch draws the held pose at once
+  const canvasRenderer = player.renderer as CanvasRenderer;
+  const drewOnSwitch = canvasRenderer.drawCalls > 0 && canvasRenderer.blits === 1;
+  player.draw(); // the same record again: reused, nothing drawn
+  const canvasDrew = drewOnSwitch && canvasRenderer.framesReused === 1 && player.posedFrame().order.length === keep.length;
+  player.mode = 'dom';
+
+  // Clipping: the mask animation's clip slot covers the head; left out, it no longer clips.
+  player.slots = null;
+  player.play('mask');
+  player.seek(0.7);
+  const maskAll = player.posedFrame();
+  const coveredSlots = maskAll.order.filter((s) => s.clip !== undefined).map((s) => s.slot);
+  player.slots = [...coveredSlots, 'clip'];
+  const withClip = player.posedFrame();
+  const coveredWithClipKept = withClip.order.filter((s) => s.clip !== undefined).length;
+  const clipKeptSameAsUnfiltered = JSON.stringify(withClip.order.map((s) => [s.slot, s.clip ?? null])) === JSON.stringify(maskAll.order.filter((s) => coveredSlots.includes(s.slot)).map((s) => [s.slot, s.clip ?? null]));
+  player.slots = coveredSlots;
+  const coveredWithClipOut = player.posedFrame().order.filter((s) => s.clip !== undefined).length;
+
+  let unknownError = '';
+  try {
+    player.slots = ['no_such_slot'];
+  } catch (error) {
+    unknownError = error instanceof Error ? error.message : String(error);
+  }
+  player.slots = (slot) => slot.startsWith('leg');
+  const predicateSlots = player.posedFrame().order.map((s) => s.slot);
+
+  // A second renderer on another root, drawing this player's pose under its own filter.
+  const other = document.createElement('div');
+  document.body.appendChild(other);
+  const second = new DomRenderer(other, assets.regionImages, assets.pageImages);
+  second.render(player.posedFrame(['hand_f']));
+  const secondRootImages = other.querySelectorAll('img').length;
+  second.dispose();
+  other.remove();
+
+  player.dispose();
+  assets.dispose();
+  return {
+    filteredSlots,
+    filteredEqualsRemoved,
+    unfilteredCount: unfiltered.order.length,
+    coveredWithClipKept,
+    coveredWithClipOut,
+    clipKeptSameAsUnfiltered,
+    boundsMatchFiltered,
+    boundsDiffer,
+    domImages,
+    domImagesAfterLive,
+    canvasDrew,
+    unknownError,
+    predicateSlots,
+    secondRootImages,
+    boneSameUnderFilter,
+  };
+}
+
 window.rigPlayHarness = {
+  slotFilterProbe,
   tracksProbe,
   regionLoadingProbe,
   skinProbe,
