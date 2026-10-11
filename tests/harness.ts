@@ -232,6 +232,35 @@ export interface RigPlayHarness {
   canvasModeProbe(count: number): Promise<CanvasModeProbeResult>;
   boneBoundsProbe(): Promise<BoneBoundsProbeResult>;
   adjustProbe(): Promise<AdjustProbeResult>;
+  canvasScaledStageProbe(): Promise<CanvasScaledStageProbeResult>;
+}
+
+/** One canvas-mode renderer's backing store and counters. */
+export interface CanvasStageSnapshot {
+  width: number;
+  height: number;
+  pixelRatio: number;
+  reallocCount: number;
+}
+
+export interface CanvasScaledStageProbeResult {
+  devicePixelRatio: number;
+  zoom: number;
+  /** The harness's own 100 px probe of the scaled root. */
+  scaledMeasuredPx: number;
+  scaledDefault: CanvasStageSnapshot;
+  syncedRatio: number;
+  syncedRatioAgain: number;
+  /** Right after the sync, before the render that acts on it: the backing is untouched. */
+  afterSync: CanvasStageSnapshot;
+  scaledSynced: CanvasStageSnapshot;
+  scaledSyncedAgain: CanvasStageSnapshot;
+  /** Oracle: a fresh canvas renderer given the synced ratio before its first render. */
+  freshScaled: CanvasStageSnapshot;
+  residue: SyncResidue;
+  hidden: { ratioBefore: number; returned: number; ratioAfter: number; measuredPx: number; after: CanvasStageSnapshot };
+  unscaled: { ratioBefore: number; returned: number; ratioAfter: number; measuredPx: number; after: CanvasStageSnapshot };
+  deadband: { ratioBefore: number; returned: number; ratioAfter: number; measuredPx: number; after: CanvasStageSnapshot };
 }
 
 export interface AdjustProbeResult {
@@ -4555,7 +4584,132 @@ async function adjustProbe(): Promise<AdjustProbeResult> {
   };
 }
 
+/**
+ * `CanvasRenderer.syncPixelRatio()` against a CSS-scaled stage — the DOM
+ * tier's probe above, on the one-canvas mode: the renderer that synced under
+ * a `scale(z)` wrapper must hold exactly the backing store a renderer freshly
+ * given that ratio allocates, with the same residue and the same three
+ * controls (not laid out, unscaled, inside the deadband).
+ */
+async function canvasScaledStageProbe(): Promise<CanvasScaledStageProbeResult> {
+  const assets = await loadRig(MESH_RIG);
+  const frame = frameAt(assets, MESH_POSE.animation, MESH_POSE.time);
+  const ZOOM = 0.25;
+  const PROBE_PX = 100;
+  const wrappers: HTMLElement[] = [];
+  const renderers: CanvasRenderer[] = [];
+
+  function open(transform: string, display = ''): { renderer: CanvasRenderer; root: HTMLElement } {
+    const wrapper = document.createElement('div');
+    wrapper.style.position = 'absolute';
+    wrapper.style.left = '0';
+    wrapper.style.top = '0';
+    wrapper.style.transformOrigin = '0 0';
+    if (transform) wrapper.style.transform = transform;
+    if (display) wrapper.style.display = display;
+    const root = document.createElement('div');
+    root.style.position = 'relative';
+    wrapper.appendChild(root);
+    document.body.appendChild(wrapper);
+    wrappers.push(wrapper);
+    const renderer = new CanvasRenderer(root, assets.pageImages);
+    renderers.push(renderer);
+    return { renderer, root };
+  }
+  function measurePx(root: HTMLElement): number {
+    const box = document.createElement('div');
+    box.style.position = 'absolute';
+    box.style.left = '0';
+    box.style.top = '0';
+    box.style.width = `${PROBE_PX}px`;
+    box.style.height = `${PROBE_PX}px`;
+    box.style.visibility = 'hidden';
+    root.appendChild(box);
+    const rect = box.getBoundingClientRect();
+    box.remove();
+    return Math.max(rect.width, rect.height);
+  }
+  function snapshot(renderer: CanvasRenderer, root: HTMLElement): CanvasStageSnapshot {
+    const canvas = root.querySelector('canvas');
+    return {
+      width: canvas?.width ?? -1,
+      height: canvas?.height ?? -1,
+      pixelRatio: renderer.pixelRatio,
+      reallocCount: renderer.canvasReallocCount,
+    };
+  }
+  function held(renderer: CanvasRenderer, root: HTMLElement) {
+    const ratioBefore = renderer.pixelRatio;
+    const measuredPx = measurePx(root);
+    const returned = renderer.syncPixelRatio();
+    const ratioAfter = renderer.pixelRatio;
+    renderer.render(frame);
+    return { ratioBefore, returned, ratioAfter, measuredPx, after: snapshot(renderer, root) };
+  }
+
+  const live = open(`scale(${ZOOM})`);
+  live.renderer.render(frame);
+  const scaledDefault = snapshot(live.renderer, live.root);
+  const scaledMeasuredPx = measurePx(live.root);
+  const before = [...live.root.children];
+  const syncedRatio = live.renderer.syncPixelRatio();
+  const after = [...live.root.children];
+  const residue: SyncResidue = {
+    childCountBefore: before.length,
+    childCountAfter: after.length,
+    tagsBefore: before.map((el) => el.tagName.toLowerCase()),
+    tagsAfter: after.map((el) => el.tagName.toLowerCase()),
+    sameElements: before.length === after.length && before.every((el, index) => el === after[index]),
+  };
+  const afterSync = snapshot(live.renderer, live.root);
+  live.renderer.render(frame);
+  const scaledSynced = snapshot(live.renderer, live.root);
+  const syncedRatioAgain = live.renderer.syncPixelRatio();
+  live.renderer.render(frame);
+  const scaledSyncedAgain = snapshot(live.renderer, live.root);
+
+  const fresh = open(`scale(${ZOOM})`);
+  fresh.renderer.pixelRatio = syncedRatio;
+  fresh.renderer.render(frame);
+  const freshScaled = snapshot(fresh.renderer, fresh.root);
+
+  const hiddenStage = open(`scale(${ZOOM})`, 'none');
+  hiddenStage.renderer.pixelRatio = 3;
+  hiddenStage.renderer.render(frame);
+  const hidden = held(hiddenStage.renderer, hiddenStage.root);
+
+  const plain = open('');
+  plain.renderer.render(frame);
+  const unscaled = held(plain.renderer, plain.root);
+
+  const near = open(`scale(${ZOOM})`);
+  near.renderer.pixelRatio = syncedRatio * 1.0004;
+  near.renderer.render(frame);
+  const deadband = held(near.renderer, near.root);
+
+  for (const renderer of renderers) renderer.dispose();
+  for (const wrapper of wrappers) wrapper.remove();
+  assets.dispose();
+  return {
+    devicePixelRatio: window.devicePixelRatio,
+    zoom: ZOOM,
+    scaledMeasuredPx,
+    scaledDefault,
+    syncedRatio,
+    syncedRatioAgain,
+    afterSync,
+    scaledSynced,
+    scaledSyncedAgain,
+    freshScaled,
+    residue,
+    hidden,
+    unscaled,
+    deadband,
+  };
+}
+
 window.rigPlayHarness = {
+  canvasScaledStageProbe,
   adjustProbe,
   boneBoundsProbe,
   canvasModeProbe,
