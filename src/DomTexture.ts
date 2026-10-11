@@ -388,6 +388,7 @@ function cutBackingPixels(
 async function cutRegion(
   placed: PlacedRegion,
   pageImages: ReadonlyMap<string, HTMLImageElement>,
+  encoding: RegionEncoding,
 ): Promise<RegionImage> {
   const { region, page } = placed;
   const image = pageImages.get(page.name);
@@ -447,12 +448,30 @@ async function cutRegion(
   const source = straightAlphaSource(image, page.pma === true);
   ctx.drawImage(source, plan.sx, plan.sy, plan.sw, plan.sh, 0, 0, plan.sw, plan.sh);
 
+  // A `data:` URL is the same PNG inline: nothing is minted, so nothing is
+  // owned and `revokeRegions` has nothing to free. It is for a consumer whose
+  // content policy or snapshotting does not carry `blob:`; it costs the
+  // base64 string per region for as long as the map lives.
+  if (encoding === 'data') return { url: canvas.toDataURL('image/png'), width: w, height: h };
+
   const blob = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob failed'))), 'image/png');
   });
   const url = URL.createObjectURL(blob);
   ownedUrls.add(url);
   return { url, width: w, height: h };
+}
+
+/**
+ * How a cut region's PNG is handed to the `<img>`: a `blob:` URL this module
+ * owns and `revokeRegions` frees (the default), or a `data:` URL that owns
+ * nothing and needs no revoke.
+ */
+export type RegionEncoding = 'blob' | 'data';
+
+export interface UnpackRegionsOptions {
+  /** `'blob'` by default. */
+  encoding?: RegionEncoding;
 }
 
 /**
@@ -519,7 +538,10 @@ async function cutRegion(
 export async function unpackRegions(
   pages: readonly PageLayout[],
   pageImages: ReadonlyMap<string, HTMLImageElement>,
+  options: UnpackRegionsOptions = {},
 ): Promise<Map<string, RegionImage>> {
+  const encoding = options.encoding ?? 'blob';
+  if (encoding !== 'blob' && encoding !== 'data') throw new Error(`encoding must be 'blob' or 'data', got ${String(options.encoding)}`);
   const regions: PlacedRegion[] = pages.flatMap((page) => page.regions.map((region) => ({ region, page })));
   const cuts = new Array<RegionImage | undefined>(regions.length);
 
@@ -557,7 +579,7 @@ export async function unpackRegions(
     // nothing is left for an unhandled-rejection handler to find.
     job.promise = (async () => {
       try {
-        cuts[index] = await cutRegion(region, pageImages);
+        cuts[index] = await cutRegion(region, pageImages, encoding);
       } catch (error) {
         if (failedIndex === -1 || index < failedIndex) {
           failedIndex = index;

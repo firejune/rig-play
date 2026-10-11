@@ -31,7 +31,20 @@ export interface LoadModelOptions {
   crossOrigin?: string;
   /** fetch implementation, for custom headers or a test double. */
   fetch?: typeof globalThis.fetch;
+  /**
+   * What the region cut produces — the rigid tier's per-region bitmaps, which
+   * only the DOM mode draws. `'blob'` (the default): `blob:` URLs the load
+   * owns and `dispose` frees. `'data'`: `data:` URLs, for a content policy or
+   * a snapshot that does not carry `blob:`; nothing to free. `'none'`: no cut
+   * at all, for a load that only ever draws in the canvas mode — the pages
+   * are loaded, `regionImages` is empty, and a DOM-mode player opened on the
+   * assets is refused by name.
+   */
+  regions?: RegionLoading;
 }
+
+/** `LoadModelOptions.regions`: how, or whether, the regions are cut. */
+export type RegionLoading = 'blob' | 'data' | 'none';
 
 /**
  * What `new RigPlayer(root, assets)` draws from. The caller owns it: one load
@@ -50,7 +63,9 @@ export interface ModelAssets {
    * none.
    */
   readonly stage: { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null;
-  /** Unpacked per-region bitmaps, keyed by region name — the rigid tier's. */
+  /** How the regions were cut (`LoadModelOptions.regions`): `'none'` means `regionImages` is empty and only the canvas mode can draw. */
+  readonly regions: RegionLoading;
+  /** Unpacked per-region bitmaps, keyed by region name — the rigid tier's. Empty on a `regions: 'none'` load. */
   readonly regionImages: Map<string, RegionImage>;
   /** Page images, keyed by the document's page names — the mesh tier's. */
   readonly pageImages: Map<string, HTMLImageElement>;
@@ -156,6 +171,10 @@ export async function loadModel(options: LoadModelOptions): Promise<ModelAssets>
       `${modelUrl} is a Spine export; this player reads a compiled model document (${CORE_DOCUMENT_SPECS[0]}, skeleton.model.json) — build it with \`rigc build\``,
     );
   }
+  const regions = options.regions ?? 'blob';
+  if (regions !== 'blob' && regions !== 'data' && regions !== 'none') {
+    throw new Error(`regions must be 'blob', 'data' or 'none', got ${String(options.regions)}`);
+  }
   const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   const resolvePage = options.resolvePage ?? resolveAgainstModel;
 
@@ -168,7 +187,7 @@ export async function loadModel(options: LoadModelOptions): Promise<ModelAssets>
     }),
   );
 
-  const regionImages = await unpackRegions(pages, pageImages);
+  const regionImages = regions === 'none' ? new Map<string, RegionImage>() : await unpackRegions(pages, pageImages, { encoding: regions });
 
   let disposed = false;
   return {
@@ -176,6 +195,7 @@ export async function loadModel(options: LoadModelOptions): Promise<ModelAssets>
     animations: read.doc.animations.map((a) => ({ name: a.name, duration: a.timelines.duration })),
     skins: read.doc.skins.map((s) => s.name),
     stage: stageOf(read.doc),
+    regions,
     regionImages,
     pageImages,
     document: read,
