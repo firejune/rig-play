@@ -306,9 +306,15 @@ player.entry(2);                                            // { animation, loop
 `play(name)` keeps meaning what it meant: a plain play on track 0 runs on rig-c's
 single live track, which poses everything the core poses. The first call that
 composes — a `mix`, a `track` above 0, a `queue`, a `clear` — moves the player onto
-the tracks, carrying the single track over by replay (its animation set, pose 0
-taken, stepped to its time); from then on `seek` and `skin` are refused by name,
-since the player cannot replay a composition to a time — step it forward instead.
+the tracks, carrying the single track over by **replay** (its animation set, pose 0
+taken, stepped to its time in `seekStep` increments — one pose per step played, so
+on a stage that idled a while that is one long frame; the core offers no hand-over
+of a live track's state). To never pay it, stand the player on the tracks from the
+start: `new RigPlayer(root, assets, { tracks: true })`. Pick the single track for a
+rig whose animations key what the tracks do not mix (below); pick the tracks for
+layering. Either way, after the first `mix`, `track` above 0, `queue` or `clear`,
+`seek` and `skin` are refused by name, since the player cannot replay a composition
+to a time — step it forward instead.
 Every entry mixes from the setup pose each step, so `adjust` writes still last one
 pose. **What the tracks do not mix**, in rig-c's words at `play`/`queue`: an
 animation keying a constraint (ik, transform, path, physics, slider), a sequence,
