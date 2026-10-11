@@ -1,4 +1,4 @@
-import { type LiveTrack, openTrack, type RawPose, regionPageUvs, underNoSkin } from 'rig-c/core';
+import { type LiveTrack, openTrack, openTracks, type RawPose, regionPageUvs, underNoSkin } from 'rig-c/core';
 
 import {
   type AdjustableBones,
@@ -235,6 +235,33 @@ export interface RigPlayHarness {
   canvasScaledStageProbe(): Promise<CanvasScaledStageProbeResult>;
   regionLoadingProbe(): Promise<RegionLoadingProbeResult>;
   skinProbe(): Promise<SkinProbeResult>;
+  tracksProbe(): Promise<TracksProbeResult>;
+}
+
+export interface TracksProbeResult {
+  /** A plain `play` + `seek`: the single track, every bone bit-equal to the probe's own `openTrack` walk. */
+  singleBoneMismatches: string[];
+  /** The composition — base, a one-shot over it mixed in and queued out, the base cleared over a mix — against the probe's own `openTracks` driven by the same calls at the same steps: bones and frame geometry at every checkpoint. */
+  checkpoints: number;
+  composedBoneMismatches: string[];
+  composedFrameMismatches: number;
+  /** The composed pose differs from the base alone while the one-shot plays (the layer reached the pose). */
+  layerVisible: boolean;
+  /** Events and completes the player fired over the composition, with their tracks. */
+  events: Array<{ name: string; track: number | undefined; at: number }>;
+  completes: Array<{ animation: string; track: number; at: number }>;
+  /** Track 1's entry after the queued empty has mixed out, and track 0's after the clear. */
+  entry1AtEnd: unknown;
+  entry0AtEnd: unknown;
+  currentAtEnd: string | null;
+  /** `seek` and `skin` after composing: refused by name. */
+  seekRefusal: string;
+  skinRefusal: string;
+  /** A gallery rig whose animation keys an ik timeline: a plain play runs, composing is refused in the core's words. */
+  constraintPlainPlays: boolean;
+  constraintComposeRefusal: string;
+  /** Before `play`: `queue` opens the tracks itself and `entry(0)` reads it. */
+  queueFirstEntry: unknown;
 }
 
 export interface RegionLoadingProbeResult {
@@ -4952,7 +4979,161 @@ async function skinProbe(): Promise<SkinProbeResult> {
   };
 }
 
+/**
+ * `RigPlayer`'s tracks (#87): a plain `play` stays on the single live track
+ * (held to `openTrack`), and the first composing call moves the player onto
+ * `openTracks`, held to the probe's own tracks driven by the same calls at the
+ * same step boundaries — rig-c holds that state to the Spine runtime; this
+ * holds the player to rig-c. Events are read with the track the player
+ * attributes them to, on the figure rig's `walk` (`step` at 0.4 and 1.2) and
+ * `nudge` (`hit` at 0.5).
+ */
+async function tracksProbe(): Promise<TracksProbeResult> {
+  const assets = await loadRig('figure');
+  const read = assets.document as ReadDocument;
+  const view = underNoSkin(read.doc);
+  const source = frameSource(view, read.parsed);
+  const root = document.getElementById('root');
+  if (!root) throw new Error('#root missing');
+  root.replaceChildren();
+  const dt = 1 / 60;
+  const boneDiff = (player: RigPlayer, pose: RawPose, label: string): string[] => {
+    const out: string[] = [];
+    for (const bone of pose.bones) {
+      const r = player.bone(bone.name);
+      const pairs: Array<[string, number | boolean, number | boolean]> = [
+        ['active', r.active, bone.active], ['x', r.x, bone.worldX], ['y', r.y, bone.worldY],
+        ['a', r.a, bone.a], ['b', r.b, bone.b], ['c', r.c, bone.c], ['d', r.d, bone.d],
+        ['scaleX', r.scaleX, bone.scaleX], ['scaleY', r.scaleY, bone.scaleY],
+      ];
+      for (const [f, got, want] of pairs) if (!Object.is(got, want)) out.push(`${label} ${bone.name}.${f}`);
+    }
+    return out;
+  };
+  const geometry = (frame: PosedFrame) => JSON.stringify(frame.order.map((s) => [s.slot, s.kind === 'region' ? s.corners : s.vertices]));
+
+  // A. The single track, unchanged.
+  const single = new RigPlayer(root, assets);
+  single.play('walk');
+  single.seek(0.7);
+  const singleBoneMismatches = boneDiff(single, poseAt(assets, 'walk', 0.7).pose, 'single');
+  single.dispose();
+
+  // B/C. The composition, mirrored on the probe's own tracks.
+  const player = new RigPlayer(root, assets);
+  const events: TracksProbeResult['events'] = [];
+  const completes: TracksProbeResult['completes'] = [];
+  player.on('event', (e) => events.push({ name: e.name, track: e.track, at: player.time }));
+  player.on('complete', (c) => completes.push({ animation: c.animation, track: c.track, at: player.time }));
+  const own = openTracks(view, { reset: 'animation' });
+  let ownPose: RawPose;
+  const composedBoneMismatches: string[] = [];
+  let composedFrameMismatches = 0;
+  let checkpoints = 0;
+  const check = (label: string) => {
+    checkpoints++;
+    composedBoneMismatches.push(...boneDiff(player, ownPose, label));
+    if (geometry(player.posedFrame()) !== geometry(frameOf(source, ownPose, player.color))) composedFrameMismatches++;
+  };
+  const stepBoth = (n: number) => {
+    for (let i = 0; i < n; i++) {
+      player.advance(dt);
+      ownPose = own.step(dt);
+    }
+  };
+
+  player.play('walk'); // single track for now
+  own.setAnimation(0, 'walk', { loop: true, mixDuration: 0 });
+  ownPose = own.start();
+  stepBoth(18); // 0.3 s on the single track; the probe's tracks are the same walk
+  // The first composing call: the player replays its single track onto the tracks (18 steps of dt), then layers.
+  player.play('nudge', { track: 1, loop: false, mix: 0.1 });
+  own.setAnimation(1, 'nudge', { loop: false, mixDuration: 0.1 });
+  ownPose = own.step(0);
+  check('layer-set');
+  player.queueClear(1, { mix: 0.1 });
+  own.addEmptyAnimation(1, 0.1, 0);
+  ownPose = own.step(0);
+  check('queue-empty');
+  const baseAlone = geometry(frameAt(assets, 'walk', player.time));
+  stepBoth(6);
+  check('t+0.1');
+  const layerVisible = geometry(player.posedFrame()) !== geometry(frameAt(assets, 'walk', player.time));
+  stepBoth(24);
+  check('t+0.5');
+  stepBoth(30);
+  check('t+1.0');
+  stepBoth(20);
+  check('t+1.33');
+  const entry1AtEnd = player.entry(1);
+  player.clear(0, { mix: 0.2 });
+  own.setEmptyAnimation(0, 0.2);
+  ownPose = own.step(0);
+  check('clear-0');
+  stepBoth(20);
+  check('cleared');
+  const entry0AtEnd = player.entry(0);
+  const currentAtEnd = player.current;
+  void baseAlone;
+
+  let seekRefusal = '';
+  try {
+    player.seek(0.1);
+  } catch (error) {
+    seekRefusal = error instanceof Error ? error.message : String(error);
+  }
+  let skinRefusal = '';
+  try {
+    player.skin = 'alt';
+  } catch (error) {
+    skinRefusal = error instanceof Error ? error.message : String(error);
+  }
+  player.dispose();
+
+  // D. A queue before any play opens the tracks itself.
+  const q = new RigPlayer(root, assets);
+  q.queue('walk', { loop: true });
+  const queueFirstEntry = q.entry(0);
+  q.dispose();
+  assets.dispose();
+
+  // E. An animation keying an ik timeline: the single track poses it, the tracks refuse it by name.
+  const walkRig = await loadRig('walk');
+  const w = new RigPlayer(root, walkRig);
+  let constraintPlainPlays = false;
+  let constraintComposeRefusal = '';
+  try {
+    w.play('walk');
+    w.frame(dt);
+    constraintPlainPlays = w.posedFrame().order.length > 0;
+    w.play('walk', { track: 1 });
+  } catch (error) {
+    constraintComposeRefusal = error instanceof Error ? error.message : String(error);
+  }
+  w.dispose();
+  walkRig.dispose();
+
+  return {
+    singleBoneMismatches,
+    checkpoints,
+    composedBoneMismatches,
+    composedFrameMismatches,
+    layerVisible,
+    events,
+    completes,
+    entry1AtEnd,
+    entry0AtEnd,
+    currentAtEnd,
+    seekRefusal,
+    skinRefusal,
+    constraintPlainPlays,
+    constraintComposeRefusal,
+    queueFirstEntry,
+  };
+}
+
 window.rigPlayHarness = {
+  tracksProbe,
   regionLoadingProbe,
   skinProbe,
   canvasScaledStageProbe,

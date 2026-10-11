@@ -1,4 +1,4 @@
-import { type CompiledDocument, type LiveTrack, type LocalAdjust as CoreLocalAdjust, openTrack, poseRawSetup, type RawPose, underNoSkin, underSkin } from 'rig-c/core';
+import { type CompiledDocument, eventsFired, type LiveTrack, type LiveTracks, type LocalAdjust as CoreLocalAdjust, openTrack, openTracks, poseRawSetup, type RawPose, type TrackEntryView, underNoSkin, underSkin } from 'rig-c/core';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { DomRenderer, type MeshBackend } from './DomRenderer.js';
 import type { ModelAssets, ReadDocument } from './loadModel.js';
@@ -51,6 +51,52 @@ export interface RigEvent {
   int: number;
   float: number;
   string: string | null;
+  /**
+   * The track whose current entry fired it. The core's pose lists a step's
+   * events in track order without naming the track, so the player attributes
+   * them by counting what each track's current entry fires over the step;
+   * when that count does not match the pose (an entry replaced inside the
+   * step), the step's events carry no track rather than a guessed one.
+   */
+  track?: number;
+}
+
+/** What `on('complete', …)` hands a listener: the entry that completed, and its track. */
+export interface RigComplete {
+  animation: string;
+  track: number;
+}
+
+/** How `play` starts an entry, and `queue` queues one. */
+export interface PlayOptions {
+  /** Loop; true by default. */
+  loop?: boolean;
+  /** The track; 0 by default. A base on 0, a layer over it on 1, a one-shot on 2. */
+  track?: number;
+  /** Seconds the entry this one replaces mixes out over; 0 (the default) cuts. */
+  mix?: number;
+}
+
+export interface QueueOptions extends PlayOptions {
+  /**
+   * At or below 0 (the default 0): the entry starts when the one before it
+   * completes, less this entry's `mix` — a one-shot then mixes into the next
+   * over its last `mix` seconds. Above 0: that many seconds after the entry
+   * before it starts.
+   */
+  delay?: number;
+}
+
+/** A track's current entry as the player reads it (`entry(track)`). */
+export interface TrackEntry {
+  /** What it plays; null for the empty animation a `clear` left. */
+  animation: string | null;
+  loop: boolean;
+  /** The entry's own track time, from its start. */
+  trackTime: number;
+  /** The animation time it applies at now: the track time wrapped, or held at the duration. */
+  animationTime: number;
+  duration: number;
 }
 
 type Listener<T> = (payload: T) => void;
@@ -152,9 +198,27 @@ export class RigPlayer {
   private readonly read: ReadDocument;
   private skinName: string | undefined;
   private readonly seekStep: number;
+  /**
+   * The single live track (`openTrack`): what a plain `play` on track 0 runs
+   * on, as every 1.x player did — one animation, every construct the core
+   * poses, `seek` and a skin change by reopening. Null once the player is
+   * composed.
+   */
   private track: LiveTrack | null = null;
+  /**
+   * The live tracks (`openTracks`): opened by the first composing call — a
+   * `play` with a mix or on another track, a `queue`, a `clear` — from the
+   * single track's animation stepped to its time. The mixing is the Spine
+   * runtime's, which does not mix a constraint, sequence, draw-order or
+   * path-deform timeline, so such an animation is refused here and plays on
+   * the single track only.
+   */
+  private tracks: LiveTracks | null = null;
+  /** Track 0's animation and loop as `play` last set them — what `seek` and a skin change reopen. */
   private animation: string | null = null;
   private loop = true;
+  /** One past the highest track touched — how many `current(track)` reads a step takes. */
+  private trackCount = 0;
   private paused = false;
   private pose: RawPose | null = null;
   private setup: RawPose | null = null;
@@ -165,7 +229,7 @@ export class RigPlayer {
   };
   private readonly listeners = {
     event: new Set<Listener<RigEvent>>(),
-    complete: new Set<Listener<{ animation: string }>>(),
+    complete: new Set<Listener<RigComplete>>(),
   };
 
   constructor(root: HTMLElement, assets: ModelAssets, options: RigPlayerOptions = {}) {
@@ -225,25 +289,128 @@ export class RigPlayer {
     return renderer;
   }
 
-  /** The animation the track is playing, or null before `play`. */
+  /** What track 0 plays, or null before `play` and after a `clear` of track 0 has mixed out. */
   get current(): string | null {
-    return this.animation;
+    return this.tracks !== null ? (this.tracks.current(0)?.animation ?? null) : this.animation;
   }
 
-  /** The track time — the running sum of the steps since `play` (or the last `seek`). */
+  /** The player's time — the running sum of the steps since `play` (or the last `seek`). */
   get time(): number {
-    return this.track?.trackTime ?? 0;
+    return this.tracks?.trackTime ?? this.track?.trackTime ?? 0;
   }
 
   /**
-   * Opens `name` on the track at its first pose, the physics reset there. The
-   * pose is drawn on the next `frame`.
+   * Plays `name` on a track — track 0 by default, which is what `play(name)`
+   * has always meant: the first `play` opens the tracks at their first pose
+   * with the physics reset there, and the pose is drawn on the next `frame`.
+   * Later calls replace what the track plays: the entry it replaces mixes out
+   * over `mix` seconds (0 cuts), and every entry queued on that track is
+   * dropped. The pose the player holds is re-posed at once, so a held player
+   * shows the change on its next `draw`. The mixing is the Spine runtime's,
+   * which rig-c holds at tolerance 0; an animation keying what the tracks do
+   * not mix — a constraint, a sequence, the draw order, a path's deform — is
+   * refused here, by name, in the core's words.
    */
-  play(name: string, options: { loop?: boolean } = {}): void {
-    this.loop = options.loop ?? true;
-    this.animation = name;
+  play(name: string, options: PlayOptions = {}): void {
+    const track = options.track ?? 0;
+    const loop = options.loop ?? true;
+    const mix = options.mix ?? 0;
     this.paused = false;
-    this.open();
+    if (this.tracks === null && track === 0 && mix === 0) {
+      // A plain play on track 0: the single live track, reopened at the
+      // animation's first pose with the physics reset there.
+      this.animation = name;
+      this.loop = loop;
+      this.track = openTrack(this.view, name, { loop, reset: 'animation', adjust: this.adjustHook });
+      this.pose = this.track.first;
+      return;
+    }
+    const tracks = this.compose();
+    tracks.setAnimation(track, name, { loop, mixDuration: mix });
+    this.trackCount = Math.max(this.trackCount, track + 1);
+    if (track === 0) {
+      this.animation = name;
+      this.loop = loop;
+    }
+    this.pose = tracks.step(0);
+  }
+
+  /**
+   * Queues `name` after the last entry on `track` (`QueueOptions`): with
+   * `delay` at or below 0 it starts when that entry completes less its own
+   * `mix`, so a one-shot hands over to it across a mix; on an empty track it
+   * is set. Before any `play`, the tracks are opened for it.
+   */
+  queue(name: string, options: QueueOptions = {}): void {
+    const track = options.track ?? 0;
+    const tracks = this.compose();
+    tracks.addAnimation(track, name, { loop: options.loop ?? true, mixDuration: options.mix ?? 0, delay: options.delay ?? 0 });
+    this.trackCount = Math.max(this.trackCount, track + 1);
+    this.pose = tracks.step(0);
+  }
+
+  /**
+   * Mixes `track` out to nothing over `mix` seconds — the layer or one-shot
+   * gone and the tracks below showing through. Track 0 cleared shows the
+   * setup pose. The pose the player holds is re-posed at once.
+   */
+  clear(track = 0, options: { mix?: number } = {}): void {
+    const tracks = this.compose();
+    tracks.setEmptyAnimation(track, options.mix ?? 0);
+    this.trackCount = Math.max(this.trackCount, track + 1);
+    this.pose = tracks.step(0);
+  }
+
+  /**
+   * Queues a mix out to nothing after the last entry on `track`, over `mix`
+   * seconds; with `delay` 0 (the default) the mix ends as that entry
+   * completes, so a one-shot queued this way plays once and fades out over
+   * its last `mix` seconds.
+   */
+  queueClear(track = 0, options: { mix?: number; delay?: number } = {}): void {
+    const tracks = this.compose();
+    tracks.addEmptyAnimation(track, options.mix ?? 0, options.delay ?? 0);
+    this.trackCount = Math.max(this.trackCount, track + 1);
+    this.pose = tracks.step(0);
+  }
+
+  /** `track`'s current entry, or null where it plays nothing (and before `play`). */
+  entry(track = 0): TrackEntry | null {
+    if (this.tracks !== null) {
+      const view = this.tracks.current(track);
+      return view === null ? null : { animation: view.animation, loop: view.loop, trackTime: view.trackTime, animationTime: view.animationTime, duration: view.duration };
+    }
+    const single = this.track;
+    if (track !== 0 || single === null) return null;
+    return { animation: this.animation, loop: this.loop, trackTime: single.trackTime, animationTime: single.animationTime, duration: single.duration };
+  }
+
+  /** Whether the player is composed: on the live tracks rather than the single track. */
+  get composed(): boolean {
+    return this.tracks !== null;
+  }
+
+  /**
+   * The live tracks, opened by the first composing call. A single track in
+   * play is carried over by replay: track 0 set to its animation, pose 0 taken
+   * by `start()` (the player's — nothing steps before it) and the tracks
+   * stepped to the single track's time in `seekStep` increments, so a physics
+   * rig's history restarts there and nothing is fired on the way.
+   */
+  private compose(): LiveTracks {
+    if (this.tracks !== null) return this.tracks;
+    const tracks = openTracks(this.view, { reset: 'animation', adjust: this.adjustHook });
+    const single = this.track;
+    const time = single?.trackTime ?? 0;
+    if (single !== null && this.animation !== null) {
+      tracks.setAnimation(0, this.animation, { loop: this.loop, mixDuration: 0 });
+      this.trackCount = 1;
+    }
+    this.tracks = tracks;
+    this.track = null;
+    this.pose = tracks.start();
+    if (time > 0) this.stepTo(time);
+    return tracks;
   }
 
   /** Stops stepping; `frame` keeps drawing the pose it holds. */
@@ -257,29 +424,40 @@ export class RigPlayer {
   }
 
   /**
-   * Moves the track to `time`: the animation is reopened and stepped forward
-   * in `seekStep` increments (the last one shorter) until the track time
-   * reaches `time`. Events and completes crossed on the way are not fired.
+   * Moves a single animation on track 0 to `time`: the tracks are reopened
+   * with that animation and stepped forward in `seekStep` increments (the
+   * last one shorter) until the time is reached. Events and completes crossed
+   * on the way are not fired. It has a meaning for one animation on one
+   * track only — the player cannot replay when a mix, a second track or a
+   * queue was asked for — so after any of those it refuses by name; step the
+   * player forward instead.
    */
   seek(time: number): void {
     if (this.animation === null) throw new Error('seek before play: no animation is open');
     if (!(time >= 0) || !Number.isFinite(time)) throw new Error(`seek time must be a finite time at or above 0, got ${String(time)}`);
-    this.open();
+    if (this.tracks !== null) throw new Error('seek is defined for a single animation on track 0; after a mix, another track, a queue or a clear the player cannot replay to a time — step it forward with frame/advance instead');
+    this.reopen();
     this.stepTo(time);
   }
 
-  /** Steps the freshly opened track forward to `time` in `seekStep` increments, the last one shorter. */
+  /** The single track opened again with track 0's animation as `play` last set it, at pose 0. */
+  private reopen(): void {
+    this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation', adjust: this.adjustHook });
+    this.pose = this.track.first;
+  }
+
+  /** Steps whatever is open forward to `time` in `seekStep` increments, the last one shorter. */
   private stepTo(time: number): void {
-    const track = this.track as LiveTrack;
+    const stepper = this.tracks ?? (this.track as LiveTrack);
     const steps = Math.floor(time / this.seekStep);
-    for (let i = 0; i < steps; i++) this.pose = track.step(this.seekStep);
-    const rest = time - track.trackTime;
-    if (rest > 0) this.pose = track.step(rest);
+    for (let i = 0; i < steps; i++) this.pose = stepper.step(this.seekStep);
+    const rest = time - stepper.trackTime;
+    if (rest > 0) this.pose = stepper.step(rest);
   }
 
   /** Adds a listener; returns a function that removes it. */
   on(type: 'event', listener: Listener<RigEvent>): () => void;
-  on(type: 'complete', listener: Listener<{ animation: string }>): () => void;
+  on(type: 'complete', listener: Listener<RigComplete>): () => void;
   on(type: 'event' | 'complete', listener: Listener<never>): () => void {
     const set = this.listeners[type] as Set<Listener<never>>;
     set.add(listener);
@@ -302,13 +480,22 @@ export class RigPlayer {
    * checks and nothing else.
    */
   advance(dt: number): void {
-    const track = this.track;
-    if (track === null || this.pose === null) return;
+    if (this.pose === null) return;
     const step = dt * this.timeScale;
     if (this.paused || !(step > 0)) return;
+    const tracks = this.tracks;
+    if (tracks !== null) {
+      const before: Array<TrackEntryView | null> = [];
+      for (let t = 0; t < this.trackCount; t++) before.push(tracks.current(t));
+      this.pose = tracks.step(step);
+      this.dispatch(this.pose, before, tracks);
+      return;
+    }
+    const track = this.track;
+    if (track === null) return;
     const before = track.trackTime;
     this.pose = track.step(step);
-    this.dispatch(this.pose, before, track);
+    this.dispatchSingle(this.pose, before, track);
   }
 
   /** Draws the pose the player holds. */
@@ -333,6 +520,7 @@ export class RigPlayer {
 
   set skin(name: string | undefined) {
     if (name === this.skinName) return;
+    if (this.tracks !== null) throw new Error('skin cannot change after a mix, another track, a queue or a clear: the player cannot replay those to the current time — set it before composing, or play again');
     const view = name === undefined ? underNoSkin(this.read.doc) : underSkin(this.read.doc, name);
     this.view = view;
     this.source = frameSource(view, this.read.parsed);
@@ -340,7 +528,7 @@ export class RigPlayer {
     this.setup = null;
     if (this.animation !== null && this.track !== null) {
       const time = this.track.trackTime;
-      this.open();
+      this.reopen();
       this.stepTo(time);
     }
   }
@@ -371,8 +559,9 @@ export class RigPlayer {
    * changed, then `draw`. Nothing before `play`.
    */
   repose(): void {
-    if (this.track === null || this.pose === null) return;
-    this.pose = this.track.step(0);
+    const stepper = this.tracks ?? this.track;
+    if (stepper === null || this.pose === null) return;
+    this.pose = stepper.step(0);
   }
 
   /**
@@ -457,29 +646,16 @@ export class RigPlayer {
   /** Removes the renderer's elements and hands its GPU pages back. The assets stay the caller's. */
   dispose(): void {
     this.renderer.dispose();
+    this.tracks = null;
     this.track = null;
     this.pose = null;
   }
 
-  private open(): void {
-    this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation', adjust: this.adjustHook });
-    this.pose = this.track.first;
-  }
-
-  /**
-   * The step's events, then its complete. The core fires the keys
-   * (`pose.events`, in the runtime's order across a wrap) and leaves
-   * `complete` to the player, which derives it from the track time and the
-   * duration: on a looping track, once on a step whose whole cycles rose past
-   * 0 (rig-c `src/core/track.ts`, *Across the wrap*); on a held one, on the
-   * step that reaches the duration. The runtime queues a looping complete
-   * between the keys before the wrap and the keys after it; this player
-   * dispatches it after all of the step's keys.
-   */
-  private dispatch(pose: RawPose, before: number, track: LiveTrack): void {
+  /** The single track's step: its events (track 0) and its complete, as every 1.x player fired them. */
+  private dispatchSingle(pose: RawPose, before: number, track: LiveTrack): void {
     if (this.listeners.event.size > 0) {
       for (const [name, time, int, float, string] of pose.events) {
-        const event: RigEvent = { name, time, int, float, string };
+        const event: RigEvent = { name, time, int, float, string, track: 0 };
         for (const listener of this.listeners.event) listener(event);
       }
     }
@@ -489,7 +665,73 @@ export class RigPlayer {
       const cycles = d > 0 ? Math.floor(after / d) : Infinity;
       const was = d > 0 ? Math.floor(before / d) : -Infinity;
       if (this.loop ? cycles > 0 && cycles > was : before < d && after >= d) {
-        const payload = { animation: this.animation as string };
+        const payload: RigComplete = { animation: this.animation as string, track: 0 };
+        for (const listener of this.listeners.complete) listener(payload);
+      }
+    }
+  }
+
+  /**
+   * The step's events, then its completes, each with its track. The core
+   * fires a track's keys from its current entry (`pose.events`, in track
+   * order and in the runtime's order across a wrap) — an entry mixing out
+   * fires none — and leaves `complete` to the player, which derives it per
+   * track from that track's current entry: on a looping entry, once on a step
+   * whose whole cycles rose; on a held one, on the step that reaches its
+   * duration. An entry replaced inside the step — by `play`, or by a queued
+   * entry starting at its completion less the mix — is no longer current and
+   * completes no more than it fires, which is the runtime's rule too.
+   */
+  private dispatch(pose: RawPose, before: ReadonlyArray<TrackEntryView | null>, tracks: LiveTracks): void {
+    const after: Array<TrackEntryView | null> = [];
+    for (let t = 0; t < this.trackCount; t++) after.push(tracks.current(t));
+    const same = (b: TrackEntryView | null, a: TrackEntryView | null): boolean =>
+      b !== null && a !== null && b.animation === a.animation && b.loop === a.loop && a.trackTime >= b.trackTime;
+
+    if (this.listeners.event.size > 0 && pose.events.length > 0) {
+      // Attribute by count: what each track's current entry fired over the step.
+      const counts: number[] = [];
+      let total = 0;
+      for (let t = 0; t < this.trackCount; t++) {
+        const a = after[t];
+        const b = before[t];
+        let n = 0;
+        if (a !== null && a.animation !== null) {
+          const keys = this.view.animations.find((anim) => anim.name === a.animation)?.timelines.events ?? [];
+          if (keys.length > 0) {
+            const last = same(b, a) ? (b as TrackEntryView).animationTime : -1;
+            n = eventsFired(keys, last, a.animationTime, undefined, a.animationTime < last).length;
+          }
+        }
+        counts.push(n);
+        total += n;
+      }
+      const attributed = total === pose.events.length;
+      let track = 0;
+      let left = counts[0] ?? 0;
+      for (const [name, time, int, float, string] of pose.events) {
+        if (attributed) {
+          while (left === 0 && track < counts.length - 1) {
+            track++;
+            left = counts[track];
+          }
+          left--;
+        }
+        const event: RigEvent = attributed ? { name, time, int, float, string, track } : { name, time, int, float, string };
+        for (const listener of this.listeners.event) listener(event);
+      }
+    }
+    if (this.listeners.complete.size > 0) {
+      for (let t = 0; t < this.trackCount; t++) {
+        const a = after[t];
+        const b = before[t];
+        if (!same(b, a) || a === null || a.animation === null) continue;
+        const d = a.duration;
+        const cycles = d > 0 ? Math.floor(a.trackTime / d) : Infinity;
+        const was = d > 0 ? Math.floor((b as TrackEntryView).trackTime / d) : -Infinity;
+        const fired = a.loop ? cycles > 0 && cycles > was : (b as TrackEntryView).trackTime < d && a.trackTime >= d;
+        if (!fired) continue;
+        const payload: RigComplete = { animation: a.animation, track: t };
         for (const listener of this.listeners.complete) listener(payload);
       }
     }
