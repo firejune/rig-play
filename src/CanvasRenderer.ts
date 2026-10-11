@@ -1,3 +1,4 @@
+import { syncedPixelRatio } from './pixelRatio.js';
 import { clipThrough, REGION_TRIANGLES } from 'rig-c/core';
 import { drawTexturedTriangle } from './DomRenderer.js';
 import { type PageSource, straightAlphaSource } from './DomTexture.js';
@@ -67,7 +68,12 @@ const GROW_PAD = 16;
  * not the measured path.
  */
 export class CanvasRenderer {
-  /** Backing-store pixels per root CSS pixel; defaults to the device pixel ratio. Fold a root scale in, as for the DOM tier. */
+  /**
+   * Backing-store pixels per root CSS pixel; defaults to the device pixel
+   * ratio. A root under a CSS-scaled ancestor rasters at the wrong resolution
+   * until the scale is folded in — `syncPixelRatio()` measures it, as for the
+   * DOM tier. The next `render` sizes the backing store to the new ratio.
+   */
   pixelRatio = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
   /** Apply the clips the frame carries (default). False draws every slot unclipped and counts the clips in `clipSkipCount`. */
   clipping = true;
@@ -148,6 +154,20 @@ export class CanvasRenderer {
   }
 
   /** Grows the automatic viewport to cover `box` (world units, Y up) ahead of the frames reaching it. */
+  /**
+   * Measures the root's effective on-screen scale and sets `pixelRatio` to
+   * `devicePixelRatio × scale`, returning the ratio now in effect — the same
+   * call, the same meaning and the same deadband as `DomRenderer`'s, so code
+   * written against `player.renderer` survives a `mode` change. One forced
+   * layout per call (a hidden box appended to the root, read, removed), which
+   * is why the renderer never calls it for you. The backing store follows on
+   * the next `render`; a root that is not laid out leaves the ratio alone.
+   */
+  syncPixelRatio(): number {
+    this.pixelRatio = syncedPixelRatio(this.root, this.pixelRatio);
+    return this.pixelRatio;
+  }
+
   reserve(box: CanvasViewport): void {
     this.growTo(box.x, -(box.y + box.height), box.x + box.width, -box.y);
   }

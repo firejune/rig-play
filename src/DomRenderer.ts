@@ -1,3 +1,4 @@
+import { syncedPixelRatio } from './pixelRatio.js';
 import { type PageSource, type RegionImage, straightAlphaSource } from './DomTexture.js';
 import { getMeshGlBlitter, type MeshBlitJob } from './MeshGlBlitter.js';
 import type { BlendMode, PosedClip, PosedFrame, PosedMesh, PosedRegion, PosedSlot } from './posedFrame.js';
@@ -9,18 +10,6 @@ const regionVertices = new Float32Array(8);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /** Unique tint-filter ids across renderer instances (ids are document-global). */
 let tintFilterSeq = 0;
-/** Edge length of the throwaway box syncPixelRatio() measures the root with. */
-const SCALE_PROBE_PX = 100;
-/**
- * Relative change below which syncPixelRatio() leaves `pixelRatio` alone.
- * Layout reads are quantized (1/64 px in Blink), so a 100 px probe carries
- * ~0.016% of measurement noise — 6× under this band, which in turn is 10×
- * under the smallest zoom step a UI realistically takes (1%). Inside the band
- * the sampling error is worth ~0.2% of backing pixels; outside it, a rewrite
- * of `pixelRatio` recreates every mesh canvas's GPU surface.
- */
-const PIXEL_RATIO_DEADBAND = 1e-3;
-
 /** Push a point away from (cx, cy) by `amount` pixels. */
 function expandPoint(x: number, y: number, cx: number, cy: number, amount: number): [number, number] {
   const dx = x - cx;
@@ -348,36 +337,8 @@ export class DomRenderer {
    * @returns the pixel ratio now in effect (the current one if nothing moved).
    */
   syncPixelRatio(): number {
-    const probe = document.createElement('div');
-    probe.style.position = 'absolute';
-    probe.style.left = '0';
-    probe.style.top = '0';
-    probe.style.width = `${SCALE_PROBE_PX}px`;
-    probe.style.height = `${SCALE_PROBE_PX}px`;
-    probe.style.visibility = 'hidden';
-    probe.style.pointerEvents = 'none';
-    this.root.appendChild(probe);
-    let width = 0;
-    let height = 0;
-    try {
-      const rect = probe.getBoundingClientRect();
-      width = rect.width;
-      height = rect.height;
-    } finally {
-      probe.remove();
-    }
-
-    const scale = Math.max(width, height) / SCALE_PROBE_PX;
-    // Not laid out (display:none ancestor, detached root): no measurement, so
-    // no decision — keep whatever the caller has.
-    if (!(scale > 0)) return this.pixelRatio;
-
-    const dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
-    const next = dpr * scale;
-    const current = this.pixelRatio;
-    if (current > 0 && Math.abs(next - current) < current * PIXEL_RATIO_DEADBAND) return current;
-    this.pixelRatio = next;
-    return next;
+    this.pixelRatio = syncedPixelRatio(this.root, this.pixelRatio);
+    return this.pixelRatio;
   }
 
   /**

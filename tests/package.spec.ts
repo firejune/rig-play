@@ -201,7 +201,7 @@ test('an unlisted subpath is refused by the exports map', () => {
  * (with its map), and one declaration file (with its map) per source module.
  */
 const EMITTED_BUNDLE = ['index.js', 'index.js.map'];
-const DECLARED_MODULES = ['CanvasRenderer', 'DomRenderer', 'DomTexture', 'MeshGlBlitter', 'index', 'loadModel', 'player', 'posedFrame'];
+const DECLARED_MODULES = ['CanvasRenderer', 'DomRenderer', 'DomTexture', 'MeshGlBlitter', 'index', 'loadModel', 'pixelRatio', 'player', 'posedFrame'];
 
 test('the library build emits those modules and nothing else', () => {
   /**

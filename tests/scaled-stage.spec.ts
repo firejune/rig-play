@@ -132,3 +132,43 @@ test('the sync leaves no probe behind and does not touch the slot elements', asy
   // in the root, or slot elements re-created around it, breaks this.
   expect(residue.sameElements).toBe(true);
 });
+
+/**
+ * The canvas mode's `syncPixelRatio()`: the same call with the same meaning
+ * (#74), held the same way — one backing store instead of one per mesh.
+ */
+test.describe('canvas mode', () => {
+  test('a scaled stage syncs to the fresh renderer\'s backing store, and the sync itself allocates nothing', async ({ page }) => {
+    const r = await page.evaluate(() => window.rigPlayHarness.canvasScaledStageProbe());
+
+    expect(r.scaledMeasuredPx).toBeCloseTo(100 * r.zoom, 6);
+    expect(r.syncedRatio).toBeCloseTo(r.devicePixelRatio * r.zoom, 6);
+    expect(r.scaledSynced.pixelRatio).toBeCloseTo(r.syncedRatio, 6);
+    // The sync moves the ratio; the next render acts on it.
+    expect([r.afterSync.width, r.afterSync.height]).toEqual([r.scaledDefault.width, r.scaledDefault.height]);
+    expect([r.scaledSynced.width, r.scaledSynced.height]).toEqual([r.freshScaled.width, r.freshScaled.height]);
+    expect(r.scaledSynced.width * r.scaledSynced.height).toBeGreaterThan(0);
+    // Not vacuous: the unsynced stage really was oversampling.
+    expect(r.scaledDefault.width * r.scaledDefault.height).toBeGreaterThan(r.scaledSynced.width * r.scaledSynced.height);
+    // Residue: the one canvas is the same element on both sides of the call.
+    expect(r.residue.childCountAfter).toBe(r.residue.childCountBefore);
+    expect(r.residue.sameElements).toBe(true);
+  });
+
+  test('a second sync, a deadband ratio and an unlaid-out root change nothing', async ({ page }) => {
+    const r = await page.evaluate(() => window.rigPlayHarness.canvasScaledStageProbe());
+
+    expect(r.syncedRatioAgain).toBe(r.syncedRatio);
+    expect(r.scaledSyncedAgain.reallocCount).toBe(0);
+    expect(r.deadband.measuredPx).toBeCloseTo(100 * r.zoom, 6);
+    expect(r.deadband.ratioBefore).not.toBe(r.syncedRatio);
+    expect(r.deadband.returned).toBe(r.deadband.ratioBefore);
+    expect(r.deadband.after.reallocCount).toBe(0);
+    expect(r.hidden.measuredPx).toBe(0);
+    expect(r.hidden.returned).toBe(3);
+    expect(r.hidden.ratioAfter).toBe(3);
+    expect(r.hidden.after.reallocCount).toBe(0);
+    expect(r.unscaled.returned).toBeCloseTo(r.devicePixelRatio, 6);
+    expect(r.unscaled.after.reallocCount).toBe(0);
+  });
+});

@@ -435,7 +435,7 @@ onto shared pages instead. Both play here, unchanged:
   GPU pages handed back) and creates the other over the same root and assets;
   `pixelRatio` and `clipping` carry over and the held pose is redrawn at once.
   `player.renderer` is then a `CanvasRenderer`, whose knobs are `pixelRatio`,
-  `clipping`, `viewport` and `backend`. What each mode costs, as counters:
+  `syncPixelRatio()`, `clipping`, `viewport` and `backend`. What each mode costs, as counters:
   - **dom** — one element per drawn slot, one style write per changed slot,
     and the mesh tier's rasters (the knobs below).
   - **canvas** — one canvas element per player and, per frame that changed,
@@ -588,7 +588,7 @@ name, and unloading is still elements first, bitmaps second.
 | `new SpineHtmlRenderer(root, regionImages)` | `new DomRenderer(root, regionImages, pages?)` | Only for drawing your own frames; `RigPlayer` constructs its renderer. `pages` is the page-image map the mesh tier samples (`ModelAssets.pageImages`). A hand-built `regionImages` map is still accepted. |
 | `renderer.render(skeleton)` | `renderer.render(frame)` | Takes a `PosedFrame`, not a skeleton. `player.posedFrame()` returns the one the player would draw. |
 | `renderer.pixelRatio` | `player.renderer.pixelRatio` | On both renderers. Carried over when `player.mode` changes. |
-| `renderer.syncPixelRatio()` | `DomRenderer.syncPixelRatio()` | DOM mode only. `player.renderer` is typed as either renderer, so narrow it (`instanceof DomRenderer`) before calling. |
+| `renderer.syncPixelRatio()` | `player.renderer.syncPixelRatio()` | On both renderers, the same meaning and the same deadband (since 1.3.0; before it, DOM mode only). |
 | `renderer.meshBackingPixels` | `DomRenderer.meshBackingPixels` | DOM mode only. |
 | `renderer.meshBackend`, `meshBackendActive`, type `MeshBackend` | `DomRenderer.meshBackend`, `meshBackendActive`, type `MeshBackend` | Same values (`'canvas2d'` default, `'webgl'`). Also settable up front as `RigPlayerOptions.meshBackend`. |
 | `renderer.triangleExpand` | `DomRenderer.triangleExpand` | Same default (0.5). |
@@ -633,8 +633,6 @@ export, for which 1.0.0 declares nothing:
 
 Knobs on `DomRenderer` that `CanvasRenderer` does not declare:
 
-- `syncPixelRatio()`. `CanvasRenderer.pixelRatio` exists and is set by hand
-  (`devicePixelRatio * rootScale`).
 - `meshBackend` and `meshBackendActive`. The canvas mode has its own pair, `backend` and
   `backendActive` (type `CanvasBackend`, `'webgl'` by default).
 - `triangleExpand`, `meshBackingPixels`, `clipWriteCount`, `meshCount`, `meshReuseCount`,
