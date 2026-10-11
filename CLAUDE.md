@@ -384,7 +384,7 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   and refuses to print a path unless the two tarballs hold the same paths and
   the same bytes but for that line. `tests/package.spec.ts` runs it over the
   temp build once for each alias (the script takes `--alias <name>`; the names
-  are its `ALIASES`) and diffs the two manifests itself, and holds the comparison to a
+  are the spec's `ALIASES`) and diffs the two manifests itself, and holds the comparison to a
   planted difference, which it must name. Outside the changelog, the aliases are
   named by that script, `release.yml` (their publish and the confirmation),
   `tests/package.spec.ts`, NOTICE.md, the README and RELEASING.md.
