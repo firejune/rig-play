@@ -31,6 +31,8 @@ export interface RigPlayerOptions {
   skin?: string;
   /** The per-pose adjustment of bone locals (`player.adjust`), set from the first pose. */
   adjust?: BoneAdjust | null;
+  /** Which slots this player draws (`player.slots`); every slot when absent. */
+  slots?: SlotFilter | null;
   /** How the player draws (see `RenderMode`). Default `'dom'`. Can be changed later through `mode`. */
   mode?: RenderMode;
   /** The mesh tier's rasterizer (see `DomRenderer.meshBackend`) — the DOM mode only. */
@@ -167,12 +169,26 @@ export interface BoneWorld {
   scaleY: number;
 }
 
+/**
+ * Which slots a player draws: an allow list of slot names, or a predicate
+ * over the name. The pose is the whole rig's whatever the filter — bones,
+ * constraints, physics, `bone()` and `adjust` are untouched — and only the
+ * draw is filtered. A clipping slot the filter leaves out does not clip.
+ */
+export type SlotFilter = readonly string[] | ((slot: string) => boolean);
+
 /** A box in world units, Y up: `y` is the bottom edge. */
 export interface PoseBounds {
   x: number;
   y: number;
   width: number;
   height: number;
+}
+
+/** An allow list as a predicate. */
+function predicateOf(names: readonly string[]): (slot: string) => boolean {
+  const allowed = new Set(names);
+  return (slot) => allowed.has(slot);
 }
 
 export class RigPlayer {
@@ -223,6 +239,9 @@ export class RigPlayer {
   private pose: RawPose | null = null;
   private setup: RawPose | null = null;
   private adjustFn: BoneAdjust | null = null;
+  private slotFilter: SlotFilter | null = null;
+  /** `slotFilter` as a predicate; every slot when null. */
+  private draws: (slot: string) => boolean = () => true;
   /** Handed to every track the player opens; reads the current `adjust` so setting it later needs no reopen. */
   private readonly adjustHook: CoreLocalAdjust = (locals) => {
     if (this.adjustFn !== null) this.adjustFn(locals);
@@ -244,6 +263,7 @@ export class RigPlayer {
     this.assets = assets;
     this.meshBackend = options.meshBackend;
     this.adjustFn = options.adjust ?? null;
+    if (options.slots !== undefined && options.slots !== null) this.slots = options.slots;
     this.active = this.create(options.mode ?? 'dom');
   }
 
@@ -534,6 +554,39 @@ export class RigPlayer {
   }
 
   /**
+   * Which slots this player draws (`SlotFilter`), or null for every slot.
+   * Settable on a live player: the next `draw` shows it, and `bounds()` reads
+   * the drawn slots. An allow list naming a slot the document does not have
+   * is refused by name. The pose is the whole rig's: `bone()`, `adjust`, the
+   * events and the tracks see no filter.
+   */
+  get slots(): SlotFilter | null {
+    return this.slotFilter;
+  }
+
+  set slots(filter: SlotFilter | null) {
+    if (filter === null) {
+      this.slotFilter = null;
+      this.draws = () => true;
+      return;
+    }
+    if (typeof filter === 'function') {
+      this.slotFilter = filter;
+      this.draws = filter;
+      return;
+    }
+    if (!Array.isArray(filter)) throw new Error(`slots must be an array of slot names, a function, or null, got ${typeof filter}`);
+    const known = new Set(this.read.doc.slots.map((slot) => slot.name));
+    const unknown = filter.filter((name) => !known.has(name));
+    if (unknown.length > 0) {
+      throw new Error(`no slot named ${unknown.map((n) => JSON.stringify(n)).join(', ')} in this document (slots: ${[...known].join(', ')})`);
+    }
+    const allowed = new Set(filter);
+    this.slotFilter = [...filter];
+    this.draws = (slot) => allowed.has(slot);
+  }
+
+  /**
    * The per-pose adjustment of bone locals (`BoneAdjust`), or null for none.
    * It is applied by every track the player opens — `play`, the reopen inside
    * `seek` — and by the pose drawn again after `mode` changes, on every pose
@@ -602,7 +655,7 @@ export class RigPlayer {
    * mode; nothing is computed until called.
    */
   bounds(): PoseBounds | null {
-    const frame = this.pose === null ? frameOf(this.source, this.posed(), this.color) : this.posedFrame();
+    const frame = this.pose === null ? frameOf(this.source, this.posed(), this.color, this.draws) : this.posedFrame();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const slot of frame.order) {
       const points = slot.kind === 'region' ? slot.corners : slot.vertices;
@@ -637,10 +690,17 @@ export class RigPlayer {
     return this.setup;
   }
 
-  /** The pose the player holds, as the frame record the renderer draws. */
-  posedFrame(): PosedFrame {
+  /**
+   * The pose the player holds, as the frame record the renderer draws — under
+   * this player's `slots` filter, or under `slots` given here instead (a
+   * second renderer over the same assets drawing this player's pose on
+   * another root: `other.render(player.posedFrame(['hand_f']))`, the one rig
+   * posed once).
+   */
+  posedFrame(slots?: SlotFilter | null): PosedFrame {
     if (this.pose === null) return { order: [] };
-    return frameOf(this.source, this.pose, this.color);
+    const draws = slots === undefined ? this.draws : slots === null ? () => true : typeof slots === 'function' ? slots : predicateOf(slots);
+    return frameOf(this.source, this.pose, this.color, draws);
   }
 
   /** Removes the renderer's elements and hands its GPU pages back. The assets stay the caller's. */

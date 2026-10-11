@@ -236,7 +236,7 @@ function trianglesOf(source: FrameSource, drawn: RawDrawn): number[] {
  *
  * @internal Exported for the frame gate's synthetic cover cases.
  */
-export function clipCover(pose: Pick<RawPose, 'clips' | 'shown' | 'drawOrder'>, active: ReadonlySet<string>): Map<string, PosedClip> {
+export function clipCover(pose: Pick<RawPose, 'clips' | 'shown' | 'drawOrder'>, active: ReadonlySet<string>, draws: (slot: string) => boolean = () => true): Map<string, PosedClip> {
   const polygons = new Map(pose.clips.map((c) => [c[0], { end: c[2], polygon: c[3] }]));
   const shownOf = new Map(pose.shown.map((s) => [s.slot, s]));
   const cover = new Map<string, PosedClip>();
@@ -247,7 +247,9 @@ export function clipCover(pose: Pick<RawPose, 'clips' | 'shown' | 'drawOrder'>, 
     const clip = g?.kind === 'clipping' ? polygons.get(slot) : undefined;
     if (shown !== undefined && g?.kind === 'clipping' && clip !== undefined) {
       if (current !== null && current.end === slot) current = null;
-      if (active.has(shown.bone) && current === null) {
+      // A clip start the player does not draw does not clip: the filter is a
+      // draw filter, and a clip is drawn by its effect on what it covers.
+      if (active.has(shown.bone) && current === null && draws(slot)) {
         current = { end: clip.end, clip: { polygon: clip.polygon, inverse: g.inverse, convex: g.convex } };
       }
       continue;
@@ -283,16 +285,18 @@ export function frameOf(
   source: FrameSource,
   pose: RawPose,
   color: readonly [number, number, number, number] = [1, 1, 1, 1],
+  draws: (slot: string) => boolean = () => true,
 ): PosedFrame {
   const { drawn: regions, why } = drawnRegions(source.doc, pose.shown, pose.drawOrder, source.uv);
   if (regions === null) throw new CoreInputError(`the page UVs are not posed: ${why}`);
   const regionOf = new Map(regions.map((r) => [r.slot, r]));
   const rows = new Map<string, CoreSlotRow>(pose.slots.map((row) => [row[0], row]));
   const z = new Map(pose.drawOrder.map((slot, index) => [slot, index]));
-  const cover = clipCover(pose, source.active);
+  const cover = clipCover(pose, source.active, draws);
   const [sr, sg, sb, sa] = color;
   const order: PosedSlot[] = [];
   for (const d of pose.drawn) {
+    if (!draws(d.slot)) continue;
     const bone = source.boneOf.get(d.slot);
     if (bone === undefined || !source.active.has(bone)) continue;
     const found = regionOf.get(d.slot);
