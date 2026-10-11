@@ -1,5 +1,5 @@
 {
-  "name": "rig-play",
+  "name": "@rig-c/play",
   "version": "1.8.0",
   "description": "Plays skeleton.model.json written by rigc build as plain DOM elements — rigid slots as <img> posed by CSS matrix, deform meshes on small per-part canvases — or as one canvas.",
   "type": "module",
@@ -7,14 +7,14 @@
   "author": "firejune",
   "repository": {
     "type": "git",
-    "url": "https://github.com/firejune/rig-play.git"
+    "url": "https://github.com/rig-c/play.git"
   },
-  "homepage": "https://github.com/firejune/rig-play#readme",
+  "homepage": "https://github.com/rig-c/play#readme",
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/firejune"
   },
-  "bugs": "https://github.com/firejune/rig-play/issues",
+  "bugs": "https://github.com/rig-c/play/issues",
   "keywords": [
     "rigc",
     "rig-c",

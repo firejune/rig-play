@@ -6,14 +6,15 @@
 # Merging that PR is the release: the resulting push runs this workflow again,
 # release-please tags vX.Y.Z and cuts the GitHub release, and the same run
 # publishes to npm over OIDC (trusted publishing) — no npm token, no OTP. It
-# publishes the package twice, under two names (#65): `rig-play`, the name in
-# package.json, and `spine-html`, the name it first shipped under, kept as an
-# alias carrying the same files at every version.
+# publishes the package three times (#65, #98): `@rig-c/play`, the name in
+# package.json, then `rig-play` (1.0–1.8) and `spine-html` (0.x), the names it
+# shipped under before, kept as aliases carrying the same files at every version.
 #
 # Two constraints are load-bearing, do not "simplify" them away:
-#   - Both publishes must stay in THIS file. npm's trusted publisher for each
-#     name — rig-play and spine-html, one form per package on npmjs.com — is
-#     pinned to the workflow filename `release.yml`.
+#   - Every publish must stay in THIS file. npm's trusted publisher for each
+#     name — @rig-c/play, rig-play and spine-html, one form per package on
+#     npmjs.com, each naming the repository rig-c/play — is pinned to the
+#     workflow filename `release.yml`.
 #   - It must stay on a GitHub-hosted runner. npm does not support OIDC from
 #     self-hosted runners.
 name: release
@@ -21,18 +22,24 @@ name: release
 on:
   push:
     branches: [main]
-  # The alias on its own (#65): when the cut published `rig-play` and the
-  # alias publish failed after it — the first cut did, on a trusted-publisher
-  # form that still named the repository's old name — the release job cannot
-  # be re-run, because its first publish would now be refused as an existing
-  # version before the alias step is reached. This path publishes only the
-  # alias, from the tarball the registry serves for `rig-play` at that
-  # version (never from a rebuild), and takes the same confirmation.
+  # The aliases on their own (#65): when the cut published `@rig-c/play` and an
+  # alias publish failed after it — the first rig-play cut did, on a
+  # trusted-publisher form that still named the repository's old path — the
+  # release job cannot be re-run, because its first publish would now be
+  # refused as an existing version before the alias step is reached. This path
+  # publishes only the aliases named, from the tarball the registry serves for
+  # `@rig-c/play` at that version (never from a rebuild), and takes the same
+  # confirmation.
   workflow_dispatch:
     inputs:
       alias_version:
-        description: 'Version already published as rig-play (e.g. 1.0.0) to publish as spine-html'
+        description: 'Version already published as @rig-c/play (e.g. 1.9.0) to publish under the aliases'
         required: true
+        type: string
+      alias_names:
+        description: 'Which aliases to publish, space-separated (an alias already at that version would be refused)'
+        required: true
+        default: 'rig-play spine-html'
         type: string
 
 permissions: {}
@@ -97,14 +104,16 @@ jobs:
 
       # prepublishOnly runs `build:lib` (tsc -p tsconfig.build.json), so the
       # tarball is built from the tagged tree and a type error fails the
-      # publish instead of shipping.
-      - name: Publish to npm
+      # publish instead of shipping. `--access public`: a scoped package is
+      # restricted unless told otherwise.
+      - name: Publish @rig-c/play
         if: ${{ steps.release.outputs.release_created == 'true' }}
         run: npm publish --provenance --access public
 
-      # The alias (#65): the same files under the name the package first
-      # shipped as, so every link that points at `spine-html` keeps receiving
-      # every version. `scripts/alias-tarball.mjs` packs this checkout — the
+      # The aliases (#65, #98): the same files under the names the package
+      # shipped as before, so every link that points at `rig-play` or
+      # `spine-html` keeps receiving every version. For each,
+      # `scripts/alias-tarball.mjs` packs this checkout — the
       # tagged tree the step above built `dist/` in and published from, with
       # scripts ignored so nothing is rebuilt — into the runner's temp
       # directory, rewrites the one `"name"` line of the extracted
@@ -116,14 +125,16 @@ jobs:
       # gap: `npm publish <tarball>` runs none (`--ignore-scripts` says so
       # explicitly), so `prepublishOnly` gates the step above and only that
       # one. The alias is that publish's files, and the script holds it to them.
-      - name: Publish the alias spine-html
+      - name: Publish the aliases rig-play and spine-html
         if: ${{ steps.release.outputs.release_created == 'true' }}
         run: |
           set -euo pipefail
-          alias_tgz="$(node scripts/alias-tarball.mjs pack --out "$RUNNER_TEMP/alias")"
-          npm publish "$alias_tgz" --provenance --access public --ignore-scripts
+          for alias in rig-play spine-html; do
+            alias_tgz="$(node scripts/alias-tarball.mjs pack --alias "$alias" --out "$RUNNER_TEMP/alias-$alias")"
+            npm publish "$alias_tgz" --provenance --access public --ignore-scripts
+          done
 
-      # The confirmation: both names, at the version just released, fetched
+      # The confirmation: every name, at the version just released, fetched
       # from the registry and compared unpacked — the same paths, every byte
       # the same but the manifest's name line — and the comparison line
       # printed. It reads what the registry serves, not what this tree packs.
@@ -132,7 +143,7 @@ jobs:
       # minutes; a version still not served at the end is a red that says the
       # confirmation was not taken, not that the package is wrong. A red here
       # does not un-publish anything; it says the cut needs a follow-up.
-      - name: Confirm both names serve the same files
+      - name: Confirm every name serves the same files
         if: ${{ steps.release.outputs.release_created == 'true' }}
         env:
           TAG_NAME: ${{ steps.release.outputs.tag_name }}
@@ -140,11 +151,11 @@ jobs:
           set -euo pipefail
           version="${TAG_NAME#v}"
           dest="$RUNNER_TEMP/confirm"
-          mkdir -p "$dest/rig-play" "$dest/spine-html"
           fetch() {
-            local name="$1" attempt
+            local name="$1" into="$2" attempt
+            mkdir -p "$into"
             for attempt in $(seq 1 30); do
-              if npm pack "$name@$version" --pack-destination "$dest/$name" --loglevel=error > /dev/null 2>&1; then
+              if npm pack "$name@$version" --pack-destination "$into" --loglevel=error > /dev/null 2>&1; then
                 echo "fetched $name@$version on attempt $attempt"
                 return 0
               fi
@@ -153,11 +164,13 @@ jobs:
             echo "::error::$name@$version was not served within 15 minutes: confirmation NOT taken"
             return 1
           }
-          fetch rig-play
-          fetch spine-html
-          npm view "rig-play@$version" version
-          npm view "spine-html@$version" version
-          node scripts/alias-tarball.mjs compare "$dest"/rig-play/*.tgz "$dest"/spine-html/*.tgz
+          fetch @rig-c/play "$dest/canonical"
+          npm view "@rig-c/play@$version" version
+          for alias in ${ALIASES:-rig-play spine-html}; do
+            fetch "$alias" "$dest/$alias"
+            npm view "$alias@$version" version
+            node scripts/alias-tarball.mjs compare "$dest"/canonical/*.tgz "$dest/$alias"/*.tgz
+          done
 
   # Dispatch only: see `workflow_dispatch` above.
   alias:
@@ -169,6 +182,7 @@ jobs:
       id-token: write # OIDC token for npm trusted publishing
     env:
       ALIAS_VERSION: ${{ inputs.alias_version }}
+      ALIASES: ${{ inputs.alias_names }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -184,28 +198,31 @@ jobs:
           npm install -g npm@latest
           npm --version
 
-      # The source is the registry's own `rig-play@<version>` tarball, so the
-      # alias is that publish's files whatever the checkout holds; the script
-      # rewrites the one name line and holds the result to it file by file.
-      - name: Publish the alias spine-html from the registry's rig-play tarball
+      # The source is the registry's own `@rig-c/play@<version>` tarball (npm
+      # names it `rig-c-play-<version>.tgz`), so each alias is that publish's
+      # files whatever the checkout holds; the script rewrites the one name
+      # line and holds the result to it file by file.
+      - name: Publish the named aliases from the registry's @rig-c/play tarball
         run: |
           set -euo pipefail
           src="$RUNNER_TEMP/src"
           mkdir -p "$src"
-          npm pack "rig-play@$ALIAS_VERSION" --pack-destination "$src" --loglevel=error
-          alias_tgz="$(node scripts/alias-tarball.mjs pack --out "$RUNNER_TEMP/alias" --tarball "$src"/rig-play-*.tgz)"
-          npm publish "$alias_tgz" --provenance --access public --ignore-scripts
+          npm pack "@rig-c/play@$ALIAS_VERSION" --pack-destination "$src" --loglevel=error
+          for alias in $ALIASES; do
+            alias_tgz="$(node scripts/alias-tarball.mjs pack --alias "$alias" --out "$RUNNER_TEMP/alias-$alias" --tarball "$src"/rig-c-play-*.tgz)"
+            npm publish "$alias_tgz" --provenance --access public --ignore-scripts
+          done
 
-      - name: Confirm both names serve the same files
+      - name: Confirm every name serves the same files
         run: |
           set -euo pipefail
           version="$ALIAS_VERSION"
           dest="$RUNNER_TEMP/confirm"
-          mkdir -p "$dest/rig-play" "$dest/spine-html"
           fetch() {
-            local name="$1" attempt
+            local name="$1" into="$2" attempt
+            mkdir -p "$into"
             for attempt in $(seq 1 30); do
-              if npm pack "$name@$version" --pack-destination "$dest/$name" --loglevel=error > /dev/null 2>&1; then
+              if npm pack "$name@$version" --pack-destination "$into" --loglevel=error > /dev/null 2>&1; then
                 echo "fetched $name@$version on attempt $attempt"
                 return 0
               fi
@@ -214,8 +231,10 @@ jobs:
             echo "::error::$name@$version was not served within 15 minutes: confirmation NOT taken"
             return 1
           }
-          fetch rig-play
-          fetch spine-html
-          npm view "rig-play@$version" version
-          npm view "spine-html@$version" version
-          node scripts/alias-tarball.mjs compare "$dest"/rig-play/*.tgz "$dest"/spine-html/*.tgz
+          fetch @rig-c/play "$dest/canonical"
+          npm view "@rig-c/play@$version" version
+          for alias in ${ALIASES:-rig-play spine-html}; do
+            fetch "$alias" "$dest/$alias"
+            npm view "$alias@$version" version
+            node scripts/alias-tarball.mjs compare "$dest"/canonical/*.tgz "$dest/$alias"/*.tgz
+          done

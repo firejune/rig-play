@@ -1,18 +1,21 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="rig-play - plays rigc's compiled model as DOM elements or one canvas" width="100%" />
+  <img src="assets/banner.svg" alt="@rig-c/play - plays rigc's compiled model as DOM elements or one canvas" width="100%" />
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/rig-play"><img src="https://img.shields.io/npm/v/rig-play.svg?style=flat-square&color=FF6B4A" alt="npm version" /></a>
-  <a href="https://www.npmjs.com/package/rig-play"><img src="https://img.shields.io/npm/dm/rig-play.svg?style=flat-square&color=EC4899" alt="npm downloads" /></a>
+  <a href="https://www.npmjs.com/package/@rig-c/play"><img src="https://img.shields.io/npm/v/@rig-c/play.svg?style=flat-square&color=FF6B4A" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@rig-c/play"><img src="https://img.shields.io/npm/dm/@rig-c/play.svg?style=flat-square&color=EC4899" alt="npm downloads" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-38BDF8.svg?style=flat-square" alt="license" /></a>
 </p>
 
-Plays the rigs [rigc](https://github.com/firejune/rigc) builds — the compiled model
+Plays the rigs [rigc](https://github.com/rig-c/core) builds — the compiled model
 document `rigc build` writes, `skeleton.model.json` — as **plain DOM**: one
 absolutely-positioned `<img>` per rigid slot, posed with a single CSS `matrix()` write
 per frame, deforming meshes on small per-part canvases; or as **one canvas** per player.
-`spine-html` is the same package under the name it first shipped as.
+`rig-play` and `spine-html` are the same package under the names it shipped as before.
+The toolchain lives under one organisation: the compiler [rig-c/core](https://github.com/rig-c/core)
+(npm `rig-c`), the part generator [rig-c/parts](https://github.com/rig-c/parts)
+(npm `@rig-c/parts`), and this player, [rig-c/play](https://github.com/rig-c/play).
 
 ## Why
 
@@ -29,8 +32,9 @@ At 1.0 it stopped being a Spine runtime. It plays the model document `rigc build
 poses it through `rig-c/core` — rigc's own posing core, bundled into the package — and
 links nothing from Esoteric Software; a Spine export is refused by name. It gained a
 second render mode that draws the whole frame into one canvas. And it took the name
-`rig-play`, which says what it is; `spine-html` keeps being published with the same
-files, so links to the old name keep working.
+`rig-play`, which says what it is; after 1.8 it moved with the rest of the toolchain to
+`@rig-c/play`. `rig-play` and `spine-html` keep being published with the same files, so
+links to either earlier name keep working.
 
 ### Measured
 
@@ -159,11 +163,11 @@ default stays `dom`.
 ## Install
 
 ```bash
-npm i rig-play
-npm i -D rig-c    # the build tool: `rigc build` writes the model rig-play loads
+npm i @rig-c/play
+npm i -D rig-c    # the build tool: `rigc build` writes the model the player loads
 ```
 
-The package plays rigs built by [rigc](https://github.com/firejune/rigc):
+The package plays rigs built by [rigc](https://github.com/rig-c/core):
 `rigc build` writes a compiled model document, `skeleton.model.json` (spec
 `rigc-compiled/3`), next to the Spine pair and the atlas pages. That document
 is what the player loads, and it states everything posing and drawing need —
@@ -173,7 +177,7 @@ the skeleton, the animations, and where every region sits on its page — so the
 is nothing else to install.
 
 ```ts
-import { loadModel, RigPlayer } from 'rig-play';
+import { loadModel, RigPlayer } from '@rig-c/play';
 
 const assets = await loadModel({ modelUrl: '/rigs/walk/skeleton.model.json' });
 
@@ -212,7 +216,7 @@ else. A document whose `spec` is not one `rig-c/core` reads is refused with the
 core's own sentence plus "build it with `rigc build`", and so is a
 `rigc-compiled/1` document, which predates the `pages` section.
 
-`rig-play` is a third-party renderer and is not affiliated with or endorsed by
+`@rig-c/play` is a third-party renderer and is not affiliated with or endorsed by
 Esoteric Software.
 
 ### Drawing your own frames
@@ -221,7 +225,7 @@ Esoteric Software.
 record, so anything that can produce one can draw through it:
 
 ```ts
-import { DomRenderer, type PosedFrame } from 'rig-play';
+import { DomRenderer, type PosedFrame } from '@rig-c/play';
 
 const renderer = new DomRenderer(rootElement, assets.regionImages, assets.pageImages);
 renderer.render(frame); // frame: PosedFrame
@@ -653,9 +657,9 @@ name, and unloading is still elements first, bitmaps second.
 
 ### 0.8 → 1.0
 
-| 0.8.0 (`spine-html`) | 1.0.0 (`rig-play`) | Note |
+| 0.8.0 (`spine-html`) | 1.x (`@rig-c/play`, formerly `rig-play`) | Note |
 | --- | --- | --- |
-| `npm i spine-html @esotericsoftware/spine-core` | `npm i rig-play`, and `npm i -D rig-c` for the build tool | 0.8 declared spine-core as a peer dependency (`>=4.0.0 <4.4.0`). 1.0.0 declares no dependencies and no peer dependencies. |
+| `npm i spine-html @esotericsoftware/spine-core` | `npm i @rig-c/play`, and `npm i -D rig-c` for the build tool | 0.8 declared spine-core as a peer dependency (`>=4.0.0 <4.4.0`). 1.0.0 declares no dependencies and no peer dependencies. |
 | `loadSkeletonAssets(options)` | `loadModel(options)` | One URL instead of two. The `.atlas` and `skeleton.json` a build writes beside the document are not fetched. |
 | `LoadSkeletonAssetsOptions.atlasUrl`, `skeletonUrl` | `LoadModelOptions.modelUrl` | |
 | `resolvePage(pageName, atlasUrl)` | `resolvePage(pageName, modelUrl)` | The default now resolves a page name against the model URL's directory. |
@@ -761,7 +765,7 @@ renderer.dispose(); assets.dispose(); // on unload
 1.0.0:
 
 ```ts
-import { loadModel, RigPlayer } from 'rig-play';
+import { loadModel, RigPlayer } from '@rig-c/play';
 const assets = await loadModel({ modelUrl: '/rigs/walk/skeleton.model.json' });
 const player = new RigPlayer(rootElement, assets);
 player.play('walk', { loop: true });
@@ -934,10 +938,10 @@ perf oracle is the demo's stats line on a real device.
 
 ## License
 
-rig-play's own code is MIT (see [LICENSE](LICENSE)). That says nothing about Spine,
+@rig-c/play's own code is MIT (see [LICENSE](LICENSE)). That says nothing about Spine,
 so here is what is true of this package and this repository, stated plainly:
 
-1. The published package — `rig-play`, and `spine-html`, the same files — **links
+1. The published package — `@rig-c/play`, and `rig-play` and `spine-html`, the same files — **links
    nothing from Esoteric Software**. Its one module bundles the renderer and
    `rig-c/core` (MIT), which poses rigc's model document; no part of the
    [Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes) is in it or
@@ -956,7 +960,7 @@ so here is what is true of this package and this repository, stated plainly:
    this project.
 
 > **What a consumer does with rigc's Spine-format output is governed by Esoteric
-> Software's terms**, not by this package — rig-play neither adds those terms nor
+> Software's terms**, not by this package — @rig-c/play neither adds those terms nor
 > removes them.
 
 No example assets of Esoteric Software's are fetched or redistributed. See

@@ -1,14 +1,14 @@
 // The package under its second name: the same bytes as the tarball this tree
 // packs, with the `name` line of `package.json` changed and nothing else.
 //
-//     node scripts/alias-tarball.mjs pack --out <dir> [--dir <package dir> | --tarball <tgz>]
+//     node scripts/alias-tarball.mjs pack --alias <name> --out <dir> [--dir <package dir> | --tarball <tgz>]
 //     node scripts/alias-tarball.mjs compare <package.tgz> <alias.tgz>
 //
-// The package is published as `rig-play`, the `name` in package.json, and at
-// every version again as `spine-html`, the name it first shipped under (#65):
-// links outside this repository point at that name, and nothing but the alias
-// keeps its npm page current. RELEASING.md *Two names, one tarball* says which
-// name is which.
+// The package is published as `@rig-c/play`, the `name` in package.json, and at
+// every version again under the two names it shipped under before (#65, #98):
+// `rig-play` (1.0–1.8) and `spine-html` (0.x). Links outside this repository
+// point at both, and nothing but an alias keeps an npm page current.
+// RELEASING.md *Three names, one tarball* says which name is which.
 //
 // `pack` writes the alias tarball into `--out` and prints its path as the last
 // line of stdout, which is what `release.yml` hands to its second
@@ -49,10 +49,10 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * The second name. Not in package.json, which names the package once; this is
- * the one place in the tree a program reads it from.
+ * The earlier names. Not in package.json, which names the package once; this
+ * is the one place in the tree a program reads them from.
  */
-export const ALIAS = 'spine-html';
+export const ALIASES = ['rig-play', 'spine-html'];
 
 const EXIT_SAME = 0;
 const EXIT_DIFFERENT = 1;
@@ -126,7 +126,7 @@ function firstDifference(a, b) {
  * @returns {{ name: string, alias: string, files: number, faults: string[] }}
  */
 export function compareTarballs(packageTgz, aliasTgz) {
-  const work = mkdtempSync(join(tmpdir(), 'rig-play-alias-compare-'));
+  const work = mkdtempSync(join(tmpdir(), 'play-alias-compare-'));
   try {
     const a = join(work, 'package');
     const b = join(work, 'alias');
@@ -187,9 +187,10 @@ function packInto(dir, into) {
  * the package tarball it was made from. That tarball is packed from `dir`
  * unless `packageTgz` is given.
  */
-export function packAlias({ out, dir = ROOT, packageTgz, alias = ALIAS }) {
+export function packAlias({ out, dir = ROOT, packageTgz, alias }) {
+  if (!ALIASES.includes(alias)) throw new AliasTarballError(`${JSON.stringify(alias)} is not one of the package's earlier names (${ALIASES.join(', ')})`);
   mkdirSync(out, { recursive: true });
-  const work = mkdtempSync(join(tmpdir(), 'rig-play-alias-pack-'));
+  const work = mkdtempSync(join(tmpdir(), 'play-alias-pack-'));
   try {
     const primary = packageTgz ?? packInto(dir, join(work, 'package'));
     const tree = join(work, 'tree');
@@ -218,14 +219,14 @@ export function sameContentLine(comparison) {
   return `PASS  ALIAS_SAME_CONTENT: ${comparison.alias} carries the ${comparison.files} file(s) of ${comparison.name}, byte for byte but for the name line of ${MANIFEST}`;
 }
 
-const HELP = `rig-play alias tarball — the package under its second name (${ALIAS}), with nothing else changed
+const HELP = `@rig-c/play alias tarball — the package under an earlier name (${ALIASES.join(' or ')}), with nothing else changed
 
 usage:
-  node scripts/alias-tarball.mjs pack --out <dir> [--dir <package dir> | --tarball <tgz>]
+  node scripts/alias-tarball.mjs pack --alias <name> --out <dir> [--dir <package dir> | --tarball <tgz>]
   node scripts/alias-tarball.mjs compare <package.tgz> <alias.tgz>
 
 pack     packs <package dir> (default: this checkout, scripts ignored) or takes
-         --tarball, rewrites the one "name" line of its package.json to ${ALIAS},
+         --tarball, rewrites the one "name" line of its package.json to <name>,
          packs it again into <dir>, holds the result to the package tarball with
          compare, and prints the alias tarball's path last
 compare  the same paths, every file the same bytes, and package.json the same once
@@ -263,17 +264,22 @@ function main() {
       const flags = new Map();
       for (let i = 0; i < rest.length; i += 2) {
         const [flag, value] = [rest[i], rest[i + 1]];
-        if (!['--out', '--dir', '--tarball'].includes(flag) || value === undefined || value.startsWith('--')) {
+        if (!['--alias', '--out', '--dir', '--tarball'].includes(flag) || value === undefined || value.startsWith('--')) {
           console.error(`alias-tarball: "${flag}" is not an argument pack takes with a value; --help lists them`);
           return EXIT_USAGE;
         }
         flags.set(flag, value);
       }
       const out = flags.get('--out');
+      const alias = flags.get('--alias');
       const dir = flags.get('--dir');
       const tarball = flags.get('--tarball');
       if (out === undefined) {
         console.error('alias-tarball: pack needs --out <dir>');
+        return EXIT_USAGE;
+      }
+      if (alias === undefined || !ALIASES.includes(alias)) {
+        console.error(`alias-tarball: pack needs --alias, one of ${ALIASES.join(', ')}`);
         return EXIT_USAGE;
       }
       if (dir !== undefined && tarball !== undefined) {
@@ -292,6 +298,7 @@ function main() {
         out: resolve(out),
         dir: dir === undefined ? ROOT : resolve(dir),
         packageTgz: tarball === undefined ? undefined : resolve(tarball),
+        alias,
       });
       console.error(`alias-tarball: ${sameContentLine(made.comparison)}`);
       console.log(made.tgz);
