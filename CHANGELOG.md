@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/firejune/rig-play/compare/v1.3.0...v1.4.0) (2026-10-11)
+
+
+### Features
+
+* **loader:** load for the canvas mode without cutting regions, or cut them into data: URLs ([#84](https://github.com/firejune/rig-play/issues/84)) ([e1b4a29](https://github.com/firejune/rig-play/commit/e1b4a29636b51a871c0dad50bbc0c2a2c529968b))
+* **player:** change the skin on a live player, say what ModelAssets.stage is, and land the region-loading tests [#84](https://github.com/firejune/rig-play/issues/84) shipped without ([#86](https://github.com/firejune/rig-play/issues/86)) ([5b1fda3](https://github.com/firejune/rig-play/commit/5b1fda31a8c5f20f274d8034420f6d1ee2ebe072))
+
 ## [1.3.0](https://github.com/firejune/rig-play/compare/v1.2.0...v1.3.0) (2026-10-11)
 
 
