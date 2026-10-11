@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/firejune/rig-play/compare/v1.4.0...v1.5.0) (2026-10-11)
+
+
+### Features
+
+* **player:** several tracks — play on a track with a mix, queue, clear — on rig-c's live tracks, with a plain play unchanged ([#89](https://github.com/firejune/rig-play/issues/89)) ([4ef1c1f](https://github.com/firejune/rig-play/commit/4ef1c1fd159e4b8c7daf984bb9e6524e448015eb)), closes [#87](https://github.com/firejune/rig-play/issues/87)
+
 ## [1.4.0](https://github.com/firejune/rig-play/compare/v1.3.0...v1.4.0) (2026-10-11)
 
 
