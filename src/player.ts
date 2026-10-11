@@ -211,6 +211,11 @@ export class RigPlayer {
       return renderer;
     }
     if (mode !== 'dom') throw new Error(`mode must be 'dom' or 'canvas', got ${String(mode)}`);
+    if (this.assets.regions === 'none') {
+      throw new Error(
+        "these assets were loaded with regions: 'none' (no region bitmaps, for the canvas mode only); the DOM mode needs a load with regions 'blob' or 'data'",
+      );
+    }
     const renderer = new DomRenderer(this.root, this.assets.regionImages, this.assets.pageImages);
     if (this.meshBackend) renderer.meshBackend = this.meshBackend;
     return renderer;
