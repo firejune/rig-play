@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/firejune/rig-play/compare/v1.2.0...v1.3.0) (2026-10-11)
+
+
+### Features
+
+* **render:** give CanvasRenderer syncPixelRatio(), the DOM tier's call with the same meaning ([#82](https://github.com/firejune/rig-play/issues/82)) ([e30f034](https://github.com/firejune/rig-play/commit/e30f034a78603b57732574d95209719003707eec))
+
 ## [1.2.0](https://github.com/firejune/rig-play/compare/v1.1.0...v1.2.0) (2026-10-10)
 
 
