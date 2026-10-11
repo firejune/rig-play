@@ -58,3 +58,23 @@ test('events carry their track; a one-shot mixing out fires nothing; completes a
   expect(r.completes[0].at).toBeGreaterThanOrEqual(1.6 - 1e-9);
   expect(r.completes[0].at).toBeLessThanOrEqual(1.6 + 1 / 60 + 1e-9);
 });
+
+test('tracks: true stands the player on the tracks from the start — no replay, the same pose, seek and skin until layering', async ({ page }) => {
+  const r = await page.evaluate(() => window.rigPlayHarness.trackModeProbe());
+
+  // The first composing call costs one pose on the tracks (the step(0) that re-poses);
+  // on the default path it is the replay: pose 0 of the new tracks, one pose per step
+  // played, and that same step(0).
+  expect(r.posesOnComposeTracks).toBe(1);
+  expect(r.posesOnComposeDefault).toBe(r.stepsPlayedBefore + 2);
+
+  expect(r.tracksSeekBoneMismatches).toEqual([]);
+  expect(r.tracksSeekFrameSame).toBe(true);
+  expect(r.seekBeforeLayerOk).toBe(true);
+  expect(r.skinBeforeLayerEmblem).toBe('emblem');
+  expect(r.seekAfterLayerRefusal).toContain('single animation on track 0');
+
+  expect(r.stepEventTracks.length).toBeGreaterThanOrEqual(2);
+  for (const track of r.stepEventTracks) expect(track).toBe(0);
+  expect(r.completeTracks).toEqual([0]);
+});

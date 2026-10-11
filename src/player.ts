@@ -43,6 +43,18 @@ export interface RigPlayerOptions {
    * and the pose at a time depends on the steps taken to reach it.
    */
   seekStep?: number;
+  /**
+   * Stand the player on rig-c's live tracks from the first `play`, so the
+   * first composing call — a mix, another track, a queue, a clear — never
+   * replays. Without it a plain `play` runs on the single live track, and the
+   * first composing call carries it over by replaying the time played in
+   * `seekStep` increments (there is no hand-over of a live track's physics
+   * state in the core), which on a stage that idled a while is one long
+   * frame. Pick the single track for a rig whose animations key what the
+   * tracks do not mix (constraints, sequences, the draw order, a path's
+   * deform); pick the tracks for layering.
+   */
+  tracks?: boolean;
 }
 
 /** What `on('event', …)` hands a listener: one event key the step crossed. */
@@ -235,6 +247,10 @@ export class RigPlayer {
   private loop = true;
   /** One past the highest track touched — how many `current(track)` reads a step takes. */
   private trackCount = 0;
+  /** `RigPlayerOptions.tracks`: every play opens the live tracks, never the single track. */
+  private readonly trackMode: boolean;
+  /** Set once anything beyond a plain play on track 0 happened: a mix, another track, a queue, a clear. `seek` and `skin` then cannot replay and refuse. */
+  private beyondBase = false;
   private paused = false;
   private pose: RawPose | null = null;
   private setup: RawPose | null = null;
@@ -258,6 +274,7 @@ export class RigPlayer {
     this.view = options.skin === undefined ? underNoSkin(read.doc) : underSkin(read.doc, options.skin);
     this.source = frameSource(this.view, read.parsed);
     this.seekStep = options.seekStep ?? 1 / 60;
+    this.trackMode = options.tracks === true;
     if (!(this.seekStep > 0)) throw new Error(`seekStep must be a positive number of seconds, got ${String(options.seekStep)}`);
     this.root = root;
     this.assets = assets;
@@ -336,7 +353,8 @@ export class RigPlayer {
     const loop = options.loop ?? true;
     const mix = options.mix ?? 0;
     this.paused = false;
-    if (this.tracks === null && track === 0 && mix === 0) {
+    if (track !== 0 || mix !== 0) this.beyondBase = true;
+    if (this.tracks === null && track === 0 && mix === 0 && !this.trackMode) {
       // A plain play on track 0: the single live track, reopened at the
       // animation's first pose with the physics reset there.
       this.animation = name;
@@ -363,6 +381,7 @@ export class RigPlayer {
    */
   queue(name: string, options: QueueOptions = {}): void {
     const track = options.track ?? 0;
+    this.beyondBase = true;
     const tracks = this.compose();
     tracks.addAnimation(track, name, { loop: options.loop ?? true, mixDuration: options.mix ?? 0, delay: options.delay ?? 0 });
     this.trackCount = Math.max(this.trackCount, track + 1);
@@ -375,6 +394,7 @@ export class RigPlayer {
    * setup pose. The pose the player holds is re-posed at once.
    */
   clear(track = 0, options: { mix?: number } = {}): void {
+    this.beyondBase = true;
     const tracks = this.compose();
     tracks.setEmptyAnimation(track, options.mix ?? 0);
     this.trackCount = Math.max(this.trackCount, track + 1);
@@ -388,6 +408,7 @@ export class RigPlayer {
    * its last `mix` seconds.
    */
   queueClear(track = 0, options: { mix?: number; delay?: number } = {}): void {
+    this.beyondBase = true;
     const tracks = this.compose();
     tracks.addEmptyAnimation(track, options.mix ?? 0, options.delay ?? 0);
     this.trackCount = Math.max(this.trackCount, track + 1);
@@ -411,11 +432,14 @@ export class RigPlayer {
   }
 
   /**
-   * The live tracks, opened by the first composing call. A single track in
-   * play is carried over by replay: track 0 set to its animation, pose 0 taken
-   * by `start()` (the player's — nothing steps before it) and the tracks
-   * stepped to the single track's time in `seekStep` increments, so a physics
-   * rig's history restarts there and nothing is fired on the way.
+   * The live tracks, opened by the first composing call (or by the first
+   * `play` under `tracks: true`). A single track in play is carried over by
+   * replay: track 0 set to its animation, pose 0 taken by `start()` (the
+   * player's — nothing steps before it) and the tracks stepped to the single
+   * track's time in `seekStep` increments, so a physics rig's history
+   * restarts there and nothing is fired on the way. The core offers no
+   * hand-over of a live track's state, so that replay costs one pose per
+   * `seekStep` of time played — which `tracks: true` avoids entirely.
    */
   private compose(): LiveTracks {
     if (this.tracks !== null) return this.tracks;
@@ -455,13 +479,21 @@ export class RigPlayer {
   seek(time: number): void {
     if (this.animation === null) throw new Error('seek before play: no animation is open');
     if (!(time >= 0) || !Number.isFinite(time)) throw new Error(`seek time must be a finite time at or above 0, got ${String(time)}`);
-    if (this.tracks !== null) throw new Error('seek is defined for a single animation on track 0; after a mix, another track, a queue or a clear the player cannot replay to a time — step it forward with frame/advance instead');
+    if (this.beyondBase) throw new Error('seek is defined for a single animation on track 0; after a mix, another track, a queue or a clear the player cannot replay to a time — step it forward with frame/advance instead');
     this.reopen();
     this.stepTo(time);
   }
 
-  /** The single track opened again with track 0's animation as `play` last set it, at pose 0. */
+  /** Whatever is open, opened again with track 0's animation as `play` last set it, at pose 0: the single track, or the tracks under `tracks: true`. */
   private reopen(): void {
+    if (this.tracks !== null) {
+      const tracks = openTracks(this.view, { reset: 'animation', adjust: this.adjustHook });
+      tracks.setAnimation(0, this.animation as string, { loop: this.loop, mixDuration: 0 });
+      this.trackCount = 1;
+      this.tracks = tracks;
+      this.pose = tracks.start();
+      return;
+    }
     this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation', adjust: this.adjustHook });
     this.pose = this.track.first;
   }
@@ -540,14 +572,14 @@ export class RigPlayer {
 
   set skin(name: string | undefined) {
     if (name === this.skinName) return;
-    if (this.tracks !== null) throw new Error('skin cannot change after a mix, another track, a queue or a clear: the player cannot replay those to the current time — set it before composing, or play again');
+    if (this.beyondBase) throw new Error('skin cannot change after a mix, another track, a queue or a clear: the player cannot replay those to the current time — set it before composing, or play again');
     const view = name === undefined ? underNoSkin(this.read.doc) : underSkin(this.read.doc, name);
     this.view = view;
     this.source = frameSource(view, this.read.parsed);
     this.skinName = name;
     this.setup = null;
-    if (this.animation !== null && this.track !== null) {
-      const time = this.track.trackTime;
+    if (this.animation !== null && (this.track !== null || this.tracks !== null)) {
+      const time = this.time;
       this.reopen();
       this.stepTo(time);
     }

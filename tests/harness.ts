@@ -237,6 +237,24 @@ export interface RigPlayHarness {
   skinProbe(): Promise<SkinProbeResult>;
   tracksProbe(): Promise<TracksProbeResult>;
   slotFilterProbe(): Promise<SlotFilterProbeResult>;
+  trackModeProbe(): Promise<TrackModeProbeResult>;
+}
+
+export interface TrackModeProbeResult {
+  /** Poses the core walked (adjust calls) across the first composing call: with `tracks: true`, and without. */
+  posesOnComposeTracks: number;
+  posesOnComposeDefault: number;
+  stepsPlayedBefore: number;
+  /** A player on the tracks from the start, plain play + seek, against the single-track walk: bones and vertices. */
+  tracksSeekBoneMismatches: string[];
+  tracksSeekFrameSame: boolean;
+  /** Under `tracks: true`, seek and skin still work before any layering, and refuse after. */
+  seekBeforeLayerOk: boolean;
+  skinBeforeLayerEmblem: string | null;
+  seekAfterLayerRefusal: string;
+  /** Events and completes on the tracks from the start. */
+  stepEventTracks: number[];
+  completeTracks: number[];
 }
 
 export interface SlotFilterProbeResult {
@@ -5272,7 +5290,89 @@ async function slotFilterProbe(): Promise<SlotFilterProbeResult> {
   };
 }
 
+/**
+ * `RigPlayerOptions.tracks` (#93): the player on rig-c's live tracks from the
+ * first play. What is measured is the replay — poses the core walked across
+ * the first composing call, counted by an `adjust` hook that runs once per
+ * pose — and that the tracks pose a plain play as the single track does.
+ */
+async function trackModeProbe(): Promise<TrackModeProbeResult> {
+  const assets = await loadRig('figure');
+  const root = document.getElementById('root');
+  if (!root) throw new Error('#root missing');
+  root.replaceChildren();
+  const dt = 1 / 60;
+  const stepsPlayedBefore = 45; // 0.75 s
+
+  const posesAcrossCompose = (tracksOption: boolean): number => {
+    let poses = 0;
+    const p = new RigPlayer(root, assets, { tracks: tracksOption, adjust: () => { poses++; } });
+    p.play('walk');
+    for (let i = 0; i < stepsPlayedBefore; i++) p.advance(dt);
+    const before = poses;
+    p.play('nudge', { track: 1, loop: false, mix: 0.1 });
+    const across = poses - before;
+    p.dispose();
+    return across;
+  };
+  const posesOnComposeTracks = posesAcrossCompose(true);
+  const posesOnComposeDefault = posesAcrossCompose(false);
+
+  const t = new RigPlayer(root, assets, { tracks: true });
+  const stepEventTracks: number[] = [];
+  const completeTracks: number[] = [];
+  t.on('event', (e) => { if (e.name === 'step' && e.track !== undefined) stepEventTracks.push(e.track); });
+  t.on('complete', (c) => completeTracks.push(c.track));
+  t.play('walk');
+  t.seek(0.7);
+  const own = poseAt(assets, 'walk', 0.7);
+  const tracksSeekBoneMismatches: string[] = [];
+  for (const bone of own.pose.bones) {
+    const r = t.bone(bone.name);
+    for (const [f, got, want] of [['x', r.x, bone.worldX], ['y', r.y, bone.worldY], ['a', r.a, bone.a], ['b', r.b, bone.b], ['c', r.c, bone.c], ['d', r.d, bone.d]] as Array<[string, number, number]>) {
+      if (!Object.is(got, want)) tracksSeekBoneMismatches.push(`${bone.name}.${f}`);
+    }
+  }
+  const geometry = (frame: PosedFrame) => JSON.stringify(frame.order.map((s) => [s.slot, s.kind === 'region' ? s.corners : s.vertices]));
+  const tracksSeekFrameSame = geometry(t.posedFrame()) === geometry(own.frame);
+  let seekBeforeLayerOk = false;
+  try {
+    t.seek(0.2);
+    seekBeforeLayerOk = Math.abs(t.time - 0.2) < 1e-9;
+  } catch {
+    seekBeforeLayerOk = false;
+  }
+  t.skin = 'alt';
+  const skinBeforeLayerEmblem = t.posedFrame().order.find((s) => s.slot === 'emblem')?.slot ?? null;
+  t.skin = undefined;
+  // Events and a complete, stepping through 1.6 s of walk on the tracks.
+  t.seek(0);
+  for (let i = 0; i < 100; i++) t.advance(dt);
+  t.play('nudge', { track: 1, loop: false, mix: 0.1 });
+  let seekAfterLayerRefusal = '';
+  try {
+    t.seek(0.1);
+  } catch (error) {
+    seekAfterLayerRefusal = error instanceof Error ? error.message : String(error);
+  }
+  t.dispose();
+  assets.dispose();
+  return {
+    posesOnComposeTracks,
+    posesOnComposeDefault,
+    stepsPlayedBefore,
+    tracksSeekBoneMismatches,
+    tracksSeekFrameSame,
+    seekBeforeLayerOk,
+    skinBeforeLayerEmblem,
+    seekAfterLayerRefusal,
+    stepEventTracks,
+    completeTracks,
+  };
+}
+
 window.rigPlayHarness = {
+  trackModeProbe,
   slotFilterProbe,
   tracksProbe,
   regionLoadingProbe,
