@@ -8,6 +8,7 @@
       "duration": 1.6,
       "loop": true,
       "note": "Limbs swing in opposition and the torso bobs twice a cycle. The pose the renderer specs freeze is t = 1.2.",
+      "events": [{"t": 0.4, "name": "step"}, {"t": 1.2, "name": "step", "int": 2}],
       "tracks": [
         {
           "bone": "leg_b",
@@ -334,6 +335,7 @@
       "duration": 1,
       "loop": true,
       "note": "tilted_moved with one leaf bone (`badge`, one drawn slot, no children) moved 13 units.",
+      "events": [{"t": 0.5, "name": "hit"}],
       "tracks": [
         {
           "slot": "clip",

@@ -56,6 +56,10 @@
     { "name": "emblem", "bone": "hip", "attachment": "emblem" }
   ],
 
+  "events": {
+    "step": {},
+    "hit": { "int": 7 }
+  },
   "skins": {
     "default": {
       "clip": {

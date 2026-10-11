@@ -263,6 +263,38 @@ box, an inverse clip removes nothing, and bounding boxes, paths and points do
 not draw and do not count. Both cost nothing until called and read the same
 numbers in `dom` and `canvas` mode.
 
+### Several tracks
+
+A base on track 0, a layer over it, a one-shot played once and mixed back out —
+rig-c's live tracks (`openTracks`), whose mixing is the Spine runtime's
+`AnimationState` held at tolerance 0:
+
+```ts
+player.play('idle');                                        // track 0, as always
+player.play('smile', { track: 1, loop: false, mix: 0.2 });  // held at its end, mixed in over 0.2 s
+player.play('wave', { track: 2, loop: false, mix: 0.1 });   // a one-shot…
+player.queueClear(2, { mix: 0.1 });                         // …mixed back out over its last 0.1 s
+player.queue('idle_b', { track: 0, mix: 0.3 });             // after the current idle cycle completes
+player.clear(1, { mix: 0.2 });                              // the layer gone, the base showing through
+player.entry(2);                                            // { animation, loop, trackTime, animationTime, duration } | null
+```
+
+`play(name)` keeps meaning what it meant: a plain play on track 0 runs on rig-c's
+single live track, which poses everything the core poses. The first call that
+composes — a `mix`, a `track` above 0, a `queue`, a `clear` — moves the player onto
+the tracks, carrying the single track over by replay (its animation set, pose 0
+taken, stepped to its time); from then on `seek` and `skin` are refused by name,
+since the player cannot replay a composition to a time — step it forward instead.
+Every entry mixes from the setup pose each step, so `adjust` writes still last one
+pose. **What the tracks do not mix**, in rig-c's words at `play`/`queue`: an
+animation keying a constraint (ik, transform, path, physics, slider), a sequence,
+the draw order, or a path's deform is refused when it is set on the tracks — it
+plays on the single track only. `'event'` carries `track`; a one-shot that is
+mixing out fires nothing. `'complete'` is per track, the player's rule: a looping
+entry each cycle, a held one when it reaches its duration, and an entry that is
+replaced — by `play`, or by the queued entry that starts at its completion less the
+mix — completes no more than it fires.
+
 ### Adjusting bones
 
 A per-pose write to bone locals — a breath's scale, a look's rotation, a mouth
@@ -596,11 +628,12 @@ name, and unloading is still elements first, bitmaps second.
 | `DomTexture` | none | Not exported; there is no atlas page to attach a texture to. |
 | `new Skeleton(assets.data)` and `new AnimationState(new AnimationStateData(assets.data))` | `new RigPlayer(root, assets, options?)` | The player holds the pose and the track. |
 | `state.setAnimation(0, 'walk', true)` | `player.play('walk', { loop: true })` | `loop` defaults to true. `play` opens the animation at its first pose with the physics reset there. `player.current` names what is playing. |
+| `state.setAnimation(1, 'smile', false)` with a mix, `addAnimation`, `setEmptyAnimation`, `addEmptyAnimation`, `getCurrent(track)` | `player.play(name, { track, loop, mix })`, `player.queue(name, { track, loop, mix, delay })`, `player.clear(track, { mix })`, `player.queueClear(track, { mix, delay })`, `player.entry(track)` | Since 1.5.0, rig-c's live tracks: the runtime's mixing at tolerance 0. Constraint, sequence, draw-order and path-deform timelines are not mixed and are refused on the tracks. See *Several tracks*. |
 | `state.update(delta)`, `state.apply(skeleton)`, `skeleton.update(delta)`, `skeleton.updateWorldTransform(Physics.update)`, `renderer.render(skeleton)` | `player.frame(dt)` | Or `player.advance(dt)` then `player.draw()`, to time the two apart. |
 | time scale (the caller's own, on the spine-core side) | `player.timeScale` | Multiplies every step. 0 holds the pose without re-posing it; a negative value is not stepped. |
 | holding a pose (the caller stopped advancing) | `player.pause()`, `player.resume()` | `frame` keeps drawing the held pose. |
 | moving to a time (the caller's own, on the spine-core side) | `player.seek(time)`, `RigPlayerOptions.seekStep`, `player.time` | A seek reopens the animation and steps forward in `seekStep` increments (1/60 s by default). Events and completes crossed on the way are not fired. |
-| events (the caller's own listener on the spine-core side) | `player.on('event', listener)`, `player.on('complete', listener)` | `'event'` hands a `RigEvent` (`name`, `time`, `int`, `float`, `string`); `'complete'` hands `{ animation }`. `on` returns a function that removes the listener. |
+| events (the caller's own listener on the spine-core side) | `player.on('event', listener)`, `player.on('complete', listener)` | `'event'` hands a `RigEvent` (`name`, `time`, `int`, `float`, `string`, `track`); `'complete'` hands `{ animation, track }`. `on` returns a function that removes the listener. |
 | skin (set by the caller on its `Skeleton`) | `RigPlayerOptions.skin`, `player.skin` | A constructor option, and settable on a live player since 1.4.0: the pose re-resolves under the new skin and the track keeps its animation, loop and time (reopened and stepped there, as `seek` does). The names are in `ModelAssets.skins`. Without it the rig is posed with no skin set. |
 | `SpineHtmlRenderer` | `DomRenderer`, reached as `player.renderer` | In `mode: 'dom'`, the default. `mode: 'canvas'` is new and makes `player.renderer` a `CanvasRenderer`. |
 | `new SpineHtmlRenderer(root, regionImages)` | `new DomRenderer(root, regionImages, pages?)` | Only for drawing your own frames; `RigPlayer` constructs its renderer. `pages` is the page-image map the mesh tier samples (`ModelAssets.pageImages`). A hand-built `regionImages` map is still accepted. |
@@ -634,8 +667,6 @@ export, for which 1.0.0 declares nothing:
 - **One unpacked atlas shared by different skeletons.** A document is one rig, and each
   `loadModel` cuts its own regions and owns its own blob URLs. Sharing is per rig: one
   load, several players.
-- **More than one track, mixing between animations, or queueing one after another.**
-  `RigPlayer` declares one track; `play` reopens it at the animation's first pose.
 - **Changing one slot from code** (its attachment, its colour). `RigPlayer` declares only
   the whole-rig `color`. The frame record is a plain object, so a caller that draws its
   own frames through `DomRenderer.render` or `CanvasRenderer.render` decides what is in
