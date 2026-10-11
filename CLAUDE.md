@@ -4,7 +4,9 @@ Guidance for AI-assisted sessions working on this repository.
 
 ## What this is
 
-rig-play renders rigs built by rigc as plain DOM — rigid slots as `<img>` posed
+`@rig-c/play` — this repository, `rig-c/play`; `rig-play` and `spine-html` are the
+same package under the names it shipped as before — renders rigs built by rigc as
+plain DOM: rigid slots as `<img>` posed
 by CSS `matrix()`, mesh slots on small per-part canvases (canvas2d or WebGL-blit
 backend), interleaved in one stacking context. It loads the compiled model
 document `rigc build` writes (`skeleton.model.json`, `rigc-compiled/3`), poses it
@@ -82,7 +84,7 @@ numbers.
   with the same version's `rigc build` from the same tag. This repository holds
   no Spine runtime as an oracle: what the player poses is what rig-c's own CI
   holds to spine-core 4.3.13 at tolerance 0 (`core_gate`, `--raw`; rigc
-  `docs/SECOND_ORACLE.md` §4–§5, and §7 on rig-play posing through
+  `docs/SECOND_ORACLE.md` §4–§5, and §7 on this player posing through
   `rig-c/core`). One crossing was measured here and needs no standing gate:
   moving the player onto `rig-c/core` changed no frame (#60: 14 builds, 28
   animations, 1,034 frames, 0 mismatches). So when a pose looks wrong, the
@@ -363,7 +365,7 @@ numbers.
   the demo.
 - What npm ships is tested by **`tests/package.spec.ts`, node-side, no
   browser**: it runs `scripts/build-lib.mjs` into a temp directory, assembles a
-  throwaway `node_modules/rig-play` there (real manifest, nothing else
+  throwaway `node_modules/@rig-c/play` there (real manifest, nothing else
   installed) and imports and typechecks the package *by package name* through
   node's own resolver — the only way to exercise the `exports` map, which a
   relative import of `dist/` would bypass entirely. It must **never** build into
@@ -374,18 +376,18 @@ numbers.
   `.d.ts` + map per module), because an unreachable file has no other
   signature: `dist/main.*` shipped in 0.4.1 and 0.5.0 without any resolver,
   import walk or consumer ever noticing (#24).
-- **The package has two registry names and one set of files** (#65). It is
-  published as `rig-play`, the `name` in `package.json`, and every version is
-  published again as `spine-html`, the name it first shipped under, so the links
-  that point at that name keep resolving. The alias is never built or versioned
+- **The package has three registry names and one set of files** (#65, #98). It is
+  published as `@rig-c/play`, the `name` in `package.json`, and every version is
+  published again as `rig-play` and as `spine-html`, the names it shipped under
+  before, so the links that point at those names keep resolving. An alias is never built or versioned
   on its own: `scripts/alias-tarball.mjs` packs the checkout the gated publish
   read, rewrites the one `"name"` line of the packed manifest, packs that again,
   and refuses to print a path unless the two tarballs hold the same paths and
   the same bytes but for that line. `tests/package.spec.ts` runs it over the
   temp build and diffs the two manifests itself, and holds the comparison to a
-  planted difference, which it must name. Nothing in the tree names the alias
-  but that script, `release.yml` (its publish and the confirmation), the README's
-  first paragraph and RELEASING.md.
+  planted difference, which it must name. Outside the changelog, the aliases are
+  named by that script, `release.yml` (their publish and the confirmation),
+  `tests/package.spec.ts`, NOTICE.md, the README and RELEASING.md.
 - Keep `@playwright/test` pinned to a version whose browser revisions match the
   machine's `~/Library/Caches/ms-playwright` before bumping it.
 - **CI runs the suite once**, one job named `test` (`.github/workflows/ci.yml`):
