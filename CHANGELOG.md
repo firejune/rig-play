@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/firejune/rig-play/compare/v1.6.0...v1.7.0) (2026-10-11)
+
+
+### Features
+
+* **player:** stand the player on the live tracks from the first play (tracks: true), so the first composing call never replays ([#94](https://github.com/firejune/rig-play/issues/94)) ([1d1e9d1](https://github.com/firejune/rig-play/commit/1d1e9d163f9d252bd6cf84ffdd975aee0067d052))
+
 ## [1.6.0](https://github.com/firejune/rig-play/compare/v1.5.0...v1.6.0) (2026-10-11)
 
 
