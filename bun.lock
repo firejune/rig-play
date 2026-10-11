@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "rig-play",
+      "name": "@rig-c/play",
       "devDependencies": {
         "@playwright/test": "1.62.1",
         "@types/node": "^22",

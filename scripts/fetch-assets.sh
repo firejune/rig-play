@@ -88,8 +88,8 @@ if [ -n "$MISSING" ]; then
   SRC="$(mktemp -d)"
   trap 'rm -rf "$SRC"' EXIT
   echo "fetching rigc $RIGC_TAG gallery"
-  curl -fsSL "https://codeload.github.com/firejune/rigc/tar.gz/refs/tags/$RIGC_TAG" \
-    | tar -xz -C "$SRC" --strip-components=1 "rigc-${RIGC_TAG#v}/gallery"
+  curl -fsSL "https://codeload.github.com/rig-c/core/tar.gz/refs/tags/$RIGC_TAG" \
+    | tar -xz -C "$SRC" --strip-components=1 "core-${RIGC_TAG#v}/gallery"
   for name in $MISSING; do
     rig="${name%-packed}"
     echo "building rig $name"

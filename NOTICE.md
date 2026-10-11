@@ -3,8 +3,8 @@
 ## Spine Runtimes
 
 **The published package links nothing from Esoteric Software.** An install of
-`rig-play` (or of `spine-html`, the same files under the name the package first
-shipped as) carries one JavaScript module, `dist/index.js`, plus type
+`@rig-c/play` (or of `rig-play` or `spine-html`, the same files under the names the
+package shipped as before) carries one JavaScript module, `dist/index.js`, plus type
 declarations, and that module bundles two things: the renderer, and
 `rig-c/core` (MIT), rigc's own posing core, which poses the compiled model
 document `rigc build` writes. No part of the
@@ -28,7 +28,7 @@ it, and it is neither committed nor published.
 
 ### What that means, as a chain of facts
 
-rig-play's own code is MIT (see `LICENSE`). The following is a restatement of
+@rig-c/play's own code is MIT (see `LICENSE`). The following is a restatement of
 Esoteric Software's terms, not a licence term of this project:
 
 1. rigc writes two things side by side: the model document this package plays,
@@ -46,7 +46,7 @@ Esoteric Software's terms, not a licence term of this project:
    because the package links none.
 
 > **What a consumer does with rigc's Spine-format output is governed by
-> Esoteric Software's terms**, not by this package — rig-play neither adds those
+> Esoteric Software's terms**, not by this package — @rig-c/play neither adds those
 > terms nor removes them.
 
 ## Example assets

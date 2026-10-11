@@ -7,7 +7,7 @@
   "pull-request-title-pattern": "release: v${version}",
   "packages": {
     ".": {
-      "package-name": "rig-play",
+      "package-name": "@rig-c/play",
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false
     }
