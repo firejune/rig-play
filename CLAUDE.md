@@ -4,15 +4,14 @@ Guidance for AI-assisted sessions working on this repository.
 
 ## What this is
 
-`@rig-c/play` — this repository, `rig-c/play`; `rig-play` and `spine-html` are the
-same package under the names it shipped as before — renders rigs built by rigc as
-plain DOM: rigid slots as `<img>` posed
+`@rig-c/play` (this repository, `rig-c/play`) renders rigs built by rigc as plain
+DOM — rigid slots as `<img>` posed
 by CSS `matrix()`, mesh slots on small per-part canvases (canvas2d or WebGL-blit
 backend), interleaved in one stacking context. It loads the compiled model
 document `rigc build` writes (`skeleton.model.json`, `rigc-compiled/3`), poses it
 through `rig-c/core`, and draws each pose as a `PosedFrame`. Production since
 v0.3.0; the model path since #60. Read README.md for architecture and measured
-numbers.
+numbers. `rig-play` and `spine-html` are the same package under earlier names.
 
 ## Measurement rules (hard-won — do not relearn these)
 
@@ -384,7 +383,8 @@ numbers.
   read, rewrites the one `"name"` line of the packed manifest, packs that again,
   and refuses to print a path unless the two tarballs hold the same paths and
   the same bytes but for that line. `tests/package.spec.ts` runs it over the
-  temp build and diffs the two manifests itself, and holds the comparison to a
+  temp build once for each alias (the script takes `--alias <name>`; the names
+  are its `ALIASES`) and diffs the two manifests itself, and holds the comparison to a
   planted difference, which it must name. Outside the changelog, the aliases are
   named by that script, `release.yml` (their publish and the confirmation),
   `tests/package.spec.ts`, NOTICE.md, the README and RELEASING.md.
