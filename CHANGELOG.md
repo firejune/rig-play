@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/rig-c/play/compare/v1.8.0...v1.8.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **pkg:** the package is @rig-c/play and the repository is rig-c/play — rig-play and spine-html stay as aliases ([#99](https://github.com/rig-c/play/issues/99)) ([5b47a34](https://github.com/rig-c/play/commit/5b47a347ae9816336f8184183835e88c7b289b00)), closes [#98](https://github.com/rig-c/play/issues/98)
+
 ## [1.8.0](https://github.com/firejune/rig-play/compare/v1.7.0...v1.8.0) (2026-10-11)
 
 
