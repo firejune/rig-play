@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/firejune/rig-play/compare/v1.5.0...v1.6.0) (2026-10-11)
+
+
+### Features
+
+* **player:** a slot filter — which slots a player draws, up front and live, in both modes ([#91](https://github.com/firejune/rig-play/issues/91)) ([9e59bac](https://github.com/firejune/rig-play/commit/9e59bac8216476fd74d383030a8736b8d5094e9c)), closes [#88](https://github.com/firejune/rig-play/issues/88)
+
 ## [1.5.0](https://github.com/firejune/rig-play/compare/v1.4.0...v1.5.0) (2026-10-11)
 
 
