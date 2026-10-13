@@ -1,4 +1,4 @@
-import { type CompiledDocument, eventsFired, type LiveTrack, type LiveTracks, type LocalAdjust as CoreLocalAdjust, openTrack, openTracks, poseRawSetup, type RawPose, type TrackEntryView, underNoSkin, underSkin } from 'rig-c/core';
+import { type CompiledDocument, eventsFired, type LiveTrack, type LiveTracks, type LocalAdjust as CoreLocalAdjust, openTrack, openTracks, physicsClockStep, poseRawSetup, type RawPose, type TrackEntryView, underNoSkin, underSkin } from 'rig-c/core';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { DomRenderer, type MeshBackend } from './DomRenderer.js';
 import type { ModelAssets, ReadDocument } from './loadModel.js';
@@ -382,7 +382,7 @@ export class RigPlayer {
       // animation's first pose with the physics reset there.
       this.animation = name;
       this.loop = loop;
-      this.track = openTrack(this.view, name, { loop, reset: 'animation', adjust: this.adjustHook });
+      this.track = openTrack(this.view, name, { loop, reset: 'animation', adjust: this.adjustHook, clock: physicsClockStep });
       this.pose = this.track.first;
       return;
     }
@@ -482,7 +482,7 @@ export class RigPlayer {
    */
   private compose(): LiveTracks {
     if (this.tracks !== null) return this.tracks;
-    const tracks = openTracks(this.view, { reset: 'animation', adjust: this.adjustHook });
+    const tracks = openTracks(this.view, { reset: 'animation', adjust: this.adjustHook, clock: physicsClockStep });
     const single = this.track;
     const time = single?.trackTime ?? 0;
     if (single !== null && this.animation !== null) {
@@ -526,14 +526,14 @@ export class RigPlayer {
   /** Whatever is open, opened again with track 0's animation as `play` last set it, at pose 0: the single track, or the tracks under `tracks: true`. */
   private reopen(): void {
     if (this.tracks !== null) {
-      const tracks = openTracks(this.view, { reset: 'animation', adjust: this.adjustHook });
+      const tracks = openTracks(this.view, { reset: 'animation', adjust: this.adjustHook, clock: physicsClockStep });
       tracks.setAnimation(0, this.animation as string, { loop: this.loop, mixDuration: 0 });
       this.trackCount = 1;
       this.tracks = tracks;
       this.pose = tracks.start();
       return;
     }
-    this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation', adjust: this.adjustHook });
+    this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation', adjust: this.adjustHook, clock: physicsClockStep });
     this.pose = this.track.first;
   }
 
@@ -568,7 +568,11 @@ export class RigPlayer {
    * Steps the track by `dt × timeScale` seconds and fires the step's listeners,
    * without drawing. A paused player, or a step of zero, keeps the pose it
    * holds without re-posing it, so a held rig costs the renderer's dirty
-   * checks and nothing else.
+   * checks and nothing else. The physics clock moves by `physicsClockStep`
+   * of the step — the step and 2⁻³⁰ of it more, rig-c's render clock — so a
+   * caller stepping at a fixed rate whose frame is a whole number of physics
+   * steps (`frame(1/60)`, a capture) shows no spring jump; the animation time,
+   * the events and `time` stay on the steps themselves (#103).
    */
   advance(dt: number): void {
     if (this.pose === null) return;
