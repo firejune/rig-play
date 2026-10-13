@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.2](https://github.com/rig-c/play/compare/v1.8.1...v1.8.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* **canvas2d:** close mesh seams by moving each triangle edge along its normal, not its corners from the centroid ([#105](https://github.com/rig-c/play/issues/105)) ([b6d1d91](https://github.com/rig-c/play/commit/b6d1d91634897a5a07416332f3002a296dcf1d33)), closes [#104](https://github.com/rig-c/play/issues/104)
+
 ## [1.8.1](https://github.com/rig-c/play/compare/v1.8.0...v1.8.1) (2026-10-11)
 
 
