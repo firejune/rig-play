@@ -17,7 +17,8 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  // `src/main.ts` lives in `src/` but is not part of the package: it is the
+  // `src/main.ts` and `src/wind.ts` live in `src/` but are not part of the
+  // package: they are the demo pages' scripts. `src/main.ts` is the
   // demo entry, `index.html` loads it, nothing in the library imports it, and
   // it is absent from the `exports` map. Left in this build it emitted anyway —
   // `dist/main.*` shipped unreachable in 0.4.1 and 0.5.0.
@@ -27,5 +28,5 @@
   // `tsconfig.json` still typechecks it for `bun run build`, vite still reads
   // it, and the day a shipped file imports it it is emitted again and the
   // pinned file list in `tests/package.spec.ts` goes red.
-  "exclude": ["src/main.ts"]
+  "exclude": ["src/main.ts", "src/wind.ts"]
 }
