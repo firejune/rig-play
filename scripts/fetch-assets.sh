@@ -107,7 +107,8 @@ echo "rigs ready (rigc $RIGC_TAG) → $RIGS_DEST"
 # --- the test rigs -----------------------------------------------------------
 #
 # `figure` and `glow` are built like the gallery, one page per part and
-# `--pack`; `duo` (two-colour tint) one page per part only; `turned` is built against its hand-packed page (`--atlas-in`),
+# `--pack`; `duo` (two-colour tint) one page per part only; `named` against its
+# hand-packed page, one region not named for the page's file (rig-c #1404); `turned` is built against its hand-packed page (`--atlas-in`),
 # because rigc's own packer never turns a region and the turned region is the
 # point of it. Each build is stamped with the rigc tag and a digest of its
 # sources, so editing a rig — or moving the pin — rebuilds it and nothing else.
@@ -143,4 +144,6 @@ rm -rf "$RIGS_DEST/glow-packed/parts"
 test_rig turned turned --atlas-in art/turned.atlas
 rm -f "$RIGS_DEST/turned/art/turned.atlas"
 test_rig duo duo
+test_rig named named --atlas-in art/named.atlas
+rm -f "$RIGS_DEST/named/art/named.atlas"
 echo "test rigs ready → $RIGS_DEST"

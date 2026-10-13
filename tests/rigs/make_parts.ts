@@ -195,7 +195,7 @@ function glow(w: number, h: number, colour: RGB, peak: number): Uint8Array {
 }
 
 function write(rig: string, file: string, w: number, h: number, rgba: Uint8Array): void {
-  const dir = join(HERE, rig, rig === 'turned' ? 'art' : 'parts');
+  const dir = join(HERE, rig, rig === 'turned' || rig === 'named' ? 'art' : 'parts');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, file), encodePng(w, h, rgba));
   console.log(`  ${rig}/${file} ${w}x${h}`);
@@ -285,4 +285,28 @@ console.log('duo:');
     }
   }
   write('duo', 'ramp.png', w, h, page);
+}
+
+// --- named: one region on a page that is not named for it (rig-c #1404) -------
+// The page is `sheet.png`; its one region, `swatch`, sits inside it with a margin,
+// so the region is cut rather than passed through whole. A two-axis gradient
+// (red across, green down, blue on a checker) makes a misplaced cut a different
+// picture. `named/art/named.atlas` lays it out by hand.
+
+console.log('named:');
+{
+  const w = 400;
+  const h = 200;
+  const page = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const inside = x >= 40 && x < 360 && y >= 20 && y < 180;
+      page[i] = inside ? Math.round(((x - 40) * 255) / 319) : 0;
+      page[i + 1] = inside ? Math.round(((y - 20) * 255) / 159) : 0;
+      page[i + 2] = inside ? ((((x - 40) >> 5) + ((y - 20) >> 5)) % 2 ? 200 : 40) : 0;
+      page[i + 3] = inside ? 255 : 0;
+    }
+  }
+  write('named', 'sheet.png', w, h, page);
 }

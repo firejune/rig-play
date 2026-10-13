@@ -1,0 +1,5 @@
+sheet.png
+size: 400, 200
+filter: Linear, Linear
+swatch
+bounds: 40, 20, 320, 160

@@ -431,7 +431,10 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   on a region and on a mesh, each slot with a setup `dark` and an `rgb2` key
   that changes only the dark half: `tests/dark-tint.spec.ts`, which holds the
   canvas mode's GL path to `c·light + (1 − c)·dark` and the DOM mode and the
-  canvas2d fallback to drawing no dark tint (#106). A premultiplied page
+  canvas2d fallback to drawing no dark tint (#106). `named` — one region, `swatch`,
+  cut from inside a hand-packed page named `sheet.png`, drawn once as a region
+  and once as a mesh over it: the *named region* parity cells, the case
+  rig-c's `A27_REGION_NAME_MATCHES_PAGE_FILENAME` refused (rig-c #1404). A premultiplied page
   reaches a rigc build only through `--atlas-in` (its packer writes
   `pma: false`), so `tests/pma.spec.ts` makes its premultiplied twin of the
   figure's page in the harness, as it always has. If a spec needs something
