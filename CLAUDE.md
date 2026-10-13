@@ -418,7 +418,11 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   slit-ring mesh whose hull sits inside opaque art: the additive parity scene,
   the frozen/running mesh invariants, and the seam and overdraw canaries.
   `turned` — two 2 × 1 regions on a hand-packed page, one turned 90°, built
-  `--atlas-in`: the corner-order and region-UV invariants. A premultiplied page
+  `--atlas-in`: the corner-order and region-UV invariants. `duo` — one opaque grey ramp
+  on a region and on a mesh, each slot with a setup `dark` and an `rgb2` key
+  that changes only the dark half: `tests/dark-tint.spec.ts`, which holds the
+  canvas mode's GL path to `c·light + (1 − c)·dark` and the DOM mode and the
+  canvas2d fallback to drawing no dark tint (#106). A premultiplied page
   reaches a rigc build only through `--atlas-in` (its packer writes
   `pma: false`), so `tests/pma.spec.ts` makes its premultiplied twin of the
   figure's page in the harness, as it always has. If a spec needs something

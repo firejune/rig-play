@@ -262,3 +262,27 @@ console.log('turned:');
   }
   write('turned', 'turned.png', w, h, page);
 }
+
+// --- duo: two-colour (dark) tint, on a region and on a mesh (#106) --------------
+// One opaque grey ramp, black at the left edge to white at the right, the same in
+// every row and channel: a texel's value is all a two-colour tint reads
+// (c·light + (1 − c)·dark), so a ramp shows the dark half at full strength on
+// the left and none on the right.
+
+console.log('duo:');
+{
+  const w = 128;
+  const h = 48;
+  const page = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const v = Math.round((x * 255) / (w - 1));
+      page[i] = v;
+      page[i + 1] = v;
+      page[i + 2] = v;
+      page[i + 3] = 255;
+    }
+  }
+  write('duo', 'ramp.png', w, h, page);
+}

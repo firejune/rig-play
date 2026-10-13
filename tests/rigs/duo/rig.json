@@ -1,0 +1,35 @@
+{
+  "spec": "rigc-rig/1",
+  "name": "duo",
+  "images": "parts",
+  "skeleton": { "x": -200, "y": 0, "width": 400, "height": 200 },
+
+  "bones": [
+    { "name": "root" },
+    { "name": "swatch", "parent": "root", "x": -90, "y": 100 },
+    { "name": "sheet", "parent": "root", "x": 90, "y": 100 }
+  ],
+
+  "invariants": { "meshSlots": 1, "meshTriangles": 2 },
+
+  "slots": [
+    { "name": "swatch", "bone": "swatch", "attachment": "swatch", "dark": "ff0000" },
+    { "name": "sheet", "bone": "sheet", "attachment": "sheet", "dark": "0000ff" }
+  ],
+
+  "skins": {
+    "default": {
+      "swatch": { "swatch": { "image": "ramp.png" } },
+      "sheet": {
+        "sheet": {
+          "type": "mesh",
+          "image": "ramp.png",
+          "hull": 4,
+          "uvs": [0, 0, 1, 0, 1, 1, 0, 1],
+          "vertices": [-64, 24, 64, 24, 64, -24, -64, -24],
+          "triangles": [0, 1, 2, 0, 2, 3]
+        }
+      }
+    }
+  }
+}
