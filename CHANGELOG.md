@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.2](https://github.com/rig-c/play/compare/v1.9.1...v1.9.2) (2026-10-13)
+
+
+### Bug Fixes
+
+* **player:** step physics on rig-c's render clock, so a fixed-rate player shows no single-frame spring jump ([#116](https://github.com/rig-c/play/issues/116)) ([a016c73](https://github.com/rig-c/play/commit/a016c732706864421ff14f15a8b2a51e0a300570)), closes [#103](https://github.com/rig-c/play/issues/103)
+
 ## [1.9.1](https://github.com/rig-c/play/compare/v1.9.0...v1.9.1) (2026-10-13)
 
 
