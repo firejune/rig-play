@@ -274,14 +274,20 @@ player.environment({ wind: [0, 0] });
 wind.addEventListener('input', () => player.environment({ wind: [Number(wind.value), 0] }));
 
 // Drag the rig: move the root, and tell the physics how far, in world units with y up.
+let held = null; // the pointer's position while a drag is held
+stage.addEventListener('pointerdown', (e) => { if (e.target !== wind) held = { x: e.clientX, y: e.clientY }; });
+addEventListener('pointerup', () => { held = null; });
 stage.addEventListener('pointermove', (e) => {
-  if (!(e.buttons & 1) || e.target === wind) return;
-  root.style.left = `${parseFloat(root.style.left) + e.movementX}px`;
-  root.style.top = `${parseFloat(root.style.top) + e.movementY}px`;
-  player.moved({ x: e.movementX / scale, y: -e.movementY / scale });
+  if (!held) return;
+  const dx = e.clientX - held.x, dy = e.clientY - held.y;
+  held = { x: e.clientX, y: e.clientY };
+  root.style.left = `${parseFloat(root.style.left) + dx}px`;
+  root.style.top = `${parseFloat(root.style.top) + dy}px`;
+  player.moved({ x: dx / scale, y: -dy / scale });
 });
 ```
 
+The block is plain JavaScript, so it runs inside the page as written.
 `environment(null)` returns to the runtime's start values, and `environment()`
 reads what stands. The state is the player's, not a track's: every track and
 layer answers the same world, and a `seek` replays under the environment as it
