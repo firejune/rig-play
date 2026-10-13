@@ -6,6 +6,30 @@ import type { BlendMode, PosedClip, PosedFrame, PosedMesh, PosedRegion, PosedSlo
 /** Rasterizer used for the mesh (deform) tier. */
 export type MeshBackend = 'canvas2d' | 'webgl';
 
+/**
+ * What a canvas2d mesh triangle is drawn from: `'triangle'`, a source sub-rect
+ * of the page covering the triangle's clip, or `'page'`, the whole page. Both
+ * draw the same picture under the same clip; they differ in cost by engine.
+ */
+export type MeshSourceRect = 'triangle' | 'page';
+
+/**
+ * The source rect an engine draws a canvas2d mesh triangle from, by default.
+ * Linux WebKit garbles a whole-page `drawImage` under steep per-triangle
+ * affines, so it gets the sub-rect. macOS Safari ran the sub-rect 12–15% slower
+ * than the whole page, in two alternated passes, and a whole-page source rect
+ * through the 9-argument call ran as fast as the whole page, so the cost is the
+ * small rect (#25). Every other engine therefore gets the page, which is what
+ * they all drew before #19; Chromium and Firefox were not timed either way. The test is a user-agent test: Linux, AppleWebKit, and not a Chromium.
+ *
+ * @internal Exported for the tests; not part of the package API.
+ */
+export function defaultMeshSourceRect(userAgent: string = typeof navigator === 'object' ? navigator.userAgent : ''): MeshSourceRect {
+  const linuxWebKit = /AppleWebKit/.test(userAgent) && /Linux|X11/.test(userAgent) &&
+    !/Android|Chrome|Chromium|CriOS|Edg/.test(userAgent);
+  return linuxWebKit ? 'triangle' : 'page';
+}
+
 const regionVertices = new Float32Array(8);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /** Unique tint-filter ids across renderer instances (ids are document-global). */
@@ -139,6 +163,7 @@ interface SlotView {
   meshPage: HTMLImageElement | null;
   meshSequenceIndex: number;
   meshExpand: number;
+  meshSourceRect: MeshSourceRect | '';
   meshVertexCount: number;
   /** Backend that produced the last raster — a backend switch re-dirties. */
   meshBackendDrawn: MeshBackend | '';
@@ -243,6 +268,12 @@ export class DomRenderer {
    * to see them.
    */
   triangleExpand = 0.5;
+  /**
+   * What the canvas2d mesh backend draws each triangle from (`MeshSourceRect`):
+   * by default the sub-rect on Linux WebKit and the whole page elsewhere.
+   * Re-rasters every mesh once when changed.
+   */
+  meshSourceRect: MeshSourceRect = defaultMeshSourceRect();
   /**
    * Mesh-canvas backing-store pixels per CSS pixel. Defaults to the device
    * pixel ratio. If the caller scales the root element, fold that scale in
@@ -579,6 +610,7 @@ export class DomRenderer {
       view.meshPage !== page ||
       view.meshSequenceIndex !== sequenceIndex ||
       view.meshExpand !== this.triangleExpand ||
+      view.meshSourceRect !== this.meshSourceRect ||
       view.meshVertexCount !== count ||
       view.meshBackendDrawn !== this.meshBackendActive;
     // The backing store only grows, in 32-device-px steps. Setting
@@ -649,6 +681,7 @@ export class DomRenderer {
       view.meshPage = page;
       view.meshSequenceIndex = sequenceIndex;
       view.meshExpand = this.triangleExpand;
+      view.meshSourceRect = this.meshSourceRect;
       view.meshVertexCount = count;
       view.meshBackendDrawn = this.meshBackendActive;
 
@@ -804,7 +837,7 @@ export class DomRenderer {
     x1: number, y1: number, u1: number, v1: number,
     x2: number, y2: number, u2: number, v2: number,
   ): void {
-    drawTexturedTriangle(ctx, img, this.triangleExpand, x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2);
+    drawTexturedTriangle(ctx, img, this.triangleExpand, this.meshSourceRect, x0, y0, u0, v0, x1, y1, u1, v1, x2, y2, u2, v2);
   }
 
   // --- clipping tier ---------------------------------------------------------
@@ -1075,6 +1108,7 @@ export class DomRenderer {
         meshPage: null,
         meshSequenceIndex: -1,
         meshExpand: -1,
+        meshSourceRect: '',
         meshVertexCount: -1,
         meshBackendDrawn: '',
         meshVertices: new Float64Array(0),
@@ -1107,7 +1141,7 @@ export class DomRenderer {
  * @internal Not part of the package API.
  */
 export function drawTexturedTriangle(
-  ctx: CanvasRenderingContext2D, img: PageSource, expand: number,
+  ctx: CanvasRenderingContext2D, img: PageSource, expand: number, sourceRect: MeshSourceRect,
   x0: number, y0: number, u0: number, v0: number,
   x1: number, y1: number, u1: number, v1: number,
   x2: number, y2: number, u2: number, v2: number,
@@ -1138,6 +1172,15 @@ export function drawTexturedTriangle(
   const d = (eu1 * ey2 - eu2 * ey1) * det;
   const e = x0 - a * u0 - c * v0;
   const f = y0 - b * u0 - d * v0;
+
+  if (sourceRect === 'page') {
+    ctx.save();
+    ctx.transform(a, b, c, d, e, f);
+    ctx.clip();
+    ctx.drawImage(img, 0, 0);
+    ctx.restore();
+    return;
+  }
 
   // Texture-space bounds of the clip polygon. The triangle's own corners
   // first, then the three expansion offsets carried back through the inverse
