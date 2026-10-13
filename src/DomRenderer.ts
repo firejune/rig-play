@@ -10,14 +10,57 @@ const regionVertices = new Float32Array(8);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /** Unique tint-filter ids across renderer instances (ids are document-global). */
 let tintFilterSeq = 0;
-/** Push a point away from (cx, cy) by `amount` pixels. */
-function expandPoint(x: number, y: number, cx: number, cy: number, amount: number): [number, number] {
-  const dx = x - cx;
-  const dy = y - cy;
-  const len = Math.sqrt(dx * dx + dy * dy);
-  if (len < 1e-6) return [x, y];
-  const s = amount / len;
-  return [x + dx * s, y + dy * s];
+/** How far a corner of an expanded triangle may move, in multiples of the expansion. */
+const MITRE_LIMIT = 4;
+const offsetCorners = new Float64Array(6);
+
+/**
+ * Moves each edge of a triangle `amount` pixels outward along its own normal
+ * and returns the corners where the moved edges meet, in `offsetCorners`
+ * (x0, y0, x1, y1, x2, y2). Pushing the corners away from the centroid
+ * instead (what this replaced) moves an edge by `amount` times the sine of the
+ * angle the corner ray makes with it, which on a long, thin triangle is a
+ * small fraction of a pixel, and the antialiased clip edges of neighbouring
+ * triangles leave the background showing along the shared edge (#104). A
+ * corner moves `amount / cos(θ/2)` for a corner angle θ, so on a needle it
+ * is held to `MITRE_LIMIT × amount`, which leaves that corner's edges short
+ * of the full offset near the tip.
+ *
+ * @internal Exported for the geometry test; not part of the package API.
+ */
+export function offsetTriangle(
+  x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, amount: number,
+): Float64Array {
+  const out = offsetCorners;
+  out[0] = x0; out[1] = y0; out[2] = x1; out[3] = y1; out[4] = x2; out[5] = y2;
+  const area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+  if (amount === 0 || area === 0) return out;
+  // Outward unit normals of the edges 0→1, 1→2, 2→0, whichever way the triangle winds.
+  const sign = area > 0 ? 1 : -1;
+  let len = Math.hypot(x1 - x0, y1 - y0);
+  const n0x = ((y1 - y0) / len) * sign, n0y = (-(x1 - x0) / len) * sign;
+  len = Math.hypot(x2 - x1, y2 - y1);
+  const n1x = ((y2 - y1) / len) * sign, n1y = (-(x2 - x1) / len) * sign;
+  len = Math.hypot(x0 - x2, y0 - y2);
+  const n2x = ((y0 - y2) / len) * sign, n2y = (-(x0 - x2) / len) * sign;
+  offsetCorner(out, 0, n2x, n2y, n0x, n0y, amount);
+  offsetCorner(out, 2, n0x, n0y, n1x, n1y, amount);
+  offsetCorner(out, 4, n1x, n1y, n2x, n2y, amount);
+  return out;
+}
+
+/** Moves the corner at `out[i], out[i + 1]` to where its two edges, each moved `amount` along its normal, meet. */
+function offsetCorner(out: Float64Array, i: number, ax: number, ay: number, bx: number, by: number, amount: number): void {
+  const k = amount / (1 + ax * bx + ay * by);
+  let dx = (ax + bx) * k, dy = (ay + by) * k;
+  const reach = Math.hypot(dx, dy);
+  const limit = MITRE_LIMIT * amount;
+  if (reach > limit) {
+    dx *= limit / reach;
+    dy *= limit / reach;
+  }
+  out[i] += dx;
+  out[i + 1] += dy;
 }
 
 /**
@@ -194,9 +237,10 @@ export class DomRenderer {
   /** Triangles rasterized last frame. */
   triangleCount = 0;
   /**
-   * How far (px) each triangle's clip polygon is expanded from its centroid.
-   * Closes antialiased-clip cracks between adjacent triangles (Safari);
-   * set to 0 to see them.
+   * How far (canvas px) each edge of a triangle's clip polygon is moved
+   * outward along its normal. Closes the antialiased-clip cracks between
+   * adjacent triangles, through which the background shows (#104); set to 0
+   * to see them.
    */
   triangleExpand = 0.5;
   /**
@@ -739,9 +783,10 @@ export class DomRenderer {
    * texel of bilinear support is added, and the result is floor/ceil'd to texel
    * boundaries (so the sub-rect itself resamples nothing) and clamped to the
    * page. A fixed pad would not do: the texture-space reach of the expansion is
-   * `triangleExpand` times the local texels-per-canvas-unit, which on the
-   * demo's own meshes ranges from ~0.26 texels on a typical triangle to ~8.6 on
-   * a foreshortened one. Under-padding lets the rim of the overdraw sample
+   * `triangleExpand` times the local texels-per-canvas-unit (up to
+   * `MITRE_LIMIT` times that at a sharp corner), which on the demo's own meshes
+   * ranged from ~0.26 texels on a typical triangle to ~8.6 on a foreshortened
+   * one. Under-padding lets the rim of the overdraw sample
    * nothing, which brings back the very seams the overdraw exists to close.
    *
    * No half-texel offset is applied to the incoming u/v: the `(i + 0.5) / size`
@@ -1066,11 +1111,10 @@ export function drawTexturedTriangle(
   x1: number, y1: number, u1: number, v1: number,
   x2: number, y2: number, u2: number, v2: number,
 ): void {
-  const cx = (x0 + x1 + x2) / 3;
-  const cy = (y0 + y1 + y2) / 3;
-  const [px0, py0] = expandPoint(x0, y0, cx, cy, expand);
-  const [px1, py1] = expandPoint(x1, y1, cx, cy, expand);
-  const [px2, py2] = expandPoint(x2, y2, cx, cy, expand);
+  const corners = offsetTriangle(x0, y0, x1, y1, x2, y2, expand);
+  const px0 = corners[0], py0 = corners[1];
+  const px1 = corners[2], py1 = corners[3];
+  const px2 = corners[4], py2 = corners[5];
   ctx.beginPath();
   ctx.moveTo(px0, py0);
   ctx.lineTo(px1, py1);

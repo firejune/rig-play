@@ -103,9 +103,12 @@ default stays `dom`.
   bounds, interleaved with the rigid `<img>` slots in one stacking context — the DOM
   handles the bones, a rasterizer handles the warps
 - ✅ Blend modes via `mix-blend-mode` (additive = `plus-lighter`)
-- ✅ Crack-free mesh seams on clip-antialiasing browsers (Safari): each triangle's
-  clip polygon is expanded 0.5px from its centroid so neighbours overlap — the
-  texture is continuous across shared edges, so the overlap is invisible
+- ✅ Crack-free mesh seams on the canvas2d backend: canvas2d antialiases each
+  triangle's clip edge, so two triangles sharing an edge each leave it partly
+  transparent and the background shows through as a hairline — plainest over a
+  light background behind light art (#104). Each edge of a triangle's clip
+  polygon is moved 0.5px outward along its own normal so neighbours overlap —
+  the texture is continuous across shared edges, so the overlap is invisible
   (`?expand=0` shows the cracks for comparison)
 - ✅ RGB tinting (skeleton × slot × attachment color) via an SVG `feColorMatrix`
   reference filter per element — an exact channel multiply that works identically on
@@ -587,8 +590,8 @@ onto shared pages instead. Both play here, unchanged:
   heavy deforming scenes on Safari want `'webgl'` (see Measured above). Falls back
   to canvas2d automatically when WebGL is unavailable. Switching re-rasters every
   mesh once (no reallocation), so it is fine to expose as a user setting.
-- `renderer.triangleExpand` — clip overdraw in px that closes antialiased mesh
-  seams (default 0.5). Also re-rasters every mesh once when changed.
+- `renderer.triangleExpand` — how far (canvas px) each triangle edge's clip is
+  moved outward to close antialiased mesh seams (default 0.5). Also re-rasters every mesh once when changed.
 - `renderer.clipping` — apply the clips the frame carries (default `true`).
   Which slots a clip covers is decided where the frame is made — the player's
   adapter walks the draw order the way the runtime's draw loop does (one clip in
