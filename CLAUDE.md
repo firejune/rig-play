@@ -206,7 +206,9 @@ numbers.
   inverse of the per-triangle affine, plus one texel of bilinear support,
   snapped outward to texel boundaries. A fixed pad is wrong because the
   expansion's reach in texture space is `triangleExpand` × the local
-  texels-per-canvas-unit, ~0.26 to 8.6 texels across the demo's own meshes.
+  texels-per-canvas-unit — up to 4× that at a sharp corner, since the
+  expansion moves each *edge* along its normal (#104) — ~0.26 to 8.6 texels
+  across the demo's own meshes (measured under the earlier centroid rule).
   The overdraw canary in `tests/parity.spec.ts` is what holds this.
 - **Relative imports in `src/` carry `.js`** — `from './DomTexture.js'`, never
   `from './DomTexture'`. TypeScript resolves the `.js` specifier back to the
@@ -331,7 +333,8 @@ numbers.
   deterministic `?expand=0` canary rather than a screenshot threshold — they
   score below any limit the statistical diff can carry — and the canvas2d
   source sub-rect its overdraw canary (expand 32 against 8 on the glow rig's
-  `canary` ring: 4,795 against a fixed-pad mutant's 1,350, limit 2,500).
+  `canary` ring: 7,723 against a fixed-pad mutant's 638, limit 2,500, macOS
+  chromium; 4,795 and 1,350 before #104 moved edges instead of corners).
 - **The picture gate is the two render modes drawing the same picture**
   (`tests/parity.spec.ts`, *dom / canvas parity*): every scene captured in the
   DOM mode (canvas2d mesh backend) and in the canvas mode, diffed
