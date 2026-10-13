@@ -213,6 +213,49 @@ player.dispose();
 assets.dispose();
 ```
 
+### A minimal page
+
+Layout is the caller's, so the first page is the place to see it: the root
+element is the rig's world origin, Y up, and scaling it is a CSS transform the
+player cannot see. This one loads a build, fits its stage box to a container,
+tells the renderer about the scale, and plays the first animation:
+
+```html
+<!doctype html>
+<meta charset="utf-8">
+<div id="stage" style="position: relative; width: 480px; height: 640px; overflow: hidden"></div>
+<script type="module">
+  import { loadModel, RigPlayer } from 'https://cdn.jsdelivr.net/npm/@rig-c/play@1/dist/index.js';
+
+  const stage = document.getElementById('stage');
+  const assets = await loadModel({ modelUrl: 'rigs/look/skeleton.model.json' });
+  const root = stage.appendChild(document.createElement('div'));
+  const player = new RigPlayer(root, assets);
+  player.play(assets.animations[0].name);
+
+  // Fit the rig's stage box (world units, Y up) to the container: scale it, and
+  // put the origin where the box's left edge and top land.
+  const box = assets.stage ?? player.bounds();
+  const scale = Math.min(stage.clientWidth / box.width, stage.clientHeight / box.height);
+  root.style.cssText = `position: absolute; transform-origin: 0 0; transform: scale(${scale});
+    left: ${-box.x * scale}px; top: ${(box.y + box.height) * scale}px`;
+  player.renderer.syncPixelRatio(); // raster at the size on screen, not the unscaled one
+
+  let last = performance.now();
+  requestAnimationFrame(function tick(now) {
+    player.frame((now - last) / 1000);
+    last = now;
+    requestAnimationFrame(tick);
+  });
+</script>
+```
+
+`syncPixelRatio()` is what makes the scale cheap: without it the mesh canvases
+raster at the device pixel ratio of the *unscaled* rig, `1 / scale` times more
+pixels than the screen shows. Call it again after anything that changes the
+scale. `tests/readme-page.spec.ts` runs this block as written, against the
+package built from this tree.
+
 The player owns one track: `play(name, { loop })` opens an animation at its first
 pose, `frame(dt)` steps it (or `advance(dt)` then `draw()`, to time the two
 apart), `pause()` / `resume()` hold and release it, `timeScale` scales every
