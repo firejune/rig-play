@@ -1,4 +1,4 @@
-import { type LiveTrack, openTrack, openTracks, type RawPose, regionPageUvs, underNoSkin } from 'rig-c/core';
+import { type LiveTrack, openTrack, openTracks, physicsClockStep, type RawPose, regionPageUvs, underNoSkin } from 'rig-c/core';
 
 import {
   type AdjustableBones,
@@ -241,8 +241,24 @@ export interface RigPlayHarness {
   alphaAdditiveProbe(): Promise<AlphaAdditiveProbeResult>;
   glFallbackProbe(loseContext: boolean): Promise<GlFallbackProbeResult>;
   playerBasicsProbe(): Promise<PlayerBasicsProbeResult>;
+  physicsClockProbe(): Promise<PhysicsClockProbeResult>;
   darkTintProbe(): Promise<DarkTintProbeResult>;
   darkDomPose(time: number): Promise<number>;
+}
+
+export interface PhysicsClockProbeResult {
+  /** Per step pattern: the player's physics bone against the core's track with and without the render clock. */
+  runs: Array<{
+    name: string;
+    frames: number;
+    /** Largest difference of any reading between the player and the core track given `physicsClockStep`. */
+    playerVsClock: number;
+    /** The same against the core track on the frame clock (no `clock`). */
+    playerVsFrameClock: number;
+    /** Outlier frames (second difference > 8 × its ±12-frame median and > 1e-3) of each series. */
+    playerOutliers: number[];
+    frameClockOutliers: number[];
+  }>;
 }
 
 export interface PlayerBasicsProbeResult {
@@ -5949,7 +5965,89 @@ async function playerBasicsProbe(): Promise<PlayerBasicsProbeResult> {
   };
 }
 
+/**
+ * The player's physics clock (#103). The `look` gallery rig's whip is a
+ * physics bone; stepped at a fixed 1/60 s its `tilt` animation ends frames on
+ * a physics step's tie, which on the frame clock flips a spring between on
+ * time and a step late (rig-c #1380). The player hands every track
+ * `physicsClockStep`, so its whip must read the core track given that clock,
+ * to the bit, and must not carry the frame clock's outlier frames.
+ */
+async function physicsClockProbe(): Promise<PhysicsClockProbeResult> {
+  const assets = await loadRig('look');
+  const read = assets.document as ReadDocument;
+  const view = underNoSkin(read.doc);
+  const root = makeGlRoot();
+  const whip = 'ahoge_whip';
+  const reading = (b: { worldX?: number; worldY?: number; x?: number; y?: number; a: number; c: number }): number[] =>
+    [b.worldX ?? b.x ?? NaN, b.worldY ?? b.y ?? NaN, b.a, b.c];
+  const core = (dts: number[], clock: boolean): number[][] => {
+    const track = openTrack(view, 'tilt', { loop: true, reset: 'animation', ...(clock ? { clock: physicsClockStep } : {}) });
+    return dts.map((dt) => {
+      const bone = track.step(dt).bones.find((b) => b.name === whip);
+      if (!bone) throw new Error(`no bone ${whip}`);
+      return reading(bone);
+    });
+  };
+  const outliers = (r: number[][]): number[] => {
+    const hit = new Set<number>();
+    for (let k = 0; k < r[0].length; k++) {
+      const d2: number[] = [];
+      for (let i = 1; i + 1 < r.length; i++) d2.push(Math.abs(r[i + 1][k] - 2 * r[i][k] + r[i - 1][k]));
+      for (let i = 0; i < d2.length; i++) {
+        const w = d2.slice(Math.max(0, i - 12), i + 13).sort((x, y) => x - y);
+        if (d2[i] > 1e-3 && d2[i] > 8 * w[w.length >> 1]) hit.add(i + 2);
+      }
+    }
+    return [...hit].sort((x, y) => x - y);
+  };
+  const diff = (a: number[][], b: number[][]): number => {
+    let m = 0;
+    for (let i = 0; i < a.length; i++) for (let k = 0; k < a[i].length; k++) m = Math.max(m, Math.abs(a[i][k] - b[i][k]));
+    return m;
+  };
+  // A 60 Hz rAF clock with timestamps rounded to 0.1 ms and ±0.2 ms of jitter, seeded.
+  let seed = 12345;
+  const rnd = (): number => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const jittered: number[] = [];
+  let last = 0;
+  for (let i = 1; i <= 600; i++) {
+    const t = Math.round((i * 1000 / 60 + (rnd() - 0.5) * 0.4) * 10) / 10;
+    jittered.push((t - last) / 1000);
+    last = t;
+  }
+  const patterns: Array<[string, number[]]> = [
+    ['fixed 1/20', Array(200).fill(1 / 20)],
+    ['fixed 1/60', Array(600).fill(1 / 60)],
+    ['rAF 60 Hz, jittered', jittered],
+  ];
+  const runs: PhysicsClockProbeResult['runs'] = [];
+  for (const [name, dts] of patterns) {
+    const player = new RigPlayer(root, assets);
+    player.play('tilt');
+    const series = dts.map((dt) => {
+      player.advance(dt);
+      return reading(player.bone(whip) as unknown as { x: number; y: number; a: number; c: number });
+    });
+    player.dispose();
+    const withClock = core(dts, true);
+    const frameClock = core(dts, false);
+    runs.push({
+      name,
+      frames: dts.length,
+      playerVsClock: diff(series, withClock),
+      playerVsFrameClock: diff(series, frameClock),
+      playerOutliers: outliers(series),
+      frameClockOutliers: outliers(frameClock),
+    });
+  }
+  root.remove();
+  assets.dispose();
+  return { runs };
+}
+
 window.rigPlayHarness = {
+  physicsClockProbe,
   playerBasicsProbe,
   darkTintProbe,
   darkDomPose,

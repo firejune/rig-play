@@ -219,7 +219,10 @@ apart), `pause()` / `resume()` hold and release it, `timeScale` scales every
 step, and `seek(t)` moves it to a time. A seek is "reopen, then step to the
 time" in `seekStep` increments (1/60 s by default) — never a jump, because a
 physics rig has history and its pose at a time depends on the steps that
-reached it. `on('event', …)` receives the event keys each step crosses, in the
+reached it. The physics integrates on rig-c's render clock (`physicsClockStep`:
+each step and 2⁻³⁰ of it more), so stepping at a fixed rate — `frame(1/60)`, a
+capture, a test — shows no single-frame spring jump where a frame ends on a
+physics step; the animation, the events and `time` stay on the steps (#103). `on('event', …)` receives the event keys each step crosses, in the
 runtime's order across a loop's wrap; `on('complete', …)` fires once a step
 completes a cycle. `skin` (a constructor option) poses under a named skin;
 without it the rig is posed the way a fresh Spine skeleton is, with no skin
