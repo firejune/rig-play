@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/rig-c/play/compare/v1.9.0...v1.9.1) (2026-10-13)
+
+
+### Performance Improvements
+
+* **canvas2d:** draw mesh triangles from the whole page except on Linux WebKit — macOS Safari pays 12–15% for the per-triangle sub-rect ([#108](https://github.com/rig-c/play/issues/108)) ([84cf5bf](https://github.com/rig-c/play/commit/84cf5bf6bde76eeef8275e32f2baa722c0d71228))
+
 ## [1.9.0](https://github.com/rig-c/play/compare/v1.8.2...v1.9.0) (2026-10-13)
 
 
