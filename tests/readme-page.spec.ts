@@ -94,3 +94,52 @@ test('the README minimal page loads, fits, rasters at screen size and plays', as
   const second = await read();
   expect(second.transforms).not.toBe(first.transforms);
 });
+
+test('the README wind slider pushes the chain, and dragging moves the rig', async ({ page }) => {
+  // Asserts, written before the first run: the README's *Wind, gravity and
+  // dragging the rig* block, appended to the minimal page and pointed at the
+  // `cloth` test rig, adds a slider; at 0 the chain hangs, and with the slider
+  // at −1 the links' centre moves more than 10 px left within 1.5 s; dragging
+  // the stage 60 px right moves the root 60 px right.
+  const readme = readFileSync(resolve(repoRoot, 'README.md'), 'utf8');
+  const section = readme.slice(readme.indexOf('### Wind, gravity and dragging the rig'));
+  const snippet = /```ts\n([\s\S]*?)\n```/.exec(section)?.[1];
+  if (!snippet) throw new Error('README: no ts block under "Wind, gravity and dragging the rig"');
+  const html = page$html
+    .replace('rigs/look/skeleton.model.json', 'rigs/cloth/skeleton.model.json')
+    .replace('</script>', `${snippet}\n</script>`);
+  expect(html).toContain('rigs/cloth/skeleton.model.json');
+  const cdn = /^https:\/\/cdn\.jsdelivr\.net\/npm\/@rig-c\/play@1\/dist\/index\.js$/;
+  await page.route(cdn, (route) =>
+    route.fulfill({ contentType: 'text/javascript', body: readFileSync(resolve(libDir, 'index.js'), 'utf8') }));
+  await page.route('**/readme-wind.html', (route) => route.fulfill({ contentType: 'text/html', body: html }));
+  await page.goto('/readme-wind.html');
+  await expect(page.locator('#stage input[type=range]')).toBeAttached();
+  await page.waitForTimeout(1500);
+
+  const linksX = () =>
+    page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll<HTMLElement>('#stage img')).filter((el) => el.style.display !== 'none');
+      const xs = imgs.map((el) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; });
+      return xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+    });
+  const calm = await linksX();
+  await page.evaluate(() => {
+    const input = document.querySelector<HTMLInputElement>('#stage input[type=range]') as HTMLInputElement;
+    input.value = '-1';
+    input.dispatchEvent(new Event('input'));
+  });
+  await page.waitForTimeout(1500);
+  const gust = await linksX();
+  expect(gust).toBeLessThan(calm - 10);
+
+  const rootLeft = () => page.evaluate(() => parseFloat((document.querySelector('#stage > div') as HTMLElement).style.left));
+  const before = await rootLeft();
+  const box = await page.locator('#stage').boundingBox();
+  if (!box) throw new Error('no stage box');
+  await page.mouse.move(box.x + 100, box.y + 100);
+  await page.mouse.down();
+  for (let i = 1; i <= 6; i++) await page.mouse.move(box.x + 100 + i * 10, box.y + 100);
+  await page.mouse.up();
+  expect((await rootLeft()) - before).toBeCloseTo(60, 6);
+});

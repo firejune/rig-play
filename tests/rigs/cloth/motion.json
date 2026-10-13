@@ -1,0 +1,21 @@
+{
+  "spec": "rigc-motion/1",
+  "archetype": "cloth",
+  "cut": "test-cloth",
+  "easings": {},
+  "physics": {
+    "link_1_phys": { "bone": "link_1", "rotate": 1, "inertia": 0.5, "strength": 60, "damping": 0.8, "mass": 1, "wind": 12, "gravity": 12 },
+    "link_2_phys": { "bone": "link_2", "rotate": 1, "inertia": 0.5, "strength": 60, "damping": 0.8, "mass": 1, "wind": 12, "gravity": 12 },
+    "link_3_phys": { "bone": "link_3", "rotate": 1, "inertia": 0.5, "strength": 60, "damping": 0.8, "mass": 1, "wind": 12, "gravity": 12 }
+  },
+  "animations": {
+    "hang": {
+      "duration": 2,
+      "loop": true,
+      "note": "Nothing is keyed but a still anchor, so whatever the chain does is physics answering the environment and the rig's motion.",
+      "tracks": [
+        { "bone": "anchor", "property": "rotate", "keys": [{ "t": 0, "v": [0] }, { "t": 2, "v": [0] }] }
+      ]
+    }
+  }
+}

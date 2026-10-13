@@ -58,6 +58,18 @@ export interface RigPlayerOptions {
 }
 
 /** What `on('event', …)` hands a listener: one event key the step crossed. */
+/**
+ * The world a rig's physics answers (`RigPlayer.environment`): spine-core's
+ * skeleton-level wind and gravity, x to the right and y down.
+ */
+export interface RigEnvironment {
+  readonly wind: readonly [number, number];
+  readonly gravity: readonly [number, number];
+}
+
+/** The runtime's start values — spine-core 4.3.13's `Skeleton` defaults. */
+const DEFAULT_ENVIRONMENT: RigEnvironment = Object.freeze({ wind: Object.freeze([1, 0] as const), gravity: Object.freeze([0, 1] as const) });
+
 export interface RigEvent {
   name: string;
   /** The key's time in the animation. */
@@ -246,6 +258,8 @@ export class RigPlayer {
   private readonly read: ReadDocument;
   private skinName: string | undefined;
   private readonly seekStep: number;
+  /** The environment the page set, or null for the runtime's start values (`environment`). */
+  private env: RigEnvironment | null = null;
   /**
    * The single live track (`openTrack`): what a plain `play` on track 0 runs
    * on, as every 1.x player did — one animation, every construct the core
@@ -384,6 +398,7 @@ export class RigPlayer {
       this.loop = loop;
       this.track = openTrack(this.view, name, { loop, reset: 'animation', adjust: this.adjustHook, clock: physicsClockStep });
       this.pose = this.track.first;
+      this.applyEnvironment(this.track);
       return;
     }
     const tracks = this.compose();
@@ -492,8 +507,59 @@ export class RigPlayer {
     this.tracks = tracks;
     this.track = null;
     this.pose = tracks.start();
+    this.applyEnvironment(tracks);
     if (time > 0) this.stepTo(time);
     return tracks;
+  }
+
+  /**
+   * The world the rig's physics answers (#121): `wind` and `gravity`, as
+   * spine-core's skeleton-level `windX/windY` and `gravityX/gravityY` — x to
+   * the right and **y down**, the runtime's axes — to which each physics
+   * constraint's authored `wind` / `gravity` is the response. The runtime's
+   * start values are `{ wind: [1, 0], gravity: [0, 1] }`; a player never given
+   * one poses exactly as it did without this method. A half left out keeps its
+   * standing value, `null` returns both to the start values, and the call
+   * applies from the next step on, at any time, with no ramp of the player's
+   * own — the springs are the smoothing. It is the player's, not a track's:
+   * every track and layer answers the same world, and a `seek` or a replay
+   * poses under the environment as it stands (no history is kept). Returns the
+   * environment now standing.
+   */
+  environment(environment?: Partial<RigEnvironment> | null): RigEnvironment {
+    if (environment === null) {
+      this.env = null;
+      this.stepper()?.setEnvironment(DEFAULT_ENVIRONMENT);
+    } else if (environment !== undefined) {
+      const live = this.stepper();
+      if (live) {
+        live.setEnvironment(environment);
+        this.env = live.environment;
+      } else {
+        const base = this.env ?? DEFAULT_ENVIRONMENT;
+        this.env = { wind: environment.wind ?? base.wind, gravity: environment.gravity ?? base.gravity };
+      }
+    }
+    return this.stepper()?.environment ?? this.env ?? DEFAULT_ENVIRONMENT;
+  }
+
+  /**
+   * The page moved or turned the whole rig since the last step (#121), in the
+   * skeleton's world — units, y up, degrees counter-clockwise — so physics
+   * sees it the way spine-core's `Skeleton.physicsTranslate` /
+   * `physicsRotate(0, 0, Δ)` make it: a rig dragged across the page trails
+   * its cloth. The root element's layout stays the caller's; this tells the
+   * physics what the caller did to it (a page-pixel delta divided by the
+   * root's scale, its y negated). Applies to the next step; before `play`
+   * there is nothing to move.
+   */
+  moved(motion: { x?: number; y?: number; rotation?: number }): void {
+    const live = this.stepper();
+    if (!live) return;
+    const x = motion.x ?? 0;
+    const y = motion.y ?? 0;
+    if (x !== 0 || y !== 0) live.physicsTranslate(x, y);
+    if (motion.rotation) live.physicsRotate(0, 0, motion.rotation);
   }
 
   /** Stops stepping; `frame` keeps drawing the pose it holds. */
@@ -531,10 +597,22 @@ export class RigPlayer {
       this.trackCount = 1;
       this.tracks = tracks;
       this.pose = tracks.start();
+      this.applyEnvironment(tracks);
       return;
     }
     this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation', adjust: this.adjustHook, clock: physicsClockStep });
     this.pose = this.track.first;
+    this.applyEnvironment(this.track);
+  }
+
+  /** What is open: the tracks, the single track, or nothing before `play`. */
+  private stepper(): LiveTrack | LiveTracks | null {
+    return this.tracks ?? this.track;
+  }
+
+  /** A newly opened track or tracks answer the environment the player stands in; one never set leaves it untouched. */
+  private applyEnvironment(live: LiveTrack | LiveTracks): void {
+    if (this.env !== null) live.setEnvironment(this.env);
   }
 
   /** Steps whatever is open forward to `time` in `seekStep` increments, the last one shorter. */
