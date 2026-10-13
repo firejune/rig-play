@@ -26,7 +26,8 @@ const STAGE_SCALE = 0.4;
 // ?expand=0 shows the mesh cracks; ?tint=ff8080 tints the whole rig;
 // ?dpr=2 overrides the mesh-canvas backing ratio; ?timescale=0 freezes the
 // animation (isolates the dirty-skip path: every mesh should report reused);
-// ?backend=webgl rasterizes meshes through the shared WebGL blitter;
+// ?backend=canvas2d rasterizes meshes on each part's own 2d canvas (webgl,
+// the shared blitter, is the default);
 // ?clipping=0 turns clips back off (counted, not applied);
 // ?mode=canvas draws each rig into one canvas (CanvasRenderer) instead of DOM;
 // ?time=1.2 seeks every instance to the same pose (deterministic screenshots).
@@ -55,7 +56,7 @@ function main(firstRig: RigName, firstAssets: ModelAssets): void {
   const backendSelect = document.getElementById('backend') as HTMLSelectElement;
   const modeSelect = document.getElementById('mode') as HTMLSelectElement;
   const stats = document.getElementById('stats') as HTMLDivElement;
-  backendSelect.value = params.get('backend') === 'webgl' ? 'webgl' : 'canvas2d';
+  backendSelect.value = params.get('backend') === 'canvas2d' ? 'canvas2d' : 'webgl';
   modeSelect.value = params.get('mode') === 'canvas' ? 'canvas' : 'dom';
 
   for (const name of RIGS) {

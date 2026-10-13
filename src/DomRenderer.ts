@@ -252,9 +252,9 @@ export class DomRenderer {
    */
   pixelRatio = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
   /**
-   * Rasterizer for the mesh (deform) tier. 'canvas2d' (default) maps each
-   * triangle with clip+transform+drawImage directly on the per-part canvas.
-   * 'webgl' rasterizes every dirty mesh into one shared offscreen WebGL
+   * Rasterizer for the mesh (deform) tier. 'canvas2d' maps each triangle
+   * with clip+transform+drawImage directly on the per-part canvas. 'webgl'
+   * (default) rasterizes every dirty mesh into one shared offscreen WebGL
    * canvas and rect-blits each mesh back onto its per-part canvas — the DOM
    * structure and all element-level behavior (z-index interleave, tint
    * filter, mix-blend-mode, dirty-skip) are identical, only the raster step
@@ -263,11 +263,12 @@ export class DomRenderer {
    * process that rAF-limits heavy scenes; GL rasterizes shared edges
    * seamlessly (no clip, no crack overdraw) and the blit is an unclipped
    * rect copy. Falls back to 'canvas2d' when WebGL is unavailable or the
-   * shared context is lost — see meshBackendActive.
+   * shared context is lost — see meshBackendActive. The default since 1.9
+   * (#109); before it, 'canvas2d'. Set 'canvas2d' to keep the 2d raster.
    */
-  meshBackend: MeshBackend = 'canvas2d';
+  meshBackend: MeshBackend = 'webgl';
   /** Backend that actually rasterized the mesh tier during the last render(). */
-  meshBackendActive: MeshBackend = 'canvas2d';
+  meshBackendActive: MeshBackend = 'webgl';
 
   private readonly views = new Map<string, SlotView>();
   /** Counts render() calls: the stamp a view drawn this frame carries (`SlotView.drawnIn`). */

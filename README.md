@@ -38,7 +38,21 @@ links to either earlier name keep working.
 
 ### Measured
 
-Measured on the 0.x line, on the spineboy exports it then played (PoC, Apple silicon —
+**The element mode's mesh backend is `'webgl'` by default since 1.9 (#109)**, read off
+macOS Safari on 2026-10-13 (1.8.2, gallery rig `look-packed`: 4 meshes, 464
+triangles, `sweep`; the demo's stats line after a 30 s settle; the Mac was also
+serving the builds, so absolute fps is low and only the comparison is the point —
+readings verbatim on #25):
+
+| macOS Safari | 1 rig | 10 rigs (4,640 triangles) |
+| --- | --: | --: |
+| canvas2d mesh backend | 21–26 fps | 2–3 fps |
+| webgl mesh backend | 60 fps | 58 fps |
+
+Nothing is claimed here for mobile browsers: no phone or tablet has been measured
+on the 1.x line.
+
+The numbers below are older: measured on the 0.x line, on the spineboy exports it then played (PoC, Apple silicon —
 headless and on-device numbers are labeled, they do **not** substitute for each other).
 The renderer tiers they describe carried over; they have not been re-measured since the
 player moved to rigc's model (#60):
@@ -150,8 +164,8 @@ default stays `dom`.
   37 fps, meshed ×10 = 3–4 fps with JS flat at ~4–5 ms — put the real cost in the
   GPU process: Safari antialiases canvas2d **clip paths**, so the per-triangle clip
   mapping pays a per-triangle AA-mask tax (the same AA that caused the seam cracks)
-- ✅ Optional WebGL blit backend for the mesh tier: `renderer.meshBackend =
-  'webgl'` (default stays `'canvas2d'`). All dirty meshes are shelf-packed into
+- ✅ WebGL blit backend for the mesh tier, the default since 1.9 (#109;
+  `renderer.meshBackend = 'canvas2d'` keeps the 2d raster). All dirty meshes are shelf-packed into
   **one shared offscreen WebGL context** (module-level — browsers cap contexts at
   ~16), drawn as textured triangles with premultiplied alpha, then rect-blitted
   onto the same per-part canvases with an unclipped `drawImage` — cheap on Safari.
@@ -586,9 +600,10 @@ onto shared pages instead. Both play here, unchanged:
   (Σ width × height), computed on demand. This is what `pixelRatio` moves
   quadratically, and the cheapest way to see an oversampling stage; the demo
   prints it in the stats line as `backing N Mpx`.
-- `renderer.meshBackend` — `'canvas2d'` (default) or `'webgl'`; same output, but
-  heavy deforming scenes on Safari want `'webgl'` (see Measured above). Falls back
-  to canvas2d automatically when WebGL is unavailable. Switching re-rasters every
+- `renderer.meshBackend` — `'webgl'` (default since 1.9) or `'canvas2d'`; same
+  output, and on macOS Safari webgl holds 58–60 fps where canvas2d reads 2–26
+  (see Measured above). Falls back to canvas2d automatically when WebGL is
+  unavailable or the shared context is lost; `meshBackendActive` says which drew. Switching re-rasters every
   mesh once (no reallocation), so it is fine to expose as a user setting.
 - `renderer.triangleExpand` — how far (canvas px) each triangle edge's clip is
   moved outward to close antialiased mesh seams (default 0.5). Also re-rasters every mesh once when changed.
@@ -643,6 +658,30 @@ on-device (Chromium, dpr 2, stage under `scale(0.25)`, ~2.2 M CSS px on screen):
 | 92 meshes | `devicePixelRatio` (2) | 141.1 Mpx | 36–39 |
 | 92 meshes | `dpr × zoom` (0.5) | 9.1 Mpx | 60–61 |
 
+## Coming from 1.8: meshes draw through WebGL by default
+
+From 1.9 the element mode rasterizes its meshes through the one shared WebGL
+context unless told otherwise (`DomRenderer.meshBackend` defaults to `'webgl'`,
+#109). The picture is the same within the parity suite's bounds, the API is
+unchanged, and canvas2d is still drawn wherever WebGL is unavailable or the
+context is lost. What a caller can notice:
+
+- The page holds one more WebGL context (one for every mesh of every player, not
+  one per player). A page already near the browser's cap of about 16 live
+  contexts can lose its oldest one when this one is created.
+- `meshBackendActive` reads `'webgl'` where it read `'canvas2d'`.
+- Frame cost moves from the page to the GPU blit (see *Measured*).
+
+To keep 1.8's raster, set it back, up front or on a live player:
+
+```ts
+const player = new RigPlayer(root, assets, { meshBackend: 'canvas2d' });
+// or, on a renderer you hold:
+renderer.meshBackend = 'canvas2d';
+```
+
+The canvas mode was already webgl by default and does not change.
+
 ## Coming from spine-html 0.8
 
 This is not a drop-in upgrade. 0.8 drew a Spine export (`.json` or `.skel`, plus its
@@ -695,7 +734,7 @@ name, and unloading is still elements first, bitmaps second.
 | `renderer.pixelRatio` | `player.renderer.pixelRatio` | On both renderers. Carried over when `player.mode` changes. |
 | `renderer.syncPixelRatio()` | `player.renderer.syncPixelRatio()` | On both renderers, the same meaning and the same deadband (since 1.3.0; before it, DOM mode only). |
 | `renderer.meshBackingPixels` | `DomRenderer.meshBackingPixels` | DOM mode only. |
-| `renderer.meshBackend`, `meshBackendActive`, type `MeshBackend` | `DomRenderer.meshBackend`, `meshBackendActive`, type `MeshBackend` | Same values (`'canvas2d'` default, `'webgl'`). Also settable up front as `RigPlayerOptions.meshBackend`. |
+| `renderer.meshBackend`, `meshBackendActive`, type `MeshBackend` | `DomRenderer.meshBackend`, `meshBackendActive`, type `MeshBackend` | Same values; the default is `'webgl'` since 1.9 (`'canvas2d'` before). Also settable up front as `RigPlayerOptions.meshBackend`. |
 | `renderer.triangleExpand` | `DomRenderer.triangleExpand` | Same default (0.5). |
 | `renderer.clipping` | `player.renderer.clipping` | On both renderers. Carried over when `player.mode` changes. |
 | `clipCount`, `clipSkipCount`, `clipWriteCount` | same names on `DomRenderer` | `clipSkipCount` counts less than it did: a second clip met while one is in force, and a clip on an inactive bone, no longer reach the frame, so they are not counted. |
