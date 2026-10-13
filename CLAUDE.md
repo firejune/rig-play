@@ -338,7 +338,8 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   chromium; 4,795 and 1,350 before #104 moved edges instead of corners).
 - **The picture gate is the two render modes drawing the same picture**
   (`tests/parity.spec.ts`, *dom / canvas parity*): every scene captured in the
-  DOM mode (canvas2d mesh backend) and in the canvas mode, diffed
+  DOM mode (its default webgl mesh backend; canvas2d until #109, which the
+  canvas2d / webgl cells still hold to it) and in the canvas mode, diffed
   shift-tolerantly at a channel tolerance of 24, bounded as ratios of drawn
   content. Bad pixels ≤ 1.5% on the test-rig scenes (macOS chromium floors:
   glow 0.007%, figure mask 0.524%, figure walk + tint 0.204%; canvas-mode

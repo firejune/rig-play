@@ -320,7 +320,9 @@ for (const scene of SCENES) {
  * above: two different rasterizers of one picture, whose residue is
  * antialiasing and texture filtering and lives on silhouettes. They run on the
  * same frozen poses as the cells above, with the DOM side on its default
- * canvas2d mesh backend, and measure the same two ratios of drawn content.
+ * webgl mesh backend (canvas2d until #109; the canvas2d / webgl cells above
+ * hold the other backend to it), and measure the same two ratios of drawn
+ * content.
  *
  * They are the repository's picture gate: the two render modes draw the same
  * picture, within the bounds below. Nothing here is compared with a Spine
@@ -330,7 +332,7 @@ for (const scene of SCENES) {
 
 /** Waits for a frozen scene to settle in either mode, then captures the stage. */
 async function captureMode(page: Page, stage: string, query: string, mode: 'dom' | 'canvas'): Promise<Buffer> {
-  if (mode === 'dom') return captureStage(page, stage, query, 'canvas2d');
+  if (mode === 'dom') return captureStage(page, stage, query, 'webgl');
   await page.goto(`${stage}?${query}&mode=canvas`);
   const stats = page.locator('#stats');
   // Settled when the record stopped changing: the frame is reused, not redrawn.

@@ -239,6 +239,21 @@ export interface RigPlayHarness {
   slotFilterProbe(): Promise<SlotFilterProbeResult>;
   trackModeProbe(): Promise<TrackModeProbeResult>;
   alphaAdditiveProbe(): Promise<AlphaAdditiveProbeResult>;
+  glFallbackProbe(loseContext: boolean): Promise<GlFallbackProbeResult>;
+}
+
+export interface GlFallbackProbeResult {
+  /** The renderer's backend as a player made it, with no option set. */
+  meshBackend: string;
+  /** What drew the first frame, and how much of the mesh canvases it covered. */
+  firstActive: string;
+  firstPixels: number;
+  /** After the shared context is lost (when asked) and the rig steps on. */
+  lost: boolean;
+  afterActive: string;
+  afterPixels: number;
+  /** Meshes the frame after the loss re-rastered (the backend signature re-dirties them). */
+  afterMeshesDrawn: number;
 }
 
 export interface AlphaAdditiveProbeResult {
@@ -1525,6 +1540,8 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   const canvas2dBefore = liveGlTextures();
   const rootF = makeGlRoot();
   const rendererF = new DomRenderer(rootF, assets.regionImages, assets.pageImages);
+  // Chosen, not defaulted: the element mode's default is webgl since #109.
+  rendererF.meshBackend = 'canvas2d';
   rendererF.render(posedFrame(assets));
   const canvas2dAfterRender = liveGlTextures();
   const canvas2dBackend = rendererF.meshBackendActive;
@@ -5530,7 +5547,46 @@ async function alphaAdditiveProbe(): Promise<AlphaAdditiveProbeResult> {
   };
 }
 
+/**
+ * The element mode's default mesh backend is webgl (#109), and canvas2d its
+ * fallback: with WebGL unavailable (the spec blocks the context before the page
+ * loads) the first frame draws on canvas2d, and with the shared context lost
+ * mid-play the next frame does. Either way the meshes still draw.
+ */
+async function glFallbackProbe(loseContext: boolean): Promise<GlFallbackProbeResult> {
+  const assets = await loadRig('glow');
+  const root = makeGlRoot();
+  const player = new RigPlayer(root, assets);
+  const renderer = player.renderer as DomRenderer;
+  renderer.pixelRatio = 0.5;
+  const meshBackend = renderer.meshBackend;
+  player.play('burn');
+  player.seek(0.2);
+  player.draw();
+  const firstActive = renderer.meshBackendActive;
+  const firstPixels = meshPixels(root);
+  let lost = false;
+  if (loseContext) {
+    const blitter = getMeshGlBlitter() as unknown as { gl: WebGLRenderingContext; canvas: HTMLCanvasElement } | null;
+    if (blitter) {
+      const event = new Promise<void>((resolve) => blitter.canvas.addEventListener('webglcontextlost', () => resolve(), { once: true }));
+      blitter.gl.getExtension('WEBGL_lose_context')?.loseContext();
+      await event;
+      lost = getMeshGlBlitter() === null;
+    }
+  }
+  player.frame(0.1);
+  const afterActive = renderer.meshBackendActive;
+  const afterPixels = meshPixels(root);
+  const afterMeshesDrawn = renderer.meshCount;
+  player.dispose();
+  root.remove();
+  assets.dispose();
+  return { meshBackend, firstActive, firstPixels, lost, afterActive, afterPixels, afterMeshesDrawn };
+}
+
 window.rigPlayHarness = {
+  glFallbackProbe,
   alphaAdditiveProbe,
   trackModeProbe,
   slotFilterProbe,
