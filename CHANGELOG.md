@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/rig-c/play/compare/v1.9.2...v1.10.0) (2026-10-13)
+
+
+### Features
+
+* **player:** the page sets the physics environment and tells the rig it moved — environment() and moved() ([#122](https://github.com/rig-c/play/issues/122)) ([1faf35e](https://github.com/rig-c/play/commit/1faf35e8301f2b29467756533cae4065b8d54f67))
+
 ## [1.9.2](https://github.com/rig-c/play/compare/v1.9.1...v1.9.2) (2026-10-13)
 
 
