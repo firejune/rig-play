@@ -1,0 +1,136 @@
+{
+  "spec": "rigc-rig/1",
+  "name": "cloth",
+  "images": "parts",
+  "skeleton": {
+    "x": -400,
+    "y": 0,
+    "width": 800,
+    "height": 800
+  },
+  "bones": [
+    {
+      "name": "root"
+    },
+    {
+      "name": "anchor",
+      "parent": "root",
+      "x": 0,
+      "y": 700
+    },
+    {
+      "name": "link_1",
+      "parent": "anchor",
+      "x": 0,
+      "y": -20,
+      "rotation": -90,
+      "length": 160
+    },
+    {
+      "name": "link_2",
+      "parent": "link_1",
+      "x": 160,
+      "y": 0,
+      "length": 160
+    },
+    {
+      "name": "link_3",
+      "parent": "link_2",
+      "x": 160,
+      "y": 0,
+      "length": 160
+    },
+    {
+      "name": "tip",
+      "parent": "link_3",
+      "x": 160,
+      "y": 0
+    }
+  ],
+  "invariants": {
+    "meshSlots": 1,
+    "meshTriangles": 2
+  },
+  "slots": [
+    {
+      "name": "banner",
+      "bone": "anchor",
+      "attachment": "banner"
+    },
+    {
+      "name": "link_1",
+      "bone": "link_1",
+      "attachment": "link"
+    },
+    {
+      "name": "link_2",
+      "bone": "link_2",
+      "attachment": "link"
+    },
+    {
+      "name": "link_3",
+      "bone": "link_3",
+      "attachment": "link"
+    }
+  ],
+  "skins": {
+    "default": {
+      "banner": {
+        "banner": {
+          "type": "mesh",
+          "image": "banner.png",
+          "hull": 4,
+          "uvs": [
+            0,
+            0,
+            1,
+            0,
+            1,
+            1,
+            0,
+            1
+          ],
+          "vertices": [
+            -160,
+            60,
+            160,
+            60,
+            160,
+            -20,
+            -160,
+            -20
+          ],
+          "triangles": [
+            0,
+            1,
+            2,
+            0,
+            2,
+            3
+          ]
+        }
+      },
+      "link_1": {
+        "link": {
+          "image": "link.png",
+          "x": 80,
+          "rotation": -90
+        }
+      },
+      "link_2": {
+        "link": {
+          "image": "link.png",
+          "x": 80,
+          "rotation": -90
+        }
+      },
+      "link_3": {
+        "link": {
+          "image": "link.png",
+          "x": 80,
+          "rotation": -90
+        }
+      }
+    }
+  }
+}

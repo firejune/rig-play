@@ -256,6 +256,38 @@ pixels than the screen shows. Call it again after anything that changes the
 scale. `tests/readme-page.spec.ts` runs this block as written, against the
 package built from this tree.
 
+### Wind, gravity and dragging the rig
+
+A rig's physics links answer the world the page sets (#121). `environment()`
+gives them spine-core's skeleton-level wind and gravity — x right, **y down**,
+the runtime's axes; each constraint's authored `wind` / `gravity` is its
+response, so a link stating `wind: 0` feels none — and `moved()` tells them the
+page moved or turned the rig, in the skeleton's world (y up), so a dragged rig
+trails its cloth. Both apply from the next step, at any time. Added to the
+minimal page above:
+
+```ts
+// A wind slider, -1 (left) to 1 (right). The runtime starts at wind [1, 0], so set calm first.
+const wind = stage.appendChild(Object.assign(document.createElement('input'),
+  { type: 'range', min: '-1', max: '1', step: '0.01', value: '0' }));
+player.environment({ wind: [0, 0] });
+wind.addEventListener('input', () => player.environment({ wind: [Number(wind.value), 0] }));
+
+// Drag the rig: move the root, and tell the physics how far, in world units with y up.
+stage.addEventListener('pointermove', (e) => {
+  if (!(e.buttons & 1) || e.target === wind) return;
+  root.style.left = `${parseFloat(root.style.left) + e.movementX}px`;
+  root.style.top = `${parseFloat(root.style.top) + e.movementY}px`;
+  player.moved({ x: e.movementX / scale, y: -e.movementY / scale });
+});
+```
+
+`environment(null)` returns to the runtime's start values, and `environment()`
+reads what stands. The state is the player's, not a track's: every track and
+layer answers the same world, and a `seek` replays under the environment as it
+stands — no history is kept. A rig with no physics ignores both.
+`tests/readme-page.spec.ts` runs this block in the minimal page.
+
 The player owns one track: `play(name, { loop })` opens an animation at its first
 pose, `frame(dt)` steps it (or `advance(dt)` then `draw()`, to time the two
 apart), `pause()` / `resume()` hold and release it, `timeScale` scales every

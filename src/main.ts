@@ -18,7 +18,7 @@ const RIGS = GALLERY.flatMap((rig) => [rig, `${rig}-packed`]);
  * turned on its page. Reachable by `?rig=` for the parity and invariant
  * scenes, and left out of the picker, which shows the gallery.
  */
-const TEST_RIGS = ['figure', 'figure-packed', 'glow', 'glow-packed', 'turned', 'named'];
+const TEST_RIGS = ['figure', 'figure-packed', 'glow', 'glow-packed', 'turned', 'named', 'cloth'];
 type RigName = string;
 const STAGE_SCALE = 0.4;
 
@@ -115,6 +115,14 @@ function main(firstRig: RigName, firstAssets: ModelAssets): void {
       });
       if (tint) player.color = tint;
       player.play(animSelect.value, { loop: true });
+      // ?wind=x,y sets the physics environment's wind (spine-core's skeleton
+      // windX, windY: x right, y down) before the seek, so the seek's steps
+      // already answer it.
+      const windParam = params.get('wind');
+      if (windParam !== null) {
+        const [wx, wy] = windParam.split(',').map(Number);
+        if (Number.isFinite(wx) && Number.isFinite(wy)) player.environment({ wind: [wx, wy] });
+      }
       // Desync cycles so N instances don't look like one stamped sprite —
       // unless ?time seeks them all to one pose (for deterministic captures).
       const timeParam = params.get('time');

@@ -242,8 +242,24 @@ export interface RigPlayHarness {
   glFallbackProbe(loseContext: boolean): Promise<GlFallbackProbeResult>;
   playerBasicsProbe(): Promise<PlayerBasicsProbeResult>;
   physicsClockProbe(): Promise<PhysicsClockProbeResult>;
+  environmentProbe(): Promise<EnvironmentProbeResult>;
   darkTintProbe(): Promise<DarkTintProbeResult>;
   darkDomPose(time: number): Promise<number>;
+}
+
+export interface EnvironmentProbeResult {
+  /** No environment and no motion: the player against the core track given neither, every bone, per rig. */
+  untouched: Array<{ rig: string; maxDiff: number }>;
+  /** The cloth tip's world x at checkpoints (steps 60, 90, 120, 180, 240) for each schedule, in each mode. */
+  tips: Record<string, { dom: number[]; canvas: number[] }>;
+  /** The gust schedule through the player against the core track given the same calls, per step pattern. */
+  throughCore: Array<{ name: string; maxDiff: number }>;
+  /** `walk` (no physics) under every call against the same walk under none. */
+  noPhysicsMaxDiff: number;
+  /** What `environment()` returns: before play, after a half, after null. */
+  beforePlay: number[];
+  afterHalf: number[];
+  afterNull: number[];
 }
 
 export interface PhysicsClockProbeResult {
@@ -6046,7 +6062,135 @@ async function physicsClockProbe(): Promise<PhysicsClockProbeResult> {
   return { runs };
 }
 
+/**
+ * The environment the page sets (#121): `environment({ wind, gravity })` and
+ * `moved({ x, y, rotation })`, forwarded to the core's live tracks
+ * (rig-c/core#1416). The `cloth` test rig is a three-link physics chain whose
+ * links answer wind and gravity; `walk` has no physics.
+ */
+async function environmentProbe(): Promise<EnvironmentProbeResult> {
+  const root = makeGlRoot();
+  const allBones = (pose: RawPose): number[] => pose.bones.flatMap((b) => [b.worldX, b.worldY, b.a, b.b, b.c, b.d]);
+  const playerBones = (player: RigPlayer, names: string[]): number[] =>
+    names.flatMap((n) => { const b = player.bone(n) as unknown as { x: number; y: number; a: number; b: number; c: number; d: number }; return [b.x, b.y, b.a, b.b, b.c, b.d]; });
+  const diff = (a: number[], b: number[]): number =>
+    a.length !== b.length ? Infinity : a.reduce((m, v, i) => Math.max(m, Math.abs(v - b[i])), 0);
+
+  // 1. Untouched: byte-identical to the core track given nothing.
+  const untouched: EnvironmentProbeResult['untouched'] = [];
+  for (const [rig, anim] of [['cloth', 'hang'], ['look', 'tilt'], ['walk', 'walk']] as const) {
+    const assets = await loadRig(rig);
+    const view = underNoSkin((assets.document as ReadDocument).doc);
+    const names = (assets.document as ReadDocument).doc.bones.map((b: { name: string }) => b.name);
+    const player = new RigPlayer(root, assets);
+    player.play(anim);
+    const track = openTrack(view, anim, { loop: true, reset: 'animation', clock: physicsClockStep });
+    let maxDiff = 0;
+    for (let i = 0; i < 600; i++) {
+      player.advance(1 / 60);
+      maxDiff = Math.max(maxDiff, diff(playerBones(player, names), allBones(track.step(1 / 60))));
+    }
+    untouched.push({ rig, maxDiff });
+    player.dispose();
+    assets.dispose();
+  }
+
+  // 2–3. Schedules on the cloth, in both modes: what each step does before it is taken.
+  const cloth = await loadRig('cloth');
+  type Live = { setEnvironment(e: { wind?: readonly [number, number]; gravity?: readonly [number, number] }): void; physicsTranslate(x: number, y: number): void; physicsRotate(x: number, y: number, d: number): void };
+  type Schedule = (i: number, env: (e: { wind?: [number, number]; gravity?: [number, number] }) => void, move: (m: { x?: number; y?: number; rotation?: number }) => void) => void;
+  const calmFirst = (i: number, env: Parameters<Schedule>[1]): void => { if (i === 0) env({ wind: [0, 0] }); };
+  const schedules: Record<string, Schedule> = {
+    calm: (i, env) => calmFirst(i, env),
+    gustRight: (i, env) => { calmFirst(i, env); if (i === 60) env({ wind: [1, 0] }); if (i === 120) env({ wind: [0, 0] }); },
+    gustLeft: (i, env) => { calmFirst(i, env); if (i === 60) env({ wind: [-1, 0] }); if (i === 120) env({ wind: [0, 0] }); },
+    gustHeavy: (i, env) => { if (i === 0) env({ wind: [0, 0], gravity: [0, 3] }); if (i === 60) env({ wind: [1, 0] }); if (i === 120) env({ wind: [0, 0] }); },
+    dragRight: (i, env, move) => { calmFirst(i, env); if (i >= 60 && i < 90) move({ x: 5 }); },
+    turn: (i, env, move) => { calmFirst(i, env); if (i >= 60 && i < 90) move({ rotation: 3 }); },
+  };
+  const checkpoints = [59, 89, 119, 179, 239];
+  const tipX = (player: RigPlayer): number => (player.bone('tip') as unknown as { x: number }).x;
+  const tips: EnvironmentProbeResult['tips'] = {};
+  for (const [name, schedule] of Object.entries(schedules)) {
+    const byMode = { dom: [] as number[], canvas: [] as number[] };
+    for (const mode of ['dom', 'canvas'] as const) {
+      const player = new RigPlayer(root, cloth, { mode });
+      player.play('hang');
+      for (let i = 0; i < 240; i++) {
+        schedule(i, (e) => player.environment(e), (m) => player.moved(m));
+        player.advance(1 / 60);
+        if (checkpoints.includes(i)) byMode[mode].push(tipX(player));
+      }
+      if (mode === 'canvas') player.draw();
+      player.dispose();
+    }
+    tips[name] = byMode;
+  }
+
+  // 6. Through the core: the gust and drag schedules, with the same calls on a core track.
+  const clothView = underNoSkin((cloth.document as ReadDocument).doc);
+  const clothNames = (cloth.document as ReadDocument).doc.bones.map((b: { name: string }) => b.name);
+  let seed = 12345;
+  const rnd = (): number => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const jittered: number[] = [];
+  let last = 0;
+  for (let i = 1; i <= 240; i++) {
+    const t = Math.round((i * 1000 / 60 + (rnd() - 0.5) * 0.4) * 10) / 10;
+    jittered.push((t - last) / 1000);
+    last = t;
+  }
+  const both: Schedule = (i, env, move) => { schedules.gustRight(i, env, move); schedules.dragRight(i, () => {}, move); };
+  const throughCore: EnvironmentProbeResult['throughCore'] = [];
+  for (const [name, dts] of [['fixed 1/20', Array(240).fill(1 / 20)], ['fixed 1/60', Array(240).fill(1 / 60)], ['rAF 60 Hz, jittered', jittered]] as Array<[string, number[]]>) {
+    const player = new RigPlayer(root, cloth);
+    player.play('hang');
+    const track = openTrack(clothView, 'hang', { loop: true, reset: 'animation', clock: physicsClockStep }) as unknown as Live & { step(dt: number): RawPose };
+    let maxDiff = 0;
+    dts.forEach((dt, i) => {
+      both(i, (e) => player.environment(e), (m) => player.moved(m));
+      both(i, (e) => track.setEnvironment(e), (m) => { if (m.x || m.y) track.physicsTranslate(m.x ?? 0, m.y ?? 0); if (m.rotation) track.physicsRotate(0, 0, m.rotation); });
+      player.advance(dt);
+      maxDiff = Math.max(maxDiff, diff(playerBones(player, clothNames), allBones(track.step(dt))));
+    });
+    throughCore.push({ name, maxDiff });
+    player.dispose();
+  }
+
+  // 4. No physics, no change.
+  const walk = await loadRig('walk');
+  const walkNames = (walk.document as ReadDocument).doc.bones.map((b: { name: string }) => b.name);
+  const quiet = new RigPlayer(root, walk);
+  const busy = new RigPlayer(root, walk);
+  quiet.play('walk');
+  busy.play('walk');
+  let noPhysicsMaxDiff = 0;
+  for (let i = 0; i < 240; i++) {
+    busy.environment({ wind: [Math.sin(i), 2], gravity: [1, -1] });
+    busy.moved({ x: 3, y: -2, rotation: 1 });
+    quiet.advance(1 / 60);
+    busy.advance(1 / 60);
+    noPhysicsMaxDiff = Math.max(noPhysicsMaxDiff, diff(playerBones(quiet, walkNames), playerBones(busy, walkNames)));
+  }
+  quiet.dispose();
+  busy.dispose();
+  walk.dispose();
+
+  // What environment() reports.
+  const flat = (e: { wind: readonly number[]; gravity: readonly number[] }): number[] => [...e.wind, ...e.gravity];
+  const fresh = new RigPlayer(root, cloth);
+  const beforePlay = flat(fresh.environment({ wind: [0.5, 0] }));
+  fresh.play('hang');
+  const afterHalf = flat(fresh.environment({ gravity: [0, 2] }));
+  const afterNull = flat(fresh.environment(null));
+  fresh.dispose();
+
+  cloth.dispose();
+  root.remove();
+  return { untouched, tips, throughCore, noPhysicsMaxDiff, beforePlay, afterHalf, afterNull };
+}
+
 window.rigPlayHarness = {
+  environmentProbe,
   physicsClockProbe,
   playerBasicsProbe,
   darkTintProbe,

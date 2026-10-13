@@ -310,3 +310,11 @@ console.log('named:');
   }
   write('named', 'sheet.png', w, h, page);
 }
+
+// --- cloth: a three-link physics chain hanging from an anchor (#121) ------------
+// Each link is one rigid part on a physics bone that answers wind and gravity;
+// the banner is a still mesh on the anchor, so the scene has a mesh to settle on.
+
+console.log('cloth:');
+write('cloth', 'link.png', 61, 169, paint(61, 169, roundedRect(61, 169, 6, 22), look([90, 160, 210], { period: 14 })));
+write('cloth', 'banner.png', 321, 81, paint(321, 81, roundedRect(321, 81, 6, 18), look([210, 120, 80], { period: 16 })));
