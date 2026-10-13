@@ -57,7 +57,7 @@
   ],
 
   "events": {
-    "step": {},
+    "step": { "float": 0.25, "string": "left" },
     "hit": { "int": 7 }
   },
   "skins": {
