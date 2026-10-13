@@ -1540,6 +1540,8 @@ async function glTextureProbe(): Promise<GlTextureProbeResult> {
   const canvas2dBefore = liveGlTextures();
   const rootF = makeGlRoot();
   const rendererF = new DomRenderer(rootF, assets.regionImages, assets.pageImages);
+  // Chosen, not defaulted: the element mode's default is webgl since #109.
+  rendererF.meshBackend = 'canvas2d';
   rendererF.render(posedFrame(assets));
   const canvas2dAfterRender = liveGlTextures();
   const canvas2dBackend = rendererF.meshBackendActive;
