@@ -29,6 +29,7 @@ const STAGE_SCALE = 0.4;
 // ?backend=canvas2d rasterizes meshes on each part's own 2d canvas (webgl,
 // the shared blitter, is the default);
 // ?clipping=0 turns clips back off (counted, not applied);
+// ?subrect=triangle|page picks what a canvas2d mesh triangle is drawn from;
 // ?mode=canvas draws each rig into one canvas (CanvasRenderer) instead of DOM;
 // ?time=1.2 seeks every instance to the same pose (deterministic screenshots).
 const params = new URLSearchParams(location.search);
@@ -124,6 +125,10 @@ function main(firstRig: RigName, firstAssets: ModelAssets): void {
       const renderer = player.renderer;
       const expandParam = params.get('expand');
       if (expandParam !== null && renderer instanceof DomRenderer) renderer.triangleExpand = Number(expandParam) || 0;
+      const subrectParam = params.get('subrect');
+      if ((subrectParam === 'triangle' || subrectParam === 'page') && (renderer instanceof DomRenderer || renderer instanceof CanvasRenderer)) {
+        renderer.meshSourceRect = subrectParam;
+      }
       const clippingParam = params.get('clipping');
       if (clippingParam !== null) renderer.clipping = clippingParam !== '0';
       // Mesh canvases raster at the effective on-screen resolution: device
@@ -260,7 +265,9 @@ function main(firstRig: RigName, firstAssets: ModelAssets): void {
           ? first.meshBackendActive === 'webgl'
             ? ' · webgl'
             : ' · webgl unavailable → canvas2d'
-          : '';
+          : first
+            ? ` · canvas2d from ${first.meshSourceRect === 'page' ? 'page' : 'sub-rect'}`
+            : '';
       const clipNote =
         (clipsApplied ? ` · ${clipsApplied} clips applied` : '') +
         (clipsSkipped ? ` · ${clipsSkipped} clips skipped` : '') +

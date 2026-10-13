@@ -199,6 +199,8 @@ const DUMP = process.env.PARITY_DUMP === '1';
  * artwork, so it must not be counted as content.
  */
 const PARITY_DIFF = { floorStrip: true } as const;
+/** The two source rects under one clip: the same picture, so no more raw differences than the seam canary calls alive. */
+const SOURCE_RECT_RAW_LIMIT = 10;
 
 async function captureStage(
   page: Page,
@@ -433,6 +435,24 @@ test('seam canary: the canvas2d crack-closing overdraw is alive', async ({ page 
   expect(m.rawBad).toBeGreaterThanOrEqual(10);
 });
 
+for (const [label, query] of [
+  ['glow canary ring', `rig=glow&anim=canary&${POSE}`],
+  ['gallery flex', `rig=flex-packed&anim=wave&${POSE}`],
+] as const) {
+  test(`source rect: the whole page and the triangle's sub-rect draw the same picture — ${label}`, async ({ page }) => {
+    // The sub-rect covers everything the triangle's clip can reveal plus a
+    // texel of bilinear support, so under the same clip the two draw the same
+    // pixels (#25). Not on Linux WebKit, the engine that garbles whole-page
+    // draws, which is why it keeps the sub-rect by default.
+    test.skip(test.info().project.name === 'webkit' && process.platform === 'linux', 'Linux WebKit garbles whole-page drawImage');
+    const pageDraw = await captureStage(page, DEMO, `${query}&subrect=page`, 'canvas2d');
+    const rectDraw = await captureStage(page, DEMO, `${query}&subrect=triangle`, 'canvas2d');
+    const m = await diffInPage(page, pageDraw, rectDraw, PARITY_DIFF);
+    console.log(`[parity] ${test.info().project.name} source rect ${label}: rawBad=${m.rawBad}`);
+    expect(m.rawBad).toBeLessThanOrEqual(SOURCE_RECT_RAW_LIMIT);
+  });
+}
+
 test('overdraw canary: the canvas2d source sub-rect tracks the clip expansion', async ({ page }) => {
   // The canvas2d path draws each triangle from a source sub-rect of the atlas
   // page instead of the whole page (see drawTriangle). The rect is *derived*:
@@ -465,8 +485,10 @@ test('overdraw canary: the canvas2d source sub-rect tracks the clip expansion', 
   // the geometric middle of the new populations.) WebKit is measured in CI
   // only.
   const query = `rig=glow&anim=canary&${POSE}`;
-  const wide = await captureStage(page, DEMO, `${query}&expand=32`, 'canvas2d');
-  const narrow = await captureStage(page, DEMO, `${query}&expand=8`, 'canvas2d');
+  // Forced on every engine: by default only Linux WebKit draws from the
+  // sub-rect, and this guards the derivation wherever it runs.
+  const wide = await captureStage(page, DEMO, `${query}&expand=32&subrect=triangle`, 'canvas2d');
+  const narrow = await captureStage(page, DEMO, `${query}&expand=8&subrect=triangle`, 'canvas2d');
   const m = await diffInPage(page, wide, narrow, PARITY_DIFF);
   console.log(`[parity] ${test.info().project.name} overdraw canary: rawBad=${m.rawBad}`);
   expect(m.rawBad).toBeGreaterThanOrEqual(2500);

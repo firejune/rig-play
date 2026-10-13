@@ -1,6 +1,6 @@
 import { syncedPixelRatio } from './pixelRatio.js';
 import { clipThrough, REGION_TRIANGLES } from 'rig-c/core';
-import { drawTexturedTriangle } from './DomRenderer.js';
+import { defaultMeshSourceRect, drawTexturedTriangle, type MeshSourceRect } from './DomRenderer.js';
 import { type PageSource, straightAlphaSource } from './DomTexture.js';
 import { type FrameRun, getMeshGlBlitter } from './MeshGlBlitter.js';
 import type { BlendMode, PosedClip, PosedFrame, PosedSlot } from './posedFrame.js';
@@ -85,6 +85,8 @@ export class CanvasRenderer {
   viewport: CanvasViewport | null = null;
   /** The backend to draw with: 'webgl' (default) through the shared context, or 'canvas2d' to force the fallback. */
   backend: CanvasBackend = 'webgl';
+  /** What the canvas2d fallback draws each mesh triangle from — as `DomRenderer.meshSourceRect`, with the same default. */
+  meshSourceRect: MeshSourceRect = defaultMeshSourceRect();
   /** What drew the last frame (or would have, had it not been reused). */
   backendActive: CanvasBackend = 'webgl';
   /** The visible canvas — the renderer's one element in the root. */
@@ -302,7 +304,8 @@ export class CanvasRenderer {
         this.nextSig = grown;
       }
     };
-    need(8);
+    need(9);
+    sig[n++] = this.meshSourceRect === 'triangle' ? 1 : 0;
     sig[n++] = this.left;
     sig[n++] = this.top;
     sig[n++] = this.backingW;
@@ -529,7 +532,7 @@ export class CanvasRenderer {
         const i1 = triangles[t + 1] * 2;
         const i2 = triangles[t + 2] * 2;
         drawTexturedTriangle(
-          ctx, source, 0.5,
+          ctx, source, 0.5, this.meshSourceRect,
           X(vertices[i0]), Y(vertices[i0 + 1]), uvs[i0] * uw, uvs[i0 + 1] * uh,
           X(vertices[i1]), Y(vertices[i1 + 1]), uvs[i1] * uw, uvs[i1 + 1] * uh,
           X(vertices[i2]), Y(vertices[i2 + 1]), uvs[i2] * uw, uvs[i2 + 1] * uh,

@@ -607,6 +607,12 @@ onto shared pages instead. Both play here, unchanged:
   mesh once (no reallocation), so it is fine to expose as a user setting.
 - `renderer.triangleExpand` — how far (canvas px) each triangle edge's clip is
   moved outward to close antialiased mesh seams (default 0.5). Also re-rasters every mesh once when changed.
+- `renderer.meshSourceRect` — what a canvas2d mesh triangle is drawn from:
+  `'page'` (the whole page) or `'triangle'` (a sub-rect covering its clip). Both
+  draw the same picture; the default is `'triangle'` on Linux WebKit, which
+  garbles whole-page draws, and `'page'` elsewhere, because macOS Safari ran the
+  sub-rect 12–15% slower (#25). Also on `CanvasRenderer` for its canvas2d
+  fallback. Re-rasters every mesh once when changed.
 - `renderer.clipping` — apply the clips the frame carries (default `true`).
   Which slots a clip covers is decided where the frame is made — the player's
   adapter walks the draw order the way the runtime's draw loop does (one clip in
@@ -872,7 +878,8 @@ scenes (floors 0.585–1.553%, Chromium and WebKit). The DOM tier's two mesh
 backends get the same A/B (`?backend=canvas2d` against `?backend=webgl`, at most
 0.5%). Hairline seams are guarded by a deterministic canary (`?expand=0` must
 change the canvas2d raster), the canvas2d source sub-rect by another (expand 32
-against 8), and counter tests pin the dirty-skip / grow-only-backing /
+against 8, forced to the sub-rect), the two source rects by an A/B that must
+match exactly, and counter tests pin the dirty-skip / grow-only-backing /
 clip-counter invariants plus the region corner order (BL, UL, UR, BR) and the
 turned-region UVs, read off rig-c's pose against hand-written numbers.
 

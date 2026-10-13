@@ -198,11 +198,19 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   and lighter pixels separately, assert that the darker side does not outweigh
   the lighter one, and budget each as a ratio of drawn content, the way the
   parity suite budgets a diff.
-- **The canvas2d path draws a per-triangle source sub-rect, never the whole
-  page.** Linux WebKit garbles whole-page `drawImage` under steep per-triangle
-  affines — measured (displaced texture on head/goggles/foot triangles while
-  webgl stayed clean; hoverboard bad pixels 1042 → 2 with the source rect as
-  the only variable), mechanism not identified. The rect is derived from the
+- **On Linux WebKit the canvas2d path draws a per-triangle source sub-rect;
+  everywhere else it draws the whole page** (`meshSourceRect`, defaulted by
+  `defaultMeshSourceRect`, a user-agent test). Linux WebKit garbles whole-page
+  `drawImage` under steep per-triangle affines — measured (displaced texture on
+  head/goggles/foot triangles while webgl stayed clean; hoverboard bad pixels
+  1042 → 2 with the source rect as the only variable), mechanism not
+  identified. macOS Safari pays for the sub-rect: 12–15% fewer fps than the
+  whole page over two alternated passes, and a whole-page rect through the
+  9-argument call ran as fast as the whole page, so the cost is the small rect
+  (#25). Under one clip the two draw the same pixels (rawBad 0 on Chromium,
+  `tests/parity.spec.ts` *source rect*), so the choice is cost by engine, not a
+  picture. Chromium and Firefox were not timed; they get the page, which is
+  what every engine drew before #19. The rect is derived from the
   clip, not fixed: the expanded clip polygon is carried back through the
   inverse of the per-triangle affine, plus one texel of bilinear support,
   snapped outward to texel boundaries. A fixed pad is wrong because the
@@ -210,7 +218,8 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   texels-per-canvas-unit — up to 4× that at a sharp corner, since the
   expansion moves each *edge* along its normal (#104) — ~0.26 to 8.6 texels
   across the demo's own meshes (measured under the earlier centroid rule).
-  The overdraw canary in `tests/parity.spec.ts` is what holds this.
+  The overdraw canary in `tests/parity.spec.ts` is what holds this, and it
+  forces `subrect=triangle` so it holds it on every engine.
 - **Relative imports in `src/` carry `.js`** — `from './DomTexture.js'`, never
   `from './DomTexture'`. TypeScript resolves the `.js` specifier back to the
   `.ts` file under `moduleResolution: "bundler"`, and vite does the same, so
