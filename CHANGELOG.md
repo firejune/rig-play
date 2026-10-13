@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/rig-c/play/compare/v1.8.2...v1.9.0) (2026-10-13)
+
+
+### Features
+
+* **dom:** the element mode draws meshes through the shared WebGL context by default — canvas2d becomes its fallback ([#111](https://github.com/rig-c/play/issues/111)) ([62cf482](https://github.com/rig-c/play/commit/62cf4823857f796a08af0c25df09d81dcafa89b3))
+
 ## [1.8.2](https://github.com/rig-c/play/compare/v1.8.1...v1.8.2) (2026-10-13)
 
 
