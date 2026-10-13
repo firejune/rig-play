@@ -18,7 +18,7 @@ const RIGS = GALLERY.flatMap((rig) => [rig, `${rig}-packed`]);
  * turned on its page. Reachable by `?rig=` for the parity and invariant
  * scenes, and left out of the picker, which shows the gallery.
  */
-const TEST_RIGS = ['figure', 'figure-packed', 'glow', 'glow-packed', 'turned'];
+const TEST_RIGS = ['figure', 'figure-packed', 'glow', 'glow-packed', 'turned', 'named'];
 type RigName = string;
 const STAGE_SCALE = 0.4;
 

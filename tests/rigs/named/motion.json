@@ -1,0 +1,17 @@
+{
+  "spec": "rigc-motion/1",
+  "archetype": "named",
+  "cut": "test-named",
+  "easings": {},
+  "animations": {
+    "tilt": {
+      "duration": 2,
+      "loop": true,
+      "note": "The one region is drawn twice, as a region attachment and as a two-triangle mesh over the same region, each turning a little and back, so the cut and the mesh sampling are both drawn under a rotation. The pose the renderer specs freeze is t = 1.2.",
+      "tracks": [
+        { "bone": "swatch", "property": "rotate", "keys": [{ "t": 0, "v": [-8] }, { "t": 1, "v": [8] }, { "t": 2, "v": [-8] }] },
+        { "bone": "sheet", "property": "rotate", "keys": [{ "t": 0, "v": [8] }, { "t": 1, "v": [-8] }, { "t": 2, "v": [8] }] }
+      ]
+    }
+  }
+}
