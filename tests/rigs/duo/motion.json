@@ -1,0 +1,17 @@
+{
+  "spec": "rigc-motion/1",
+  "archetype": "duo",
+  "cut": "test-duo",
+  "easings": {},
+  "animations": {
+    "shift": {
+      "duration": 1,
+      "loop": false,
+      "note": "Nothing moves; only the dark half of each slot's two-colour tint is keyed, so two poses of this animation differ in that colour and in nothing else. The swatch's dark goes red to green, the sheet's blue to cyan; the light half stays white.",
+      "tracks": [
+        { "slot": "swatch", "property": "rgb2", "keys": [{ "t": 0, "v": [1, 1, 1, 1, 0, 0] }, { "t": 1, "v": [1, 1, 1, 0, 1, 0] }] },
+        { "slot": "sheet", "property": "rgb2", "keys": [{ "t": 0, "v": [1, 1, 1, 0, 0, 1] }, { "t": 1, "v": [1, 1, 1, 0, 1, 1] }] }
+      ]
+    }
+  }
+}

@@ -240,6 +240,8 @@ export interface RigPlayHarness {
   trackModeProbe(): Promise<TrackModeProbeResult>;
   alphaAdditiveProbe(): Promise<AlphaAdditiveProbeResult>;
   glFallbackProbe(loseContext: boolean): Promise<GlFallbackProbeResult>;
+  darkTintProbe(): Promise<DarkTintProbeResult>;
+  darkDomPose(time: number): Promise<number>;
 }
 
 export interface GlFallbackProbeResult {
@@ -254,6 +256,28 @@ export interface GlFallbackProbeResult {
   afterPixels: number;
   /** Meshes the frame after the loss re-rastered (the backend signature re-dirties them). */
   afterMeshesDrawn: number;
+}
+
+export interface DarkTintProbeResult {
+  webglAvailable: boolean;
+  /** Per time: the frame's dark colour on each slot, and the GL raster held to c·light + (1 − c)·dark. */
+  times: Array<{
+    time: number;
+    swatchDark: number[] | null;
+    sheetDark: number[] | null;
+    /** Interior pixels compared, per slot, and the worst channel error in 8-bit levels. */
+    swatchPixels: number;
+    sheetPixels: number;
+    swatchMaxError: number;
+    sheetMaxError: number;
+    /** How far the GL raster sits above the alpha-only fallback, at the ramp's dark end — the dark half's own signature. */
+    swatchLift: number[];
+    sheetLift: number[];
+  }>;
+  /** Pixels that differ by more than 8 levels between the GL rasters at t = 0 and t = 1. */
+  glChangedBetweenTimes: number;
+  /** The same count for the canvas2d fallback, which draws alpha only. */
+  fallbackChangedBetweenTimes: number;
 }
 
 export interface AlphaAdditiveProbeResult {
@@ -5585,7 +5609,143 @@ async function glFallbackProbe(loseContext: boolean): Promise<GlFallbackProbeRes
   return { meshBackend, firstActive, firstPixels, lost, afterActive, afterPixels, afterMeshesDrawn };
 }
 
+/**
+ * Two-colour (dark) tint in the canvas mode (#106). The `duo` test rig keys
+ * only the dark half of each slot's tint, so its oracle is the formula and
+ * the canvas mode's own alpha-only fallback: on an opaque grey ramp with a
+ * white light half, the GL raster must read `c + (1 − c)·dark`, where `c` is
+ * what the fallback draws at the same pixel. The fallback must not change
+ * when only the dark colour does.
+ */
+async function darkTintProbe(): Promise<DarkTintProbeResult> {
+  const assets = await loadRig('duo');
+  const root = makeGlRoot();
+  const player = new RigPlayer(root, assets, { mode: 'canvas' });
+  const renderer = player.renderer as CanvasRenderer;
+  renderer.pixelRatio = 1;
+  player.play('shift', { loop: false });
+  const read = (backend: 'webgl' | 'canvas2d'): Uint8ClampedArray => {
+    renderer.backend = backend;
+    player.draw();
+    const ctx = renderer.canvas.getContext('2d');
+    if (!ctx) throw new Error('no 2d context');
+    return ctx.getImageData(0, 0, renderer.canvas.width, renderer.canvas.height).data;
+  };
+  const w = () => renderer.canvas.width;
+  const h = () => renderer.canvas.height;
+  const darkOf = (frame: PosedFrame, name: string): number[] | null => {
+    const slot = frame.order.find((x) => x.slot === name);
+    return slot?.dark ? [...slot.dark] : null;
+  };
+
+  const times: DarkTintProbeResult['times'] = [];
+  const gl: Uint8ClampedArray[] = [];
+  const fb: Uint8ClampedArray[] = [];
+  for (const time of [0, 0.5, 1]) {
+    player.seek(time);
+    const frame = player.posedFrame();
+    const g = read('webgl');
+    const f = read('canvas2d');
+    gl.push(g);
+    fb.push(f);
+    const width = w(), height = h();
+    const darks: Record<string, number[] | null> = { swatch: darkOf(frame, 'swatch'), sheet: darkOf(frame, 'sheet') };
+    const stats: Record<string, { pixels: number; maxError: number; lift: number[]; liftAt: number }> = {
+      swatch: { pixels: 0, maxError: 0, lift: [0, 0, 0], liftAt: Infinity },
+      sheet: { pixels: 0, maxError: 0, lift: [0, 0, 0], liftAt: Infinity },
+    };
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let inside = true;
+        for (let dy = -2; dy <= 2 && inside; dy++) {
+          for (let dx = -2; dx <= 2 && inside; dx++) {
+            const xx = x + dx, yy = y + dy;
+            if (xx < 0 || yy < 0 || xx >= width || yy >= height || f[(yy * width + xx) * 4 + 3] !== 255) inside = false;
+          }
+        }
+        if (!inside) continue;
+        const name = x < width / 2 ? 'swatch' : 'sheet';
+        const dark = darks[name];
+        if (!dark) continue;
+        const st = stats[name];
+        const i = (y * width + x) * 4;
+        st.pixels++;
+        for (let k = 0; k < 3; k++) {
+          const c = f[i + k] / 255;
+          const expected = (c + (1 - c) * dark[k]) * 255;
+          st.maxError = Math.max(st.maxError, Math.abs(g[i + k] - expected));
+        }
+        // The darkest interior texel the slot shows: where the dark half is strongest.
+        if (f[i] < st.liftAt) {
+          st.liftAt = f[i];
+          st.lift = [g[i] - f[i], g[i + 1] - f[i + 1], g[i + 2] - f[i + 2]];
+        }
+      }
+    }
+    times.push({
+      time,
+      swatchDark: darks.swatch,
+      sheetDark: darks.sheet,
+      swatchPixels: stats.swatch.pixels,
+      sheetPixels: stats.sheet.pixels,
+      swatchMaxError: stats.swatch.maxError,
+      sheetMaxError: stats.sheet.maxError,
+      swatchLift: stats.swatch.lift,
+      sheetLift: stats.sheet.lift,
+    });
+  }
+  const changed = (a: Uint8ClampedArray, b: Uint8ClampedArray): number => {
+    if (a.length !== b.length) return -1;
+    let n = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      if (Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]), Math.abs(a[i + 2] - b[i + 2]), Math.abs(a[i + 3] - b[i + 3])) > 8) n++;
+    }
+    return n;
+  };
+  const webglAvailable = getMeshGlBlitter() !== null;
+  const result: DarkTintProbeResult = {
+    webglAvailable,
+    times,
+    glChangedBetweenTimes: changed(gl[0], gl[2]),
+    fallbackChangedBetweenTimes: changed(fb[0], fb[2]),
+  };
+  player.dispose();
+  root.remove();
+  assets.dispose();
+  return result;
+}
+
+let darkDomState: { player: RigPlayer; root: HTMLElement; assets: ModelAssets } | null = null;
+
+/**
+ * The DOM mode over the same rig, posed at `time` and left on the page for the
+ * spec to capture: two poses that differ only in the dark colour must capture
+ * the same, because the DOM mode does not draw it (README).
+ */
+async function darkDomPose(time: number): Promise<number> {
+  if (darkDomState) {
+    darkDomState.player.dispose();
+    darkDomState.root.remove();
+    darkDomState.assets.dispose();
+    darkDomState = null;
+  }
+  const assets = await loadRig('duo');
+  const root = makeGlRoot();
+  root.style.left = '220px';
+  root.style.top = '220px';
+  const player = new RigPlayer(root, assets, { mode: 'dom' });
+  player.play('shift', { loop: false });
+  player.seek(time);
+  player.draw();
+  await Promise.all(Array.from(root.querySelectorAll('img')).map((img) => img.decode().catch(() => undefined)));
+  darkDomState = { player, root, assets };
+  // Elements the DOM mode shows: the swatch's <img> and the sheet's canvas.
+  return Array.from(root.children).filter((el) => (el as HTMLElement).style.display !== 'none').length;
+}
+
 window.rigPlayHarness = {
+  darkTintProbe,
+  darkDomPose,
   glFallbackProbe,
   alphaAdditiveProbe,
   trackModeProbe,
