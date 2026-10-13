@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@rig-c/play — wind</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { margin: 0; box-sizing: border-box; }
+      body { font-family: ui-monospace, 'SF Mono', Menlo, monospace; background: #14161a; color: #d5d9e0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+      header { display: flex; align-items: center; gap: 20px; padding: 10px 16px; background: #1c1f26; border-bottom: 1px solid #2a2e37; font-size: 12px; flex-wrap: wrap; }
+      label { display: flex; align-items: center; gap: 8px; }
+      #readout { color: #8a93a3; }
+      #stage { position: relative; flex: 1; overflow: hidden; cursor: grab; touch-action: none; }
+      #stage:active { cursor: grabbing; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <label>wind x <input id="wind" type="range" min="-1" max="1" step="0.01" value="0" /></label>
+      <label>gravity y <input id="gravity" type="range" min="0" max="3" step="0.01" value="1" /></label>
+      <span id="readout"></span>
+      <span>drag the stage to move the rig</span>
+    </header>
+    <div id="stage"></div>
+    <script type="module" src="/src/wind.ts"></script>
+  </body>
+</html>

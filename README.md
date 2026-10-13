@@ -294,6 +294,11 @@ layer answers the same world, and a `seek` replays under the environment as it
 stands — no history is kept. A rig with no physics ignores both.
 `tests/readme-page.spec.ts` runs this block in the minimal page.
 
+The demo's `wind.html` is the same thing with controls: wind and gravity
+sliders, a drag on the stage, and the rig named by `?model=` (the `cloth` test
+rig by default; `bun run dev`, then `/wind.html?model=rigs/<name>/skeleton.model.json`).
+`tests/wind-page.spec.ts` holds it.
+
 The player owns one track: `play(name, { loop })` opens an animation at its first
 pose, `frame(dt)` steps it (or `advance(dt)` then `draw()`, to time the two
 apart), `pause()` / `resume()` hold and release it, `timeScale` scales every
