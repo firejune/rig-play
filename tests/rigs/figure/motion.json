@@ -8,7 +8,7 @@
       "duration": 1.6,
       "loop": true,
       "note": "Limbs swing in opposition and the torso bobs twice a cycle. The pose the renderer specs freeze is t = 1.2.",
-      "events": [{"t": 0.4, "name": "step"}, {"t": 1.2, "name": "step", "int": 2}],
+      "events": [{"t": 0.4, "name": "step"}, {"t": 1.2, "name": "step", "int": 2, "string": "right"}],
       "tracks": [
         {
           "bone": "leg_b",

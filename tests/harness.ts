@@ -240,8 +240,42 @@ export interface RigPlayHarness {
   trackModeProbe(): Promise<TrackModeProbeResult>;
   alphaAdditiveProbe(): Promise<AlphaAdditiveProbeResult>;
   glFallbackProbe(loseContext: boolean): Promise<GlFallbackProbeResult>;
+  playerBasicsProbe(): Promise<PlayerBasicsProbeResult>;
   darkTintProbe(): Promise<DarkTintProbeResult>;
   darkDomPose(time: number): Promise<number>;
+}
+
+export interface PlayerBasicsProbeResult {
+  /** A plain `play('walk')`, stepped at 1/60 s for 3.3 s: still on the single track. */
+  plainComposed: boolean;
+  plainEvents: Array<{ name: string; time: number; int: number; float: number; string: string | null; track?: number; at: number }>;
+  plainCompletes: Array<{ animation: string; track: number; at: number }>;
+  /** `play('nudge', { loop: false })` stepped past its end. */
+  heldEvents: Array<{ name: string; int: number; at: number }>;
+  heldCompletes: Array<{ animation: string; at: number }>;
+  heldTime: number;
+  heldCurrent: string | null;
+  heldAnimationTime: number | null;
+  /** The held pose against the pose at the duration, bone by bone. */
+  heldMaxDiff: number;
+  /** `player.color`: the frame's tints against the uncoloured frame's, and the canvas mode's pixels. */
+  tintSlots: number;
+  tintMaxError: number;
+  tintPixels: number;
+  tintPixelMaxError: number;
+  /** `timeScale` 2: time and pose after five 0.1 s frames, against a seek to 1.0. */
+  doubleTime: number;
+  doubleMaxDiff: number;
+  /** A negative scale, a pause and a resume. */
+  negativeTime: number;
+  negativeMaxDiff: number;
+  pausedTime: number;
+  resumedTime: number;
+  /** Queue: what track 0 plays at each checkpoint, and the events the queued entry fires. */
+  queueAfterCycle: Array<{ at: number; animation: string | null }>;
+  queueAfterCycleHits: number[];
+  queueDelayed: Array<{ at: number; animation: string | null }>;
+  queueClearDelayed: Array<{ at: number; animation: string | null }>;
 }
 
 export interface GlFallbackProbeResult {
@@ -5743,7 +5777,180 @@ async function darkDomPose(time: number): Promise<number> {
   return Array.from(root.children).filter((el) => (el as HTMLElement).style.display !== 'none').length;
 }
 
+/**
+ * The first things a consumer meets (2026-10-13 audit, items 1–5): events and
+ * completes on a plain `play`, `player.color` reaching the pixels, `timeScale`
+ * other than 1 with `pause` / `resume`, `loop: false` holding at its end, and
+ * `queue` / `queueClear` with their `delay`. Each reading is taken off the
+ * player as a consumer would; the spec states what each must be.
+ */
+async function playerBasicsProbe(): Promise<PlayerBasicsProbeResult> {
+  const assets = await loadRig('figure');
+  const root = makeGlRoot();
+  const step = 1 / 60;
+  const run = (player: RigPlayer, seconds: number, each?: (at: number) => void): void => {
+    const n = Math.round(seconds / step);
+    for (let i = 0; i < n; i++) {
+      player.advance(step);
+      each?.(player.time);
+    }
+  };
+  // Every number the bones' world transforms carry, for a numeric difference between two players' poses.
+  const bones = (player: RigPlayer): number[] =>
+    ['root', 'hip', 'torso', 'head', 'hand_f', 'hand_b', 'leg_f', 'leg_b'].flatMap((b) =>
+      Object.values(player.bone(b) as unknown as Record<string, unknown>).filter((v): v is number => typeof v === 'number'));
+  const diff = (a: number[], b: number[]): number =>
+    a.length !== b.length ? Infinity : a.reduce((m, v, i) => Math.max(m, Math.abs(v - b[i])), 0);
+
+  // 1. Events and completes on the single track.
+  const plain = new RigPlayer(root, assets);
+  const plainEvents: PlayerBasicsProbeResult['plainEvents'] = [];
+  const plainCompletes: PlayerBasicsProbeResult['plainCompletes'] = [];
+  plain.on('event', (e) => plainEvents.push({ ...e, at: plain.time }));
+  plain.on('complete', (c) => plainCompletes.push({ ...c, at: plain.time }));
+  plain.play('walk');
+  run(plain, 3.3);
+  const plainComposed = plain.composed;
+  plain.dispose();
+
+  // 4. loop: false holds at the end, and completes once.
+  const held = new RigPlayer(root, assets);
+  const heldEvents: PlayerBasicsProbeResult['heldEvents'] = [];
+  const heldCompletes: PlayerBasicsProbeResult['heldCompletes'] = [];
+  held.on('event', (e) => heldEvents.push({ name: e.name, int: e.int, at: held.time }));
+  held.on('complete', (c) => heldCompletes.push({ animation: c.animation, at: held.time }));
+  held.play('nudge', { loop: false });
+  run(held, 1.5);
+  const heldBones = bones(held);
+  const end = new RigPlayer(root, assets);
+  end.play('nudge', { loop: false });
+  end.seek(1);
+  const heldMaxDiff = diff(heldBones, bones(end));
+  const heldResult = { heldTime: held.time, heldCurrent: held.current, heldAnimationTime: held.entry(0)?.animationTime ?? null };
+  held.dispose();
+  end.dispose();
+
+  // 2. player.color: the frame's tints, then the canvas mode's pixels.
+  const tinted = new RigPlayer(root, assets, { mode: 'canvas' });
+  (tinted.renderer as CanvasRenderer).pixelRatio = 1;
+  tinted.play('walk');
+  tinted.seek(1.2);
+  const before = tinted.posedFrame();
+  tinted.draw();
+  const read = (): Uint8ClampedArray => {
+    const r = tinted.renderer as CanvasRenderer;
+    const ctx = r.canvas.getContext('2d');
+    if (!ctx) throw new Error('no 2d context');
+    return ctx.getImageData(0, 0, r.canvas.width, r.canvas.height).data;
+  };
+  const plainPixels = read();
+  const color: [number, number, number, number] = [0.5, 1, 0.25, 1];
+  tinted.color = color;
+  const after = tinted.posedFrame();
+  tinted.draw();
+  const tintedPixels = read();
+  let tintSlots = 0;
+  let tintMaxError = 0;
+  for (let i = 0; i < before.order.length; i++) {
+    tintSlots++;
+    for (let k = 0; k < 4; k++) tintMaxError = Math.max(tintMaxError, Math.abs(after.order[i].tint[k] - before.order[i].tint[k] * color[k]));
+  }
+  let tintPixels = 0;
+  let tintPixelMaxError = 0;
+  if (plainPixels.length === tintedPixels.length) {
+    for (let i = 0; i < plainPixels.length; i += 4) {
+      if (plainPixels[i + 3] !== 255 || tintedPixels[i + 3] !== 255) continue;
+      tintPixels++;
+      for (let k = 0; k < 3; k++) tintPixelMaxError = Math.max(tintPixelMaxError, Math.abs(tintedPixels[i + k] - plainPixels[i + k] * color[k]));
+    }
+  } else {
+    tintPixelMaxError = Infinity;
+  }
+  tinted.dispose();
+
+  // 3. timeScale 2, a negative scale, pause and resume.
+  const fast = new RigPlayer(root, assets);
+  fast.play('walk');
+  fast.timeScale = 2;
+  for (let i = 0; i < 5; i++) fast.advance(0.1);
+  const seeked = new RigPlayer(root, assets);
+  seeked.play('walk');
+  seeked.seek(1);
+  const doubleTime = fast.time;
+  const doubleMaxDiff = diff(bones(fast), bones(seeked));
+  seeked.dispose();
+  fast.timeScale = -1;
+  const heldPose = bones(fast);
+  fast.advance(0.1);
+  const negativeTime = fast.time;
+  const negativeMaxDiff = diff(bones(fast), heldPose);
+  fast.timeScale = 1;
+  fast.pause();
+  fast.advance(0.1);
+  const pausedTime = fast.time;
+  fast.resume();
+  fast.advance(0.1);
+  const resumedTime = fast.time;
+  fast.dispose();
+
+  // 5. queue after the current cycle; queue with a delay; queueClear with a delay.
+  const checkpoints = (player: RigPlayer, times: number[]): Array<{ at: number; animation: string | null }> => {
+    const out: Array<{ at: number; animation: string | null }> = [];
+    let t = 0;
+    for (const at of times) {
+      run(player, at - t);
+      t = at;
+      out.push({ at, animation: player.entry(0)?.animation ?? null });
+    }
+    return out;
+  };
+  const q1 = new RigPlayer(root, assets);
+  const queueAfterCycleHits: number[] = [];
+  q1.on('event', (e) => { if (e.name === 'hit') queueAfterCycleHits.push(q1.time); });
+  q1.play('walk');
+  q1.queue('nudge');
+  const queueAfterCycle = checkpoints(q1, [1.5, 1.7, 2.3]);
+  q1.dispose();
+  const q2 = new RigPlayer(root, assets);
+  q2.play('walk');
+  q2.queue('nudge', { delay: 0.5 });
+  const queueDelayed = checkpoints(q2, [0.4, 0.6]);
+  q2.dispose();
+  const q3 = new RigPlayer(root, assets);
+  q3.play('nudge');
+  q3.queueClear(0, { delay: 0.3 });
+  const queueClearDelayed = checkpoints(q3, [0.2, 0.4]);
+  q3.dispose();
+
+  root.remove();
+  assets.dispose();
+  return {
+    plainComposed,
+    plainEvents,
+    plainCompletes,
+    heldEvents,
+    heldCompletes,
+    ...heldResult,
+    heldMaxDiff,
+    tintSlots,
+    tintMaxError,
+    tintPixels,
+    tintPixelMaxError,
+    doubleTime,
+    doubleMaxDiff,
+    negativeTime,
+    negativeMaxDiff,
+    pausedTime,
+    resumedTime,
+    queueAfterCycle,
+    queueAfterCycleHits,
+    queueDelayed,
+    queueClearDelayed,
+  };
+}
+
 window.rigPlayHarness = {
+  playerBasicsProbe,
   darkTintProbe,
   darkDomPose,
   glFallbackProbe,
