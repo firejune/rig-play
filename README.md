@@ -1007,16 +1007,20 @@ same captured bytes on black and white backgrounds with the shared pixel
 differ, and separately constrains alpha coverage, sum, unequal-pixel count
 and maximum. `tests/oracleLimits.ts` stores measured engine/case/mode floors:
 zero stays exact; nonzero counts receive 10% plus two units, and nonzero byte
-maxima one byte. Tests never regenerate limits from the image under test.
+maxima one byte. macOS and Linux have separately measured tables; other
+platforms are refused as uncalibrated. Tests never regenerate limits from the
+image under test.
 
 Cases cover geometry, tint, clipping, draw order with multiply/screen,
 rotated/named regions, additive glow and an original-PMA twin. Named UV and
 rotation coverage uses native scale: measured half-scale checker sampling
 has additional residue, so arbitrary-scale pixel identity is not claimed.
-The shared #37 negative control makes the player's loader ignore true PMA
-flags while leaving the input files and official reader unchanged. All three
-own renderers fail on both engines, then pass after restoration. Original PMA
-PNG bytes are encoded before either reader sees them.
+The shared #37 negative control serves false PMA flags only in the player's
+model response, leaving original files and the official reader unchanged.
+Each renderer must first pass its healthy capture, then exceed the same
+healthy black-composite budget with the altered response. This runs on both
+CI browser projects. Original PMA PNG bytes are encoded before either reader
+sees them.
 
 The reference uses `antialias:false`, `preserveDrawingBuffer:true` and the
 official `pmaAdditiveBatching:false` option to retain additive coverage in
