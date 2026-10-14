@@ -3,81 +3,28 @@ import { DomRenderer, type MeshBackend } from '../src/DomRenderer';
 import { loadModel, type ModelAssets } from '../src/loadModel';
 import { glContextCount } from '../src/MeshGlBlitter';
 import { type RenderMode, RigPlayer } from '../src/player';
+import { OfficialOracle, type OfficialInstance, type OracleViewport } from '../tests/officialOracle';
 
 /**
- * The side-by-side benchmark page — an instrument for a person, not a test.
- *
- * ## What it is for
- *
- * The suite's picture gate (`tests/parity.spec.ts`, *dom / canvas*) answers
- * "do the two render modes draw the same picture". This answers the other
- * half: what each one costs, on the same rigs, in the same grid. It is a
- * *page* rather than a spec because the answer cannot be taken in CI —
- * headless numbers are not evidence here (headless WebKit is a software
- * rasterizer, measured up to 28× off real Safari) and nothing in this
- * repository asserts a millisecond. The perf oracle is a stats line read on a
- * real device, and this page is a stats line for each mode, side by side, on
- * one.
- *
- * `scripts/bench.mjs` drives it in a *headed* browser and writes the numbers
- * out with the conditions attached; Safari stays manual, which is what the
- * clickable stats line is for.
- *
- * ## Why the fps reading is per mode and not per pane
- *
- * `requestAnimationFrame` has one cadence per document, so two panes animating
- * in one page report *the same* fps — the page's, not either mode's. A
- * side-by-side of that number would be a comparison of nothing. So
- * `?runtime=dom` (the DOM tier: `<img>` and per-part canvases) and
- * `?runtime=canvas` (the canvas render mode: one canvas per rig through the
- * shared WebGL context) each give the whole frame budget to one side, which is
- * what the script drives, and `?runtime=both` (the default) animates both for
- * eyeballing and says so on every stats line, so a reading copied out of that
- * mode cannot be mistaken for a measurement.
- *
- * ## Fairness: the two sides draw the same picture
- *
- * Both panes place rigs with one derivation, `layoutFor()`, and both clip each
- * rig to the same rect — the whole pane for a grid of rigs, the rig's own cell
- * for `many` — with `overflow: hidden` on a box, which is how a page embeds a
- * player. (Deliberately not `contain: layout paint`: paint containment clips
- * to the same edge `overflow: hidden` does and adds a stacking context and a
- * containing block, structural changes that would be tuning a side rather
- * than embedding it.) The placement is *checked* rather than assumed: each
- * side reports `originDelta`, the largest gap in CSS px between where the grid
- * puts a rig's origin and where that side's root actually sits. It is a
- * counter, not a picture, so it survives being read on any machine.
- *
- * ## Scenes
- *
- * Every scene is a rigc gallery build (`public/rigs/<name>/`, built by
- * `scripts/fetch-assets.sh`), loaded once with `loadModel` and played by one
- * `RigPlayer` per rig:
- *
- * - `mesh` — `portrait-packed` turning its head: two grid meshes keyed as a
- *   projection, the deform tier working every frame.
- * - `held` — the same rig with the pose frozen: the DOM tier's dirty-skip home
- *   ground (an unchanged mesh reuses its raster) and the canvas mode's
- *   frame reuse.
- * - `rigid` — `walk-packed`: region attachments only, pure `<img>` and CSS
- *   matrices on the DOM side.
- * - `many` — `?count=N` independent small players. Browsers cap WebGL contexts
- *   at ~16; both modes share the package's single module-level context
- *   however many players there are, and the canvas side's stats line says how
- *   many contexts the page holds.
- *
- * `mesh`, `held` and `rigid` take a count too, and that is where a crossover
- * can be looked for: on a fast desktop GPU a single rig sits at the display's
- * refresh rate on both sides, which says nothing. `bench/scenes.json` steps
- * them. `?rig=` names another build under `/rigs/`, and `?model=` any model
- * document URL the server holds — which is how `scripts/bench.mjs --corpus
- * <dir>` runs rigc builds of real-world rigs that never enter this repository.
+ * Development comparison page: DOM, canvas mode and official spine-webgl.
+ * All use one layout/crop derivation and the same pose history. Grids share
+ * one official context; only `many` creates independent contexts per player.
+ * Concurrent display has one document rAF cadence, so it is not independent
+ * performance evidence. The CLI loads one runtime per row for device readings.
+ * `measurement=counters` runs no automatic animation clock and exposes no
+ * timings: runCounters steps deterministic frames and reports counters only.
+ * Assets are loaded/decoded by this package before official GL uploads.
+ * Nothing in this page or its official adapter enters the published library.
  */
 
 const params = new URLSearchParams(location.search);
 
 type SceneName = 'mesh' | 'held' | 'rigid' | 'many';
-type RuntimeMode = 'both' | 'dom' | 'canvas';
+type RuntimeMode = 'both' | 'all' | 'dom' | 'canvas' | 'official';
+type SideName = 'dom' | 'canvas' | 'official';
+const countersOnly = params.get('measurement') === 'counters';
+const UNAVAILABLE = '측정 불가: 헤드리스';
+const preserveDrawingBuffer = countersOnly || params.get('capture') === '1';
 
 interface SceneSpec {
   /** A build under `/rigs/`. */
@@ -93,16 +40,15 @@ interface SceneSpec {
    * rigs rather than how much of each one is cropped away.
    */
   scale: number;
-  /** What each rig is clipped to, on both sides. */
+  /** What each rig is clipped to, in all panes. */
   clip: 'pane' | 'cell';
 }
 
 const SCENE_NAMES: SceneName[] = ['mesh', 'held', 'rigid', 'many'];
 
 /**
- * The cap on `count`. 64 rigs is 8 columns of 8 on this page's grid, which at
- * a 1280-wide window leaves each cell about 80 CSS px across — small enough
- * that the next step would be measuring thumbnails. It is a page limit, not a
+ * The cap on `count`. 64 rigs is 8 columns of 8 on this page's grid. A denser grid
+ * would measure still smaller thumbnails rather than another rendering regime. It is a page limit, not a
  * library one.
  */
 const MAX_COUNT = 64;
@@ -115,7 +61,7 @@ function readScene(): { name: SceneName; spec: SceneSpec } {
   const name: SceneName = SCENE_NAMES.includes(raw as SceneName) ? (raw as SceneName) : 'mesh';
   const count = Math.min(
     MAX_COUNT,
-    Math.max(1, Number(params.get('count')) || (name === 'many' ? 8 : 1)),
+    Math.max(1, Math.floor(Number(params.get('count')) || (name === 'many' ? 8 : 1))),
   );
   const specs: Record<SceneName, SceneSpec> = {
     mesh: { rig: 'portrait-packed', animation: 'turn', timeScale: 1, count, scale: 0.5, clip: 'pane' },
@@ -142,9 +88,10 @@ const { name: sceneName, spec: scene } = readScene();
 const modelUrl = params.get('model') ?? `/rigs/${scene.rig}/skeleton.model.json`;
 const runtime: RuntimeMode = ((): RuntimeMode => {
   const raw = params.get('runtime');
-  return raw === 'dom' || raw === 'canvas' ? raw : 'both';
+  return raw === 'dom' || raw === 'canvas' || raw === 'official' || raw === 'both' ? raw : 'all';
 })();
 const backend: MeshBackend = params.get('backend') === 'canvas2d' ? 'canvas2d' : 'webgl';
+const skin = params.get('skin') ?? undefined;
 const dprOverride = params.get('dpr') !== null ? Number(params.get('dpr')) || 1 : null;
 const pixelRatio = (): number => dprOverride ?? window.devicePixelRatio ?? 1;
 
@@ -173,7 +120,7 @@ interface Layout {
 }
 
 /**
- * Where the N rigs go — **one derivation, read by both sides**. A rig's stage
+ * Where the N rigs go — **one derivation, read by all sides**. A rig's stage
  * box (the document's own framing) is centred across its cell with its bottom
  * at `FLOOR`, so the origin follows from the box, whatever the rig.
  */
@@ -215,11 +162,27 @@ interface Side {
   /** Runs one frame; returns the ms spent posing (the rest is draw). */
   frame(delta: number): number;
   /** The stats string for this side, given the fps the loop measured. */
-  stats(fps: number, updateMs: number, renderMs: number, frames: number): string;
+  stats(fps: number | null, updateMs: number | null, renderMs: number | null, frames: number): string;
+  counters(): SideCounters;
   /** Recomputed on resize. */
   layout(): void;
   /** Largest gap, in CSS px, between the grid's origin for a rig and this side's. */
   originDelta(): number;
+  dispose(): void;
+}
+
+export interface SideCounters {
+  players: number;
+  drawnPlayers: number | null;
+  meshesDrawn: number | null;
+  reused: number;
+  drawCalls: number | null;
+  triangles: number;
+  blits: number | null;
+  reallocs: number;
+  backingPixels: number;
+  contexts: number;
+  liveContexts: number | null;
 }
 
 function playerSide(stageEl: HTMLDivElement, assets: ModelAssets, mode: RenderMode): Side {
@@ -242,11 +205,11 @@ function playerSide(stageEl: HTMLDivElement, assets: ModelAssets, mode: RenderMo
     const root = document.createElement('div');
     root.className = 'skeleton-root';
     clipBoxes[boxIndex].append(root);
-    const player = new RigPlayer(root, assets, { mode, meshBackend: backend });
+    const player = new RigPlayer(root, assets, { mode, meshBackend: backend, skin });
     player.play(scene.animation, { loop: true });
     // Desync so N players are not one stamped sprite — except a held pose,
     // which wants every instance on the same frozen frame.
-    player.seek(scene.timeScale === 0 ? 1.2 : (i * 0.37) % 2);
+    player.seek(initialTime(i));
     player.timeScale = scene.timeScale;
     players.push(player);
     roots.push(root);
@@ -290,16 +253,17 @@ function playerSide(stageEl: HTMLDivElement, assets: ModelAssets, mode: RenderMo
 
   return {
     frame(delta: number): number {
-      const t0 = performance.now();
+      const t0 = countersOnly ? 0 : performance.now();
       for (const player of players) player.advance(delta);
-      const updateMs = performance.now() - t0;
+      const updateMs = countersOnly ? 0 : performance.now() - t0;
       for (const player of players) player.draw();
       return updateMs;
     },
     stats(fps, updateMs, renderMs, frames): string {
-      const head =
-        `${scene.count}/${scene.count} × ${fps.toFixed(0)} fps · mode ${mode} · ` +
-        `pose ${(updateMs / frames).toFixed(2)}ms · render ${(renderMs / frames).toFixed(2)}ms/frame`;
+      const head = fps === null || updateMs === null || renderMs === null
+        ? `${scene.count} requested players · mode ${mode} · ${UNAVAILABLE}`
+        : `${scene.count} requested players × ${fps.toFixed(0)} fps · mode ${mode} · ` +
+          `pose ${(updateMs / frames).toFixed(2)}ms · render ${(renderMs / frames).toFixed(2)}ms/frame`;
       if (mode === 'canvas') {
         let drawn = 0;
         let reused = 0;
@@ -351,6 +315,170 @@ function playerSide(stageEl: HTMLDivElement, assets: ModelAssets, mode: RenderMo
     },
     layout,
     originDelta: () => originDelta,
+    counters: (): SideCounters => {
+      let drawn = 0, reused = 0, triangles = 0, calls = 0, blits = 0, reallocs = 0, backing = 0;
+      for (const player of players) {
+        const r = player.renderer;
+        if (r instanceof CanvasRenderer) {
+          drawn += 1 - r.framesReused; reused += r.framesReused;
+          triangles += r.trianglesDrawn; calls += r.drawCalls; blits += r.blits;
+          reallocs += r.canvasReallocCount; backing += r.canvas.width * r.canvas.height;
+        } else {
+          drawn += r.meshCount; reused += r.meshReuseCount; triangles += r.triangleCount;
+          reallocs += r.canvasReallocCount; backing += r.meshBackingPixels;
+        }
+      }
+      // The package exposes context creation and draw/reuse counters, but no
+      // public shared-context survival query. Do not infer alive from backend
+      // selection or equate requested players with visible survivors.
+      return { players: players.length, drawnPlayers: null, meshesDrawn: mode === 'dom' ? drawn : null,
+        reused, drawCalls: mode === 'canvas' ? calls : null, triangles, blits: mode === 'canvas' ? blits : null,
+        reallocs, backingPixels: backing, contexts: glContextCount(), liveContexts: null };
+    },
+    dispose: (): void => {
+      for (const player of players) player.dispose();
+      for (const box of clipBoxes) box.remove();
+    },
+  };
+}
+
+function initialTime(index: number): number {
+  const raw = params.get('time');
+  if (raw !== null) {
+    const time = Number(raw);
+    if (!Number.isFinite(time) || time < 0) throw new Error(`time must be finite and at least 0, got ${raw}`);
+    return time;
+  }
+  return scene.timeScale === 0 ? 1.2 : (index * 0.37) % 2;
+}
+
+function officialPair(): { jsonUrl: string; atlasUrl: string } {
+  const model = new URL(modelUrl, location.href);
+  const named = model.pathname.endsWith('.model.json');
+  const json = params.get('json');
+  const atlas = params.get('atlas');
+  if ((!json || !atlas) && !named) throw new Error(`official comparison needs ?json= and ?atlas= beside model ${modelUrl}`);
+  const sibling = (suffix: string): string => {
+    const url = new URL(model.href);
+    url.pathname = url.pathname.replace(/\.model\.json$/, suffix);
+    return url.href;
+  };
+  return { jsonUrl: json ? new URL(json, location.href).href : sibling('.json'),
+    atlasUrl: atlas ? new URL(atlas, location.href).href : sibling('.atlas') };
+}
+
+async function expectedPairHash(): Promise<string> {
+  const response = await fetch(modelUrl);
+  if (!response.ok) throw new Error(`official comparison model ${modelUrl}: HTTP ${response.status}`);
+  const model = await response.json() as { spec?: string; spine?: { sha256?: string } };
+  const hash = model.spine?.sha256;
+  if (model.spec !== 'rigc-compiled/3' || !hash || !/^[0-9a-f]{64}$/.test(hash))
+    throw new Error(`official comparison model ${modelUrl} has no paired Spine SHA-256; rebuild with rigc build`);
+  return hash;
+}
+
+async function decodeRegions(assets: ModelAssets): Promise<void> {
+  await Promise.all([...assets.regionImages.values()].map(async (region) => {
+    const image = new Image();
+    image.src = region.url;
+    await image.decode();
+  }));
+}
+
+/** Official grids share one renderer; independent-player scenes own one per cell. */
+async function officialSide(stageEl: HTMLDivElement, assets: ModelAssets, expectedHash: string): Promise<Side> {
+  const oracles: OfficialOracle[] = [];
+  const instances: OfficialInstance[] = [];
+  const canvases: HTMLCanvasElement[] = [];
+  let grid = layoutFor(stageEl.clientWidth, stageEl.clientHeight, assets.stage);
+  let originDelta = 0;
+  let calls = 0, triangles = 0, drawnPlayers = 0;
+  const viewport = (index: number): OracleViewport => {
+    const clip = grid.clipOf(index);
+    const cell = grid.cells[index];
+    return { width: clip.width, height: clip.height, scale: grid.scale, pixelRatio: pixelRatio(),
+      originX: scene.clip === 'pane' ? 0 : cell.originX - clip.left,
+      originY: scene.clip === 'pane' ? 0 : cell.originY - clip.top };
+  };
+  try {
+    const pair = officialPair();
+    for (let i = 0; i < (scene.clip === 'pane' ? 1 : scene.count); i++) {
+      const canvas = document.createElement('canvas');
+      const clip = grid.clipOf(i);
+      canvas.style.left = `${clip.left}px`;
+      canvas.style.top = `${clip.top}px`;
+      stageEl.append(canvas);
+      canvases.push(canvas);
+      const oracle = new OfficialOracle(canvas, viewport(i), { preserveDrawingBuffer });
+      oracles.push(oracle);
+      // Own load/decode was completed before entering this function. These
+      // images are independently decoded by the official atlas reader.
+      const loaded = await oracle.load(pair);
+      if (loaded.jsonSha256 !== expectedHash) throw new Error(
+        `official comparison pair mismatch: ${pair.jsonUrl} SHA-256 ${loaded.jsonSha256}, model ${modelUrl} requires ${expectedHash}`);
+      const count = scene.clip === 'pane' ? scene.count : 1;
+      for (let j = 0; j < count; j++) {
+        const index = instances.length;
+        const instance = oracle.createInstance(loaded, { animation: scene.animation, loop: true, skin });
+        const time = initialTime(index);
+        const steps = Math.floor(time / (1 / 60));
+        let played = 0;
+        for (let k = 0; k < steps; k++) { instance.advance(1 / 60); played += 1 / 60; }
+        const rest = time - played;
+        if (rest > 0) instance.advance(rest);
+        instances.push(instance);
+      }
+    }
+  } catch (error) {
+    for (const oracle of oracles) oracle.dispose();
+    for (const canvas of canvases) canvas.remove();
+    throw error;
+  }
+  const layout = (): void => {
+    const box = stageEl.getBoundingClientRect();
+    grid = layoutFor(box.width, box.height, assets.stage);
+    originDelta = 0;
+    for (let i = 0; i < oracles.length; i++) {
+      const clip = grid.clipOf(i);
+      canvases[i].style.left = `${clip.left}px`;
+      canvases[i].style.top = `${clip.top}px`;
+      oracles[i].setViewport(viewport(i));
+      const rect = canvases[i].getBoundingClientRect();
+      originDelta = Math.max(originDelta, Math.hypot(rect.left - box.left - clip.left, rect.top - box.top - clip.top));
+    }
+  };
+  layout();
+  return {
+    frame(delta: number): number {
+      const t0 = countersOnly ? 0 : performance.now();
+      const dt = Math.max(0, delta * scene.timeScale);
+      if (dt > 0) for (const instance of instances) instance.advance(dt);
+      const updateMs = countersOnly ? 0 : performance.now() - t0;
+      calls = triangles = drawnPlayers = 0;
+      for (let i = 0; i < oracles.length; i++) {
+        const oracle = oracles[i];
+        if (oracle.context.gl.isContextLost()) continue;
+        const entries = scene.clip === 'pane'
+          ? instances.map((instance, j) => ({ instance, offsetX: grid.cells[j].originX / grid.scale, offsetY: -grid.cells[j].originY / grid.scale }))
+          : [{ instance: instances[i] }];
+        const stats = oracle.draw(entries);
+        calls += stats.drawCalls; triangles += stats.triangles;
+        if (!oracle.context.gl.isContextLost()) drawnPlayers += entries.length;
+      }
+      return updateMs;
+    },
+    stats(fps, updateMs, renderMs, frames): string {
+      const clock = fps === null || updateMs === null || renderMs === null ? UNAVAILABLE
+        : `${fps.toFixed(0)} fps · pose ${(updateMs / frames).toFixed(2)}ms · render ${(renderMs / frames).toFixed(2)}ms/frame`;
+      const live = oracles.filter((o) => !o.context.gl.isContextLost()).length;
+      return `${drawnPlayers}/${scene.count} · official spine-webgl · ${clock} · ${calls} draw calls · ${triangles} tris · ${live}/${oracles.length} live GL contexts · clipped to ${scene.clip}`;
+    },
+    counters: (): SideCounters => ({ players: scene.count, drawnPlayers, meshesDrawn: null, reused: 0,
+      drawCalls: calls, triangles, blits: null, reallocs: 0,
+      backingPixels: canvases.reduce((n, c) => n + c.width * c.height, 0), contexts: oracles.length,
+      liveContexts: oracles.filter((o) => !o.context.gl.isContextLost()).length }),
+    layout, originDelta: () => originDelta,
+    dispose: (): void => { for (const oracle of oracles) oracle.dispose(); for (const canvas of canvases) canvas.remove(); },
   };
 }
 
@@ -358,37 +486,43 @@ function playerSide(stageEl: HTMLDivElement, assets: ModelAssets, mode: RenderMo
  * The stats each side publishes, also on `window.rigPlayBench` so
  * `scripts/bench.mjs` can read them without scraping the DOM.
  */
+export interface SideReading {
+  fps: number | null;
+  poseMs: number | null;
+  renderMs: number | null;
+  stats: string;
+  originDeltaPx: number;
+  counters: SideCounters;
+}
+
 export interface BenchReading {
   scene: SceneName;
   runtime: RuntimeMode;
-  /** The model document the scene played. */
   model: string;
+  pair: { jsonUrl: string; atlasUrl: string } | null;
+  pairedJsonSha256: string | null;
   animation: string;
+  skin: string | null;
   count: number;
   backend: MeshBackend;
   devicePixelRatio: number;
-  /** What a rig is clipped to on both sides. */
   clipTarget: 'pane' | 'cell';
-  /** The grid both sides place rigs on, and the per-rig stage scale. */
   columns: number;
   rows: number;
   cellScale: number;
-  /**
-   * Largest gap in CSS px between where the grid puts a rig's origin and where
-   * a side drew it. Both sides near zero is what makes the comparison a
-   * comparison; it is a counter rather than a timing, so it reads the same on
-   * any machine. Null for a side that is not running.
-   */
+  measurement: 'counters' | 'device';
+  unavailableReason: string | null;
+  preserveDrawingBuffer: boolean;
+  pmaAdditiveBatching: false;
+  frames: number;
+  sides: Record<SideName, SideReading | null>;
+  // Existing report fields stay readable by callers of the original page.
   domOriginDeltaPx: number | null;
   canvasOriginDeltaPx: number | null;
-  /** Frames the loop has completed since the page loaded. */
-  frames: number;
   domStats: string;
   canvasStats: string;
-  /** rAF-cadence fps over the last window, per side that ran. */
   domFps: number | null;
   canvasFps: number | null;
-  /** WebGL contexts the page's package holds — one, however many players. */
   glContexts: number;
 }
 
@@ -396,145 +530,168 @@ declare global {
   interface Window {
     rigPlayBench: {
       reading(): BenchReading;
-      /** Resolves once `frames` frames have run since the call. */
       run(frames: number): Promise<BenchReading>;
+      runCounters(frames: number, step?: number): BenchReading;
+      dispose(): void;
     };
   }
 }
 
 async function main(): Promise<void> {
-  const domStage = document.getElementById('dom-stage') as HTMLDivElement;
-  const canvasStage = document.getElementById('canvas-stage') as HTMLDivElement;
-  const domStatsEl = document.getElementById('dom-stats') as HTMLDivElement;
-  const canvasStatsEl = document.getElementById('canvas-stats') as HTMLDivElement;
-  const domTitle = document.getElementById('dom-title') as HTMLHeadingElement;
-  const canvasTitle = document.getElementById('canvas-title') as HTMLHeadingElement;
-  const sceneEl = document.getElementById('scene') as HTMLDivElement;
-
-  const runDom = runtime !== 'canvas';
-  const runCanvas = runtime !== 'dom';
-  // One load backs both sides: the region bitmaps and page images are the
-  // caller's, shared by every player of either mode.
+  const stages = Object.fromEntries(['dom', 'canvas', 'official'].map((name) =>
+    [name, document.getElementById(`${name}-stage`) as HTMLDivElement])) as Record<SideName, HTMLDivElement>;
+  const statsEls = Object.fromEntries(['dom', 'canvas', 'official'].map((name) =>
+    [name, document.getElementById(`${name}-stats`) as HTMLDivElement])) as Record<SideName, HTMLDivElement>;
+  const names: SideName[] = ['dom', 'canvas', 'official'];
+  const enabled = (name: SideName): boolean => runtime === 'all' || runtime === name || (runtime === 'both' && name !== 'official');
+  const pairedHash = enabled('official') ? await expectedPairHash() : null;
   const assets = await loadModel({ modelUrl });
-  const dom = runDom ? playerSide(domStage, assets, 'dom') : null;
-  const canvas = runCanvas ? playerSide(canvasStage, assets, 'canvas') : null;
-
-  const modeNote =
-    runtime === 'both'
-      ? 'both animating — one rAF cadence for the page, so these fps are the PAGE’s, not either mode’s'
-      : `only ${runtime} is animating — this side has the frame budget to itself`;
-  const grid = layoutFor(domStage.clientWidth || 1, domStage.clientHeight || 1, assets.stage);
-  sceneEl.textContent =
+  // Serialize own PNG extraction+decode before official GL texture upload.
+  // Concurrent extraction/upload was measured blank on WebKit (#39).
+  const sides: Record<SideName, Side | null> = { dom: null, canvas: null, official: null };
+  try {
+    await decodeRegions(assets);
+    if (enabled('dom')) sides.dom = playerSide(stages.dom, assets, 'dom');
+    if (enabled('canvas')) sides.canvas = playerSide(stages.canvas, assets, 'canvas');
+    if (enabled('official')) sides.official = await officialSide(stages.official, assets, pairedHash as string);
+  } catch (error) {
+    for (const side of Object.values(sides)) side?.dispose();
+    assets.dispose();
+    throw error;
+  }
+  const grid = layoutFor(stages.dom.clientWidth, stages.dom.clientHeight, assets.stage);
+  const note = countersOnly ? UNAVAILABLE : runtime === 'both' || runtime === 'all'
+    ? 'simultaneous display: one PAGE rAF cadence; these are not independent runtime fps'
+    : `only ${runtime} is animating`;
+  const sceneEl = document.getElementById('scene');
+  if (sceneEl) sceneEl.textContent =
     `scene=${sceneName} model=${modelUrl} anim=${scene.animation} count=${scene.count} ` +
     `(${grid.columns}×${grid.rows}, scale ${grid.scale.toFixed(3)}, clipped to ${grid.clipTarget}) ` +
-    `backend=${backend} runtime=${runtime} dpr=${pixelRatio().toFixed(2)} · ${modeNote}`;
-  if (!runDom) domTitle.innerHTML = 'DOM mode <span class="idle">— idle</span>';
-  if (!runCanvas) canvasTitle.innerHTML = 'canvas mode <span class="idle">— idle</span>';
-
-  for (const el of [domStatsEl, canvasStatsEl]) {
-    el.title = 'click to copy';
-    el.addEventListener('click', () => {
-      void navigator.clipboard?.writeText(el.textContent ?? '');
-    });
+    `backend=${backend} runtime=${runtime} dpr=${pixelRatio()} · ${note}`;
+  for (const name of names) {
+    if (!sides[name]) {
+      const title = document.getElementById(`${name}-title`);
+      if (title) title.append(' — idle');
+    }
+    statsEls[name].title = 'click to copy';
+    statsEls[name].addEventListener('click', () => { void navigator.clipboard?.writeText(statsEls[name].textContent ?? ''); });
   }
-
-  window.addEventListener('resize', () => {
-    dom?.layout();
-    canvas?.layout();
-  });
-
-  let last = performance.now();
-  let statsAt = last;
-  let frames = 0;
   let totalFrames = 0;
-  let domUpdateMs = 0;
-  let domRenderMs = 0;
-  let canvasUpdateMs = 0;
-  let canvasRenderMs = 0;
-  let domFps: number | null = null;
-  let canvasFps: number | null = null;
-  let domStats = runDom ? '—' : 'idle';
-  let canvasStats = runCanvas ? '—' : 'idle';
-  const waiters: Array<{ until: number; resolve: (reading: BenchReading) => void }> = [];
-
-  const reading = (): BenchReading => {
-    const current = layoutFor(domStage.clientWidth || 1, domStage.clientHeight || 1, assets.stage);
-    return {
-      scene: sceneName,
-      runtime,
-      model: modelUrl,
-      animation: scene.animation,
-      count: scene.count,
-      backend,
-      devicePixelRatio: pixelRatio(),
-      clipTarget: current.clipTarget,
-      columns: current.columns,
-      rows: current.rows,
-      cellScale: current.scale,
-      domOriginDeltaPx: dom ? Math.round(dom.originDelta() * 1000) / 1000 : null,
-      canvasOriginDeltaPx: canvas ? Math.round(canvas.originDelta() * 1000) / 1000 : null,
-      frames: totalFrames,
-      domStats,
-      canvasStats,
-      domFps,
-      canvasFps,
-      glContexts: glContextCount(),
-    };
+  let animationFrame = 0;
+  let disposed = false;
+  let resizeObserver: ResizeObserver | undefined;
+  const elapsed: Record<SideName, { pose: number; render: number; fps: number | null; frames: number }> = {
+    dom: { pose: 0, render: 0, fps: null, frames: 0 },
+    canvas: { pose: 0, render: 0, fps: null, frames: 0 },
+    official: { pose: 0, render: 0, fps: null, frames: 0 },
   };
-
-  function frame(now: number): void {
-    const delta = Math.min((now - last) / 1000, 1 / 15);
-    last = now;
-
-    if (dom) {
-      const t0 = performance.now();
-      const updateMs = dom.frame(delta);
-      domUpdateMs += updateMs;
-      domRenderMs += performance.now() - t0 - updateMs;
+  const readings: Record<SideName, SideReading | null> = { dom: null, canvas: null, official: null };
+  const publish = (): void => {
+    for (const name of names) {
+      const side = sides[name];
+      if (!side) continue;
+      const e = elapsed[name];
+      const fps = countersOnly ? null : e.fps;
+      const poseMs = countersOnly || e.frames === 0 ? null : e.pose / e.frames;
+      const renderMs = countersOnly || e.frames === 0 ? null : e.render / e.frames;
+      const stats = side.stats(fps, countersOnly ? null : e.pose, countersOnly ? null : e.render, Math.max(1, e.frames));
+      readings[name] = { fps, poseMs, renderMs, stats, originDeltaPx: side.originDelta(), counters: side.counters() };
+      statsEls[name].textContent = stats;
     }
-    if (canvas) {
-      const t0 = performance.now();
-      const updateMs = canvas.frame(delta);
-      canvasUpdateMs += updateMs;
-      canvasRenderMs += performance.now() - t0 - updateMs;
+  };
+  const tick = (delta: number): void => {
+    for (const name of names) {
+      const side = sides[name];
+      if (!side) continue;
+      const before = countersOnly ? 0 : performance.now();
+      const pose = side.frame(delta);
+      if (!countersOnly) { elapsed[name].pose += pose; elapsed[name].render += performance.now() - before - pose; elapsed[name].frames++; }
     }
-    frames++;
     totalFrames++;
-
-    if (now - statsAt >= 500 && frames > 0) {
-      const fps = (frames * 1000) / (now - statsAt);
-      if (dom) {
-        domFps = fps;
-        domStats = dom.stats(fps, domUpdateMs, domRenderMs, frames);
-        domStatsEl.textContent = domStats;
-      }
-      if (canvas) {
-        canvasFps = fps;
-        canvasStats = canvas.stats(fps, canvasUpdateMs, canvasRenderMs, frames);
-        canvasStatsEl.textContent = canvasStats;
-      }
-      domUpdateMs = domRenderMs = canvasUpdateMs = canvasRenderMs = 0;
-      frames = 0;
-      statsAt = now;
-    }
-
-    for (let i = waiters.length - 1; i >= 0; i--) {
-      if (totalFrames >= waiters[i].until) {
-        waiters[i].resolve(reading());
-        waiters.splice(i, 1);
-      }
-    }
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
-
-  window.rigPlayBench = {
-    reading,
-    run: (count: number) =>
-      new Promise<BenchReading>((resolve) => {
-        waiters.push({ until: totalFrames + count, resolve });
-      }),
   };
+  const reading = (): BenchReading => {
+    const current = layoutFor(stages.dom.clientWidth, stages.dom.clientHeight, assets.stage);
+    return { scene: sceneName, runtime, model: modelUrl, pair: sides.official ? officialPair() : null,
+      pairedJsonSha256: pairedHash, animation: scene.animation, skin: skin ?? null, count: scene.count, backend, devicePixelRatio: pixelRatio(),
+      clipTarget: current.clipTarget, columns: current.columns, rows: current.rows, cellScale: current.scale,
+      measurement: countersOnly ? 'counters' : 'device', unavailableReason: countersOnly ? UNAVAILABLE : null,
+      preserveDrawingBuffer, pmaAdditiveBatching: false, frames: totalFrames,
+      sides: { ...readings }, domOriginDeltaPx: readings.dom?.originDeltaPx ?? null,
+      canvasOriginDeltaPx: readings.canvas?.originDeltaPx ?? null,
+      domStats: readings.dom?.stats ?? 'idle', canvasStats: readings.canvas?.stats ?? 'idle',
+      domFps: readings.dom?.fps ?? null, canvasFps: readings.canvas?.fps ?? null, glContexts: glContextCount() };
+  };
+  const waiters: Array<{ until: number; resolve: (reading: BenchReading) => void }> = [];
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    cancelAnimationFrame(animationFrame);
+    resizeObserver?.disconnect();
+    for (const side of Object.values(sides)) side?.dispose();
+    assets.dispose();
+  };
+  window.addEventListener('pagehide', dispose, { once: true });
+  // Header text/stats can change the available stage after initialization.
+  // Observe its actual dimensions, and do nothing when dimensions agree so
+  // layout/readback/draw does not create a ResizeObserver feedback loop.
+  let dimensions = '';
+  const relayout = (): void => {
+    if (disposed) return;
+    const current = names.map((name) => {
+      const rect = stages[name].getBoundingClientRect();
+      return `${rect.width},${rect.height}`;
+    }).join(';') + `;${pixelRatio()}`;
+    if (current === dimensions) return;
+    dimensions = current;
+    for (const side of Object.values(sides)) side?.layout();
+    for (const side of Object.values(sides)) side?.frame(0);
+    publish();
+  };
+  // Fixed header geometry plus observation keeps all three panes matched.
+  publish();
+  relayout();
+  resizeObserver = new ResizeObserver(relayout);
+  for (const stage of Object.values(stages)) resizeObserver.observe(stage);
+  window.addEventListener('resize', relayout);
+  const runCounters = (count: number, step = 1 / 60): BenchReading => {
+    if (!countersOnly) throw new Error('runCounters requires measurement=counters');
+    if (disposed) throw new Error('benchmark page was disposed');
+    if (!Number.isInteger(count) || count < 1 || !Number.isFinite(step) || step < 0) throw new Error('counter frames must be a positive integer and step finite at or above 0');
+    for (let i = 0; i < count; i++) tick(step);
+    publish();
+    return reading();
+  };
+  window.rigPlayBench = {
+    reading, runCounters, dispose,
+    run: (count) => countersOnly ? Promise.resolve(runCounters(count)) : new Promise((resolve) => {
+      if (!Number.isInteger(count) || count < 1) throw new Error('frames must be a positive integer');
+      waiters.push({ until: totalFrames + count, resolve });
+    }),
+  };
+  if (!countersOnly) {
+    let last = performance.now();
+    let statsAt = last;
+    let windowFrames = 0;
+    const frame = (now: number): void => {
+      if (disposed) return;
+      const delta = Math.min((now - last) / 1000, 1 / 15);
+      last = now;
+      tick(delta);
+      windowFrames++;
+      if (now - statsAt >= 500) {
+        for (const name of names) if (sides[name]) elapsed[name].fps = windowFrames * 1000 / (now - statsAt);
+        publish();
+        for (const name of names) { elapsed[name].pose = elapsed[name].render = elapsed[name].frames = 0; }
+        statsAt = now;
+        windowFrames = 0;
+      }
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        if (totalFrames >= waiters[i].until) { waiters[i].resolve(reading()); waiters.splice(i, 1); }
+      }
+      animationFrame = requestAnimationFrame(frame);
+    };
+    animationFrame = requestAnimationFrame(frame);
+  }
 }
 
 main().catch((error: unknown) => {

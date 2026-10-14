@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
+import { parseConfigFileTextToJson } from 'typescript';
 
 /**
  * What npm ships, checked the way a consumer meets it — node-side, no browser.
@@ -197,8 +198,8 @@ test('an unlisted subpath is refused by the exports map', () => {
 });
 
 /**
- * What the library build is supposed to emit — the whole of `dist/`, which is
- * the whole of what `files` ships apart from NOTICE.md: one bundled module
+ * What the library build is supposed to emit — the complete library allowlist,
+ * even when a checkout's `dist/` also holds demo/test assets: one bundled module
  * (with its map), and one declaration file (with its map) per source module.
  */
 const EMITTED_BUNDLE = ['index.js', 'index.js.map'];
@@ -240,11 +241,9 @@ test('the library build emits those modules and nothing else', () => {
 test('nothing the package ships names a Spine runtime', () => {
   /**
    * The package reads no Spine runtime: it poses through `rig-c/core`, and
-   * since #63 neither does the repository — no package of Esoteric Software's
-   * scope is a dependency of any kind, and nothing under `tests/` or `bench/`
-   * imports one. So nothing could put a runtime into `dist/` today. The assertion
-   * stays anyway, because it is the claim the package makes and it costs one
-   * read per emitted file: an import of a runtime written into `src/` would
+   * #39 adds an official WebGL oracle as a dev-only test dependency. It must
+   * never enter the shipped library. The assertion is the claim the package
+   * makes and it costs one read per emitted file: an import of a runtime written into `src/` would
    * ride into `index.js` with no other signature — vite inlines it, and the
    * emitted file set above does not change. Every module and every `.d.ts`,
    * comments stripped so a mention in prose is not a false red.
@@ -264,27 +263,105 @@ test('nothing the package ships names a Spine runtime', () => {
   expect(runtimeCode).toEqual([]);
 });
 
-test('the manifest declares no Spine runtime and no peer, and pins rig-c exactly', () => {
-  const manifest = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8'));
+const ORACLE = '@esotericsoftware/spine-webgl';
+const ORACLE_CORE = '@esotericsoftware/spine-core';
+const ORACLE_VERSION = '4.3.13';
+const isEsoteric = (name: string): boolean => name.startsWith('@esotericsoftware/');
+type DependencyField = 'dependencies' | 'devDependencies' | 'peerDependencies' | 'optionalDependencies';
+type DependencyManifest = Partial<Record<DependencyField, Record<string, string>>>;
+interface OracleLock {
+  workspaces: Record<string, DependencyManifest>;
+  packages: Record<string, [string, string, DependencyManifest, ...unknown[]]>;
+}
+
+/** The test-only oracle is the complete exception, never a scope-wide allowlist. */
+function oracleBoundaryErrors(manifest: DependencyManifest, lock: OracleLock): string[] {
+  const errors: string[] = [];
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies'] as const) {
+    if (Object.keys(manifest[field] ?? {}).length !== 0) errors.push(`${field}: consumer dependency list must be empty`);
+    for (const name of Object.keys(manifest[field] ?? {}).filter(isEsoteric)) errors.push(`${field}: ${name} is not dev-only`);
+  }
+  const dev = Object.keys(manifest.devDependencies ?? {}).filter(isEsoteric).sort();
+  if (dev.length !== 1 || dev[0] !== ORACLE || manifest.devDependencies?.[ORACLE] !== ORACLE_VERSION) {
+    errors.push(`devDependencies: only ${ORACLE}@${ORACLE_VERSION} is the oracle`);
+  }
+  const locked = Object.entries(lock.packages).filter(([name, entry]) => isEsoteric(name) || isEsoteric(entry[0]));
+  if (locked.length !== 2 || !locked.some(([name]) => name === ORACLE) || !locked.some(([name]) => name === ORACLE_CORE)) {
+    errors.push('lockfile: only spine-webgl and its spine-core dependency may resolve');
+  }
+  for (const [name, entry] of locked) {
+    if ((name !== ORACLE && name !== ORACLE_CORE) || entry[0] !== `${name}@${ORACLE_VERSION}`) {
+      errors.push(`lockfile: unexpected oracle resolution ${name}: ${entry[0]}`);
+    }
+    const runtimeDeps = Object.keys(entry[2].dependencies ?? {}).sort();
+    const expectedDeps = name === ORACLE ? [ORACLE_CORE] : [];
+    if (JSON.stringify(runtimeDeps) !== JSON.stringify(expectedDeps) || (name === ORACLE && entry[2].dependencies?.[ORACLE_CORE] !== ORACLE_VERSION)) {
+      errors.push(`lockfile: ${name} must retain the matching oracle dependency graph`);
+    }
+    for (const field of ['peerDependencies', 'optionalDependencies'] as const) {
+      if (Object.keys(entry[2][field] ?? {}).some(isEsoteric)) errors.push(`lockfile: ${name} has an unexpected ${field} runtime`);
+    }
+  }
+  for (const [workspace, declared] of Object.entries(lock.workspaces)) {
+    for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'] as const) {
+      const names = Object.keys(declared[field] ?? {}).filter(isEsoteric);
+      const allowed = workspace === '' && field === 'devDependencies' ? [ORACLE] : [];
+      if (JSON.stringify(names.sort()) !== JSON.stringify(allowed) || (allowed.length && declared[field]?.[ORACLE] !== ORACLE_VERSION)) {
+        errors.push(`lockfile workspace ${JSON.stringify(workspace)} ${field}: unexpected oracle declaration`);
+      }
+    }
+  }
+  return errors;
+}
+
+function packageInputs(): { manifest: DependencyManifest; lock: OracleLock } {
+  const parsed = parseConfigFileTextToJson('bun.lock', readFileSync(resolve(repoRoot, 'bun.lock'), 'utf8'));
+  expect(parsed.error, 'bun.lock must parse as JSON with comments/trailing commas').toBeUndefined();
+  return { manifest: JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as DependencyManifest, lock: parsed.config as OracleLock };
+}
+
+test('the manifest keeps Spine dev-only, declares no peer, and pins rig-c and the oracle exactly', () => {
+  const { manifest, lock } = packageInputs();
   // No peer at all: the package needs nothing installed beside it (the
   // sandbox above installs it alone), so a consumer is told to install nothing.
   expect(manifest.peerDependencies).toBeUndefined();
-  // No Esoteric package in any field a consumer or a clone installs from.
-  for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
-    expect(
-      Object.keys(manifest[field] ?? {}).filter((name) => name.startsWith('@esotericsoftware/')),
-      field,
-    ).toEqual([]);
-  }
-  // And none resolved into the lockfile, transitively or otherwise: a clone's
-  // `bun install --frozen-lockfile` links nothing from Esoteric Software.
-  expect(readFileSync(resolve(repoRoot, 'bun.lock'), 'utf8')).not.toContain('@esotericsoftware/');
+  expect(oracleBoundaryErrors(manifest, lock)).toEqual([]);
   // The poser is rig-c, bundled into `index.js` at the version this names — a
   // bare version, never a range, so a build is a function of one rig-c and a
   // pose doubt is a rigc issue against that version.
   expect(typeof manifest.devDependencies?.['rig-c']).toBe('string');
-  expect(manifest.devDependencies['rig-c']).toMatch(/^\d+\.\d+\.\d+$/);
+  expect(manifest.devDependencies?.['rig-c']).toMatch(/^\d+\.\d+\.\d+$/);
   expect(Object.keys(manifest.dependencies ?? {})).not.toContain('rig-c');
+});
+
+test('the oracle exception refuses runtime promotion, extra runtimes and mismatched pins', () => {
+  const original = packageInputs();
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies'] as const) {
+    const { manifest, lock } = structuredClone(original);
+    manifest[field] = { ...manifest[field], [ORACLE]: ORACLE_VERSION };
+    expect(oracleBoundaryErrors(manifest, lock)).toContain(`${field}: ${ORACLE} is not dev-only`);
+    // A differently named consumer dependency could reach the already allowed
+    // runtime nodes transitively. Self-contained means no consumer deps at all.
+    const wrapper = structuredClone(original);
+    wrapper.manifest[field] = { ...wrapper.manifest[field], 'oracle-wrapper': '1.0.0' };
+    expect(oracleBoundaryErrors(wrapper.manifest, wrapper.lock)).toContain(`${field}: consumer dependency list must be empty`);
+  }
+  const extra = structuredClone(original);
+  extra.manifest.devDependencies = { ...extra.manifest.devDependencies, '@esotericsoftware/spine-canvas': ORACLE_VERSION };
+  extra.lock.packages['@esotericsoftware/spine-canvas'] = [`@esotericsoftware/spine-canvas@${ORACLE_VERSION}`, '', {}];
+  expect(oracleBoundaryErrors(extra.manifest, extra.lock)).toContain(`devDependencies: only ${ORACLE}@${ORACLE_VERSION} is the oracle`);
+  expect(oracleBoundaryErrors(extra.manifest, extra.lock)).toContain('lockfile: only spine-webgl and its spine-core dependency may resolve');
+  const mismatch = structuredClone(original);
+  mismatch.manifest.devDependencies = { ...mismatch.manifest.devDependencies, [ORACLE]: `^${ORACLE_VERSION}` };
+  mismatch.lock.packages[ORACLE_CORE][0] = `${ORACLE_CORE}@4.3.12`;
+  expect(oracleBoundaryErrors(mismatch.manifest, mismatch.lock)).toContain(`devDependencies: only ${ORACLE}@${ORACLE_VERSION} is the oracle`);
+  expect(oracleBoundaryErrors(mismatch.manifest, mismatch.lock)).toContain(`lockfile: unexpected oracle resolution ${ORACLE_CORE}: ${ORACLE_CORE}@4.3.12`);
+});
+
+test('library source keeps the official oracle outside the shipped import graph', () => {
+  const files = readdirSync(resolve(repoRoot, 'src'), { recursive: true }).map(String).filter((file) => file.endsWith('.ts'));
+  const imports = files.filter((file) => /@esotericsoftware\//.test(stripComments(readFileSync(resolve(repoRoot, 'src', file), 'utf8'))));
+  expect(imports).toEqual([]);
 });
 
 /**
@@ -310,6 +387,41 @@ function unpack(tgz: string, into: string): string[] {
     .filter((path) => !statSync(resolve(into, path)).isDirectory())
     .sort();
 }
+
+test('the real tarball includes every library output but excludes planted dev assets in dist', () => {
+  const source = resolve(sandbox, 'contaminated-package');
+  mkdirSync(source, { recursive: true });
+  cpSync(pkgDist, resolve(source, 'dist'), { recursive: true });
+  for (const file of ['package.json', 'NOTICE.md', 'README.md', 'LICENSE']) cpSync(resolve(repoRoot, file), resolve(source, file));
+  // A clean build alone cannot hold the npm allowlist: the checkout can have
+  // a Vite demo build, whose official oracle bundle must never be published.
+  // Plant both bundled JS and declarations outside the library's exact set.
+  for (const [file, content] of [
+    ['dist/assets/official-runtime.js', "export class SkeletonJson {} // dev oracle sentinel\n"],
+    ['dist/officialOracle.d.ts', "export { SkeletonJson } from '@esotericsoftware/spine-webgl';\n"],
+    ['dist/main.d.ts', 'export declare const demo: true;\n'],
+    ['dist/oracle.html', '<script src="assets/official-runtime.js"></script>\n'],
+    ['dist/rigs/fixture/skeleton.json', '{"skeleton":{"spine":"4.3.13"}}\n'],
+  ]) {
+    const path = resolve(source, file);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+  }
+  const destination = resolve(sandbox, 'contaminated-tarball');
+  mkdirSync(destination, { recursive: true });
+  const packed = spawnSync('npm', ['pack', source, '--ignore-scripts', '--pack-destination', destination, '--json'], { cwd: sandbox, encoding: 'utf8' });
+  expect(packed.status, `${packed.stdout}${packed.stderr}`).toBe(0);
+  const result = JSON.parse(packed.stdout) as Array<{ filename: string; files: Array<{ path: string }> }>;
+  const libraryFiles = readdirSync(pkgDist).map(String).sort();
+  const expected = ['LICENSE', 'NOTICE.md', 'README.md', 'package.json', ...libraryFiles.map((file) => `dist/${file}`)].sort();
+  expect(result[0].files.map(({ path }) => path).sort()).toEqual(expected);
+  const extracted = resolve(sandbox, 'contaminated-read');
+  const actual = unpack(resolve(destination, result[0].filename), extracted);
+  expect(actual).toEqual(expected.map((file) => `package/${file}`));
+  for (const file of libraryFiles) {
+    expect(readFileSync(resolve(extracted, 'package/dist', file)).equals(readFileSync(resolve(pkgDist, file))), file).toBe(true);
+  }
+});
 
 for (const ALIAS of ALIASES) test(`the ${ALIAS} tarball is the package tarball under that earlier name, and nothing else`, () => {
   // The package directory npm would pack, from the temp build: the real

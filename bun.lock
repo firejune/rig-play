@@ -5,6 +5,7 @@
     "": {
       "name": "@rig-c/play",
       "devDependencies": {
+        "@esotericsoftware/spine-webgl": "4.3.13",
         "@playwright/test": "1.62.1",
         "@types/node": "^22",
         "rig-c": "2.52.0",
@@ -65,6 +66,10 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.25.12", "", { "os": "win32", "cpu": "ia32" }, "sha512-HkqnmmBoCbCwxUKKNPBixiWDGCpQGVsrQfJoVGYLPT41XWF8lHuE5N6WhVia2n4o5QK5M4tYr21827fNhi4byQ=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
+
+    "@esotericsoftware/spine-core": ["@esotericsoftware/spine-core@4.3.13", "", {}, "sha512-iGs/40qOWSQYicABebDzFSwFOS1Nsm0dCCS8sGqbpVuThRKdLYeI1cVJpmATSpEmtcetEABTmh97NoBnt7XLDw=="],
+
+    "@esotericsoftware/spine-webgl": ["@esotericsoftware/spine-webgl@4.3.13", "", { "dependencies": { "@esotericsoftware/spine-core": "4.3.13" } }, "sha512-VdMtDU03HcoUfLlt0FXBzSvh53nLS7Hej0ibJ3kCuDf5hftAsDAiwZhhS6Ze+5nDCGrkNzPmssZcT+96FoOjIQ=="],
 
     "@napi-rs/lzma-linux-x64-gnu": ["@napi-rs/lzma-linux-x64-gnu@1.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ=="],
 

@@ -29,13 +29,18 @@
         background: #1c1f26;
         border-bottom: 1px solid #2a2e37;
         font-size: 12px;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
       }
       header h1 {
         font-size: 13px;
         font-weight: 600;
       }
       header .scene {
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
         color: #9aa3b2;
       }
       header .warn {
@@ -44,17 +49,17 @@
       #panes {
         flex: 1;
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr 1fr 1fr;
         min-height: 0;
       }
       .pane {
         display: flex;
         flex-direction: column;
         min-width: 0;
-        border-right: 1px solid #2a2e37;
+        box-shadow: inset -1px 0 #2a2e37;
       }
       .pane:last-child {
-        border-right: none;
+        box-shadow: none;
       }
       .pane-head {
         display: flex;
@@ -89,8 +94,8 @@
       }
       /*
         The embedding. Each rig is drawn inside a box — the whole pane for a
-        grid of rigs, its own cell for `many` — and both panes use the same
-        boxes, so the two modes show the same visible area. `overflow: hidden`
+        grid of rigs, its own cell for `many` — and all panes use the same
+        boxes, so the three runtimes show the same visible area. `overflow: hidden`
         and nothing more: paint containment clips to the same edge this already
         does, and what it adds past the clip — a stacking context, a containing
         block, an independent formatting context — changes how a side is
@@ -114,17 +119,17 @@
   <body>
     <!--
       Not the demo and not the library: a human-facing comparison page of this
-      package's two render modes. It is a separate vite project
+      package's two render modes and official spine-webgl. It is a separate vite project
       (bench/vite.config.ts), so `bun run build` emits what the deploy needs and
       nothing else.
 
       Query string: ?scene=mesh|held|rigid|many &count=N &backend=canvas2d|webgl
-      &runtime=both|dom|canvas &rig=NAME &model=URL &anim=NAME &dpr=N
-      &timescale=N. See bench/bench.ts — which also carries why each rig is
-      clipped to the same rect on both sides.
+      &runtime=all|both|dom|canvas|official &rig=NAME &model=URL &anim=NAME &dpr=N
+      &timescale=N &measurement=counters &json=URL &atlas=URL. See bench/bench.ts — which also carries why each rig is
+      clipped to the same rect in all panes.
     -->
     <header>
-      <h1>DOM mode vs canvas mode</h1>
+      <h1>DOM · canvas · official spine-webgl</h1>
       <div class="scene" id="scene">loading…</div>
       <div class="warn" id="warn"></div>
     </header>
@@ -142,6 +147,13 @@
           <div class="stats" id="canvas-stats">—</div>
         </div>
         <div class="stage" id="canvas-stage"></div>
+      </div>
+      <div class="pane">
+        <div class="pane-head">
+          <h2 id="official-title">official spine-webgl</h2>
+          <div class="stats" id="official-stats">—</div>
+        </div>
+        <div class="stage" id="official-stage"></div>
       </div>
     </div>
     <script type="module" src="./bench.ts"></script>

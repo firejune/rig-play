@@ -32,10 +32,12 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
 
 ## Architecture invariants
 
-- **`rig-c/core` is the only math source; the renderer only draws.** Nothing
-  in the repository imports a package of Esoteric Software's npm scope — no
-  dependency of any kind, no lockfile entry, no file under `src/`, `tests/` or
-  `bench/` (#63).
+- **`rig-c/core` is the player's only math source; the renderer only draws.**
+  Nothing under `src/` imports an Esoteric Software runtime. Issue #39 adds
+  a development-only official WebGL oracle and comparison tool outside that
+  import graph; it independently reads the paired Spine export, never the
+  player's `PosedFrame`. This is a raster comparison, not a second production
+  poser or a revival of the old Spine-generation compatibility matrix (#63).
   The pose comes from `openTrack` (rig-c `src/core/track.ts`, the live track
   issue #1276 added: pose 0, then one pose per `step(dt)`), and the renderer is
   handed a **`PosedFrame`**, never a skeleton: per slot in draw order the kind,
@@ -80,22 +82,26 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   rigc issue.** `devDependencies["rig-c"]` is a bare version (no range;
   `tests/package.spec.ts` asserts it), the build bundles that version's
   `./core` into `index.js`, and `scripts/fetch-assets.sh` builds every fixture
-  with the same version's `rigc build` from the same tag. This repository holds
-  no Spine runtime as an oracle: what the player poses is what rig-c's own CI
+  with the same version's `rigc build` from the same tag. What the player poses
+  is what rig-c's own CI
   holds to spine-core 4.3.13 at tolerance 0 (`core_gate`, `--raw`; rigc
   `docs/SECOND_ORACLE.md` §4–§5, and §7 on this player posing through
   `rig-c/core`). One crossing was measured here and needs no standing gate:
   moving the player onto `rig-c/core` changed no frame (#60: 14 builds, 28
   animations, 1,034 frames, 0 mismatches). So when a pose looks wrong, the
   move is a rigc issue with a public repro — the rig spec, the motion spec, the
-  frame — answered by that gate, never a Spine runtime added back here.
-- **Nothing the package ships names an Esoteric package, and the manifest
-  declares none.** `tests/package.spec.ts` builds the library into a throwaway
+  frame — answered by that gate. The development pixel oracle checks the
+  resulting picture against an independent renderer; it does not change who
+  owns a pose discrepancy.
+- **Library code and shipped types name no Esoteric package.** The manifest admits
+  only the exact official WebGL devDependency and its matching transitive core
+  for #39. `tests/package.spec.ts` builds the library into a throwaway
   install and asserts that no emitted module or `.d.ts` names
   that npm scope (comments stripped) or defines a runtime class, that
-  `peerDependencies` is absent, that no dependency field names an Esoteric
-  package, and that `bun.lock` resolves none. The first is cheap and stays even
-  though nothing could put one there now: it is the claim the package makes.
+  `peerDependencies` is absent, and that neither consumer dependency fields nor
+  library source imports contain an Esoteric package. The lockfile guard allows
+  only the two exact development resolutions. Keep oracle imports outside
+  `src/` and verify the actual packed file list before landing.
 - Rigid-tier corner order is **BL, UL, UR, BR** — rig-c's `RawDrawn.vertices`
   of a region (`Quad.world` in rigc: bl, ul, ur, br), which its gate holds to
   spine-core's `computeWorldVertices` (whose own br/bl/ul/ur comments are
@@ -365,12 +371,14 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   mismatch ≤ 3% everywhere (floors ≤ 1.03%). What is forgiven is antialiasing
   and texture filtering on silhouettes; a missing part, a dropped tint, a blend
   or a clip not applied is not. WebKit's test-rig floors and every Linux floor
-  are read in CI only. It is the repository's own gate and the only picture
-  comparison it keeps: nothing here is compared with a Spine runtime (see the
-  poser bullet above). What it cannot see is a defect both modes share — the
-  shape #37 had — and for that class the premultiplied-page specs
-  (`tests/pma.spec.ts`) are the instrument: an A/B of one artwork in two alpha
-  encodings.
+  are read in CI only. This is internal parity: a defect shared by both modes
+  can agree with itself. The premultiplied-page specs (`tests/pma.spec.ts`)
+  retain their A/B of one artwork in two alpha encodings. The independent
+  `tests/oracle.spec.ts` additionally compares all three renderer paths with
+  official WebGL reading the paired Spine export and original PNGs. Its pose
+  preflight, composite/alpha bars and measured floors are documented in
+  README's independent oracle section. Do not replace an unexplained mismatch
+  with a broader limit or infer platform independence from A/B alone.
 - Rendering is tested through the demo (`?rig=` names a gallery build or a
   test rig); the **loading path and the renderer probes go through
   `tests/harness.html`** (a build entry that exposes the library on
@@ -411,13 +419,15 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
 - Keep `@playwright/test` pinned to a version whose browser revisions match the
   machine's `~/Library/Caches/ms-playwright` before bumping it.
 - **CI runs the suite once**, one job named `test` (`.github/workflows/ci.yml`):
-  there is no spine-core matrix, because there is no spine-core.
+  Chromium and WebKit both run the official pixel oracle. There is no historical
+  spine-core generation matrix; the paired fixture export determines the pinned
+  development runtime generation.
 - **The fixtures are built, not fetched as binaries**: `scripts/fetch-assets.sh`
   builds rigc's gallery rigs from a pinned rigc tag, and this repository's test
   rigs from `tests/rigs/`, with the rig-c devDependency of the same version,
   into `public/rigs/<name>/` (and `<name>-packed/`, `--pack`), each with
   `skeleton.model.json` and its pages (and the Spine pair `rigc build` writes
-  beside it, which nothing reads), stamped so a version change — or, for a test
+  beside it for the official development oracle), stamped so a version change — or, for a test
   rig, a change to its sources — rebuilds it. The build needs bun (rig-c's CLI
   hands off to it) and network for the tag; without spine-core installed the
   CLI runs its runtime-free entry, whose gate is rigc's own validator.

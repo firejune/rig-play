@@ -23,6 +23,7 @@ export default defineConfig({
         demo: 'index.html',
         wind: 'wind.html',
         harness: 'tests/harness.html',
+        oracle: 'tests/oracle.html',
       },
     },
   },

@@ -36,7 +36,26 @@
     }
   },
   "files": [
-    "dist",
+    "dist/index.js",
+    "dist/index.js.map",
+    "dist/CanvasRenderer.d.ts",
+    "dist/CanvasRenderer.d.ts.map",
+    "dist/DomRenderer.d.ts",
+    "dist/DomRenderer.d.ts.map",
+    "dist/DomTexture.d.ts",
+    "dist/DomTexture.d.ts.map",
+    "dist/MeshGlBlitter.d.ts",
+    "dist/MeshGlBlitter.d.ts.map",
+    "dist/index.d.ts",
+    "dist/index.d.ts.map",
+    "dist/loadModel.d.ts",
+    "dist/loadModel.d.ts.map",
+    "dist/pixelRatio.d.ts",
+    "dist/pixelRatio.d.ts.map",
+    "dist/player.d.ts",
+    "dist/player.d.ts.map",
+    "dist/posedFrame.d.ts",
+    "dist/posedFrame.d.ts.map",
     "NOTICE.md"
   ],
   "sideEffects": false,
@@ -55,6 +74,7 @@
     "fetch-assets": "bash scripts/fetch-assets.sh"
   },
   "devDependencies": {
+    "@esotericsoftware/spine-webgl": "4.3.13",
     "@playwright/test": "1.62.1",
     "@types/node": "^22",
     "rig-c": "2.52.0",
