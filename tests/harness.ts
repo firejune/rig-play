@@ -221,6 +221,9 @@ export interface RigPlayHarness {
   loaderFailureProbe(): Promise<LoaderFailureProbeResult>;
   glTextureProbe(): Promise<GlTextureProbeResult>;
   backingProbe(): Promise<BackingProbeResult>;
+  meshSwitchProbe(): Promise<MeshSwitchProbeResult>;
+  movingMeshClipProbe(): Promise<MovingMeshClipProbeResult>;
+  heldMeshTranslateProbe(): Promise<HeldMeshTranslateProbeResult>;
   scaledStageProbe(): Promise<ScaledStageProbeResult>;
   sharedAssetsProbe(): Promise<SharedAssetsProbeResult>;
   cutConcurrencyProbe(): Promise<CutConcurrencyProbeResult>;
@@ -1221,6 +1224,249 @@ async function backingProbe(): Promise<BackingProbeResult> {
     holdBefore,
     holdAfter,
   };
+}
+
+export interface MeshContractSnapshot {
+  drawn: number;
+  reused: number;
+  realloc: number;
+  activeBackend: 'canvas2d' | 'webgl';
+  backing: Array<[number, number]>;
+}
+
+function meshContractSnapshot(renderer: DomRenderer, root: HTMLElement): MeshContractSnapshot {
+  return {
+    drawn: renderer.meshCount,
+    reused: renderer.meshReuseCount,
+    realloc: renderer.canvasReallocCount,
+    activeBackend: renderer.meshBackendActive,
+    backing: Array.from(root.querySelectorAll('canvas'), (canvas) => [canvas.width, canvas.height]),
+  };
+}
+
+export interface MeshSwitchProbeResult {
+  slots: string[];
+  initial: MeshContractSnapshot;
+  held: MeshContractSnapshot;
+  switches: Array<{
+    knob: 'meshBackend' | 'triangleExpand';
+    value: string | number;
+    changed: MeshContractSnapshot;
+    held: MeshContractSnapshot[];
+    sameCanvases: boolean;
+  }>;
+}
+
+/** #113/13: a live knob invalidates the held raster once, without replacing its backing. */
+async function meshSwitchProbe(): Promise<MeshSwitchProbeResult> {
+  const assets = await loadRig('figure');
+  const source = frameAt(assets, 'bare', 0);
+  const frame = { order: source.order.filter((slot) => slot.kind === 'mesh') };
+  const root = makeGlRoot();
+  const renderer = new DomRenderer(root, assets.regionImages, assets.pageImages);
+  renderer.pixelRatio = 1;
+  renderer.meshBackend = 'canvas2d';
+  try {
+    const draw = (): MeshContractSnapshot => {
+      renderer.render(frame);
+      return meshContractSnapshot(renderer, root);
+    };
+    const initial = draw();
+    const canvases = Array.from(root.querySelectorAll('canvas'));
+    const held = draw();
+    const switches: MeshSwitchProbeResult['switches'] = [];
+    const change = (knob: 'meshBackend' | 'triangleExpand', value: 'canvas2d' | 'webgl' | number): void => {
+      if (knob === 'meshBackend') renderer.meshBackend = value as 'canvas2d' | 'webgl';
+      else renderer.triangleExpand = value as number;
+      const changed = draw();
+      const held = [draw(), draw()];
+      switches.push({ knob, value, changed, held, sameCanvases: canvases.every((canvas, i) => canvas === root.querySelectorAll('canvas')[i]) });
+    };
+    change('meshBackend', 'webgl');
+    change('triangleExpand', 2);
+    change('meshBackend', 'canvas2d');
+    change('triangleExpand', 0.5);
+    return { slots: frame.order.map((slot) => slot.slot), initial, held, switches };
+  } finally {
+    renderer.dispose();
+    root.remove();
+    assets.dispose();
+  }
+}
+
+export interface MovingMeshClipProbeResult {
+  slots: string[];
+  sameMeshGeometry: boolean;
+  polygonDeltas: number[];
+  runs: Array<{
+    backend: 'canvas2d' | 'webgl';
+    path: 'root' | 'element';
+    first: MeshContractSnapshot;
+    moved: MeshContractSnapshot;
+    held: MeshContractSnapshot;
+    clipWrites: [number, number, number];
+    pathsBefore: string[];
+    pathsAfter: string[];
+  }>;
+}
+
+/** #113/14: the two authored clip polygons differ by (7,7); neither mesh moves. */
+async function movingMeshClipProbe(): Promise<MovingMeshClipProbeResult> {
+  const assets = await loadRig('figure');
+  try {
+    const meshes = (animation: string): PosedFrame => ({
+      order: frameAt(assets, animation, 0).order.filter((slot) => slot.kind === 'mesh'),
+    });
+    const before = meshes('tilted');
+    const after = meshes('tilted_moved');
+    const firstClip = before.order[0].clip;
+    const nextClip = after.order[0].clip;
+    if (!firstClip || !nextClip) throw new Error('figure tilted frames must carry their authored clips');
+    const sameMeshGeometry = before.order.every((slot, i) => {
+      const next = after.order[i];
+      return slot.kind === 'mesh' && next.kind === 'mesh'
+        && JSON.stringify(slot.vertices) === JSON.stringify(next.vertices)
+        && slot.uvs === next.uvs && slot.triangles === next.triangles;
+    });
+    const runs: MovingMeshClipProbeResult['runs'] = [];
+    for (const backend of ['canvas2d', 'webgl'] as const) {
+      for (const path of ['root', 'element'] as const) {
+        const root = makeGlRoot();
+        const renderer = new DomRenderer(root, assets.regionImages, assets.pageImages);
+        renderer.pixelRatio = 1;
+        renderer.meshBackend = backend;
+        try {
+          // The existing undrawn trailing-slot control closes the root fast path,
+          // leaving the same two real mesh slots on the per-element clip path.
+          const draw = (frame: PosedFrame): MeshContractSnapshot => {
+            renderer.render(path === 'element' ? withTrailing(frame) : frame);
+            return meshContractSnapshot(renderer, root);
+          };
+          const paths = (): string[] => path === 'root'
+            ? [root.style.clipPath]
+            : Array.from(root.querySelectorAll('canvas'), (canvas) => canvas.style.clipPath);
+          const first = draw(before);
+          const firstWrites = renderer.clipWriteCount;
+          const pathsBefore = paths();
+          const moved = draw(after);
+          const movedWrites = renderer.clipWriteCount;
+          const pathsAfter = paths();
+          const held = draw(after);
+          runs.push({ backend, path, first, moved, held, clipWrites: [firstWrites, movedWrites, renderer.clipWriteCount], pathsBefore, pathsAfter });
+        } finally {
+          renderer.dispose();
+          root.remove();
+        }
+      }
+    }
+    return {
+      slots: before.order.map((slot) => slot.slot),
+      sameMeshGeometry,
+      polygonDeltas: nextClip.polygon.map((v, i) => v - firstClip.polygon[i]),
+      runs,
+    };
+  } finally {
+    assets.dispose();
+  }
+}
+
+export interface HeldMeshTranslateProbeResult {
+  runs: Array<{
+    backend: 'canvas2d' | 'webgl';
+    slots: string[];
+    first: MeshContractSnapshot;
+    moved: MeshContractSnapshot;
+    held: MeshContractSnapshot;
+    time: [number, number];
+    vertexDeltas: number[];
+    cssDelta: [number, number];
+    screenDelta: [number, number];
+    screenSizeUnchanged: boolean;
+    sameCanvas: boolean;
+    changedRasterChannels: number;
+    centreAlpha: number;
+  }>;
+}
+
+/** #113/18: move duo's held sheet through the core adjust hook, not an invented frame. */
+async function heldMeshTranslateProbe(): Promise<HeldMeshTranslateProbeResult> {
+  const assets = await loadRig('duo');
+  const runs: HeldMeshTranslateProbeResult['runs'] = [];
+  try {
+    for (const backend of ['canvas2d', 'webgl'] as const) {
+      const root = makeGlRoot();
+      // Keep the sheet's four X coordinates away from Float32 rounding
+      // boundaries: at authored x=90, the left edge's 26→33 crosses an
+      // exponent boundary and the core's cos(90°) residue survives on only
+      // one side. x=200 makes the raster-space translation exactly integral.
+      // known: rig-c/play#130, Float32 off-integer offset. The diagnostic's
+      // one redraw at x=90 is tracked for removal; its expected redraw count
+      // is 0 after #130 is fixed, rather than a contract to preserve.
+      const player = new RigPlayer(root, assets, {
+        meshBackend: backend,
+        adjust: (bones) => { bones.bone('sheet').x = 200; },
+      });
+      const renderer = player.renderer as DomRenderer;
+      renderer.pixelRatio = 1;
+      try {
+        player.play('shift', { loop: false });
+        player.pause();
+        player.draw();
+        const first = meshContractSnapshot(renderer, root);
+        const canvas = root.querySelector('canvas');
+        if (!canvas) throw new Error('duo sheet canvas missing');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('duo sheet has no 2d blit context');
+        const original = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        const beforeMatrix = new DOMMatrix(getComputedStyle(canvas).transform);
+        const beforeBox = canvas.getBoundingClientRect();
+        const timeBefore = player.time;
+        const beforeMesh = player.posedFrame(['sheet']).order[0];
+        if (beforeMesh.kind !== 'mesh') throw new Error('duo sheet is not a mesh');
+        // A whole-pixel (+7,+5) bone adjustment from (200,100) preserves
+        // shape and time; CSS's Y-down movement is -5.
+        player.adjust = (bones) => {
+          bones.bone('sheet').x = 207;
+          bones.bone('sheet').y += 5;
+        };
+        const afterMesh = player.posedFrame(['sheet']).order[0];
+        if (afterMesh.kind !== 'mesh') throw new Error('duo sheet is not a mesh after adjust');
+        player.draw();
+        const moved = meshContractSnapshot(renderer, root);
+        const movedMatrix = new DOMMatrix(getComputedStyle(canvas).transform);
+        const movedBox = canvas.getBoundingClientRect();
+        const raster = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let changedRasterChannels = 0;
+        for (let i = 0; i < original.length; i++) if (original[i] !== raster[i]) changedRasterChannels++;
+        // The centre of the sheet is opaque ramp art, strictly inside both triangles.
+        const centreAlpha = ctx.getImageData(65, 25, 1, 1).data[3];
+        player.draw();
+        runs.push({
+          backend,
+          slots: player.posedFrame(['sheet']).order.map((slot) => slot.slot),
+          first,
+          moved,
+          held: meshContractSnapshot(renderer, root),
+          time: [timeBefore, player.time],
+          // The renderer reads every posed vertex through Float32 scratch;
+          // the core's unrotated b=cos(90°) leaves a sub-ulp world offset.
+          vertexDeltas: afterMesh.vertices.map((v, i) => Math.fround(v) - Math.fround(beforeMesh.vertices[i])),
+          cssDelta: [movedMatrix.e - beforeMatrix.e, movedMatrix.f - beforeMatrix.f],
+          screenDelta: [movedBox.x - beforeBox.x, movedBox.y - beforeBox.y],
+          screenSizeUnchanged: movedBox.width === beforeBox.width && movedBox.height === beforeBox.height,
+          sameCanvas: canvas === root.querySelector('canvas'),
+          changedRasterChannels,
+          centreAlpha,
+        });
+      } finally {
+        player.dispose();
+        root.remove();
+      }
+    }
+    return { runs };
+  } finally {
+    assets.dispose();
+  }
 }
 
 /**
@@ -6844,6 +7090,9 @@ window.rigPlayHarness = {
   loaderFailureProbe,
   glTextureProbe,
   backingProbe,
+  meshSwitchProbe,
+  movingMeshClipProbe,
+  heldMeshTranslateProbe,
   scaledStageProbe,
   sharedAssetsProbe,
   cutConcurrencyProbe,
