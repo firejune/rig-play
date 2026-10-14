@@ -52,6 +52,12 @@ type RGB = [number, number, number];
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 
+// A focused regeneration for the exact-colour draw fixture.
+if (process.argv.includes('--draw-only')) {
+  paintDrawParts();
+  process.exit(0);
+}
+
 /** Signed distance (px, negative inside) from a pixel centre to a part's outline. */
 type Shape = (x: number, y: number) => number;
 
@@ -318,3 +324,20 @@ console.log('named:');
 console.log('cloth:');
 write('cloth', 'link.png', 61, 169, paint(61, 169, roundedRect(61, 169, 6, 22), look([90, 160, 210], { period: 14 })));
 write('cloth', 'banner.png', 321, 81, paint(321, 81, roundedRect(321, 81, 6, 18), look([210, 120, 80], { period: 16 })));
+
+// --- draw: exact opaque interiors for blend, skin and draw-order contracts ------
+// Ink channels are 0 or 255, so Multiply/Screen over the base has no rounding
+// ambiguity: [128,0,192] and [255,64,255]. All squares are the same 64×64 box.
+function paintDrawParts(): void {
+  console.log('draw:');
+  for (const [file, rgb] of [
+    ['base.png', [128, 64, 192]],
+    ['ink.png', [255, 0, 255]],
+    ['alt.png', [0, 255, 0]],
+  ] as Array<[string, RGB]>) {
+    const page = new Uint8Array(64 * 64 * 4);
+    for (let i = 0; i < page.length; i += 4) page.set([...rgb, 255], i);
+    write('draw', file, 64, 64, page);
+  }
+}
+paintDrawParts();

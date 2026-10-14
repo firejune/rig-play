@@ -1,0 +1,33 @@
+{
+  "spec": "rigc-motion/1",
+  "archetype": "draw",
+  "cut": "test-draw",
+  "easings": {},
+  "animations": {
+    "reorder": {
+      "duration": 1,
+      "loop": false,
+      "note": "Two opaque squares over matching bases. At 0.5 the left base moves over its multiply ink; the screen pair keeps its order.",
+      "drawOrder": [{ "t": 0.5, "offsets": [{ "slot": "base_mul", "offset": 1 }] }, { "t": 1 }],
+      "tracks": []
+    },
+    "window": {
+      "duration": 1,
+      "loop": false,
+      "note": "The clip is smaller than the left pair; both pairs are counted inside its box.",
+      "tracks": [{ "slot": "clip", "property": "attachment", "keys": [{ "t": 0, "v": "window" }, { "t": 1, "v": "window" }] }]
+    },
+    "inverse": {
+      "duration": 1,
+      "loop": false,
+      "note": "The inverse clip is far away from every drawn attachment, so it removes no artwork.",
+      "tracks": [{ "slot": "clip", "property": "attachment", "keys": [{ "t": 0, "v": "inverse" }, { "t": 1, "v": "inverse" }] }]
+    },
+    "hidden": {
+      "duration": 1,
+      "loop": false,
+      "note": "A positive control turns on the far-away attachment excluded from the default bounds.",
+      "tracks": [{ "slot": "hidden", "property": "attachment", "keys": [{ "t": 0, "v": "hidden" }, { "t": 1, "v": "hidden" }] }]
+    }
+  }
+}
