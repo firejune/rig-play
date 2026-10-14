@@ -1300,6 +1300,9 @@ async function heldMeshTranslateProbe(): Promise<HeldMeshTranslateProbeResult> {
       // boundaries: at authored x=90, the left edge's 26→33 crosses an
       // exponent boundary and the core's cos(90°) residue survives on only
       // one side. x=200 makes the raster-space translation exactly integral.
+      // known: rig-c/play#130, Float32 off-integer offset. The diagnostic's
+      // one redraw at x=90 is tracked for removal; its expected redraw count
+      // is 0 after #130 is fixed, rather than a contract to preserve.
       const player = new RigPlayer(root, assets, {
         meshBackend: backend,
         adjust: (bones) => { bones.bone('sheet').x = 200; },
