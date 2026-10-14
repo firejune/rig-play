@@ -1,17 +1,17 @@
 # CI: the playwright suite (chromium + webkit), one job.
 #
-# The visual tests are A/B within one run and one engine (no golden files),
-# so they are platform-independent by design — ubuntu results are valid even
-# though local dev is macOS. Headless numbers are never performance
-# evidence; nothing here asserts timing.
+# Captures are A/B within a run and engine, with no snapshot golden files.
+# Residue limits are measured per engine/case/mode; that design does not make
+# a macOS calibration automatically valid on this Ubuntu runner. Linux pixel
+# evidence must settle a differing floor before a limit changes.
+# Headless results are visual/counter evidence, never performance evidence.
 #
 # The package poses a rig's compiled model document through `rig-c/core` (a
-# devDependency pinned to one version and bundled into the build), and since
-# #63 nothing in the repository reads a Spine runtime either: the gate is the
-# package's own two render modes drawing the same picture (tests/parity.spec.ts)
-# plus the renderer's counters and probes. There is no spine-core matrix to run —
-# the four columns this file used to carry measured the generation seam #60
-# deleted — and a pose doubt is a rigc issue, answered by rig-c's own gate.
+# devDependency pinned to one version and bundled into the build). Internal
+# parity and counters remain, while #39 adds an independent official WebGL
+# pixel oracle as dev-only tooling on both browser projects. There is no old
+# spine-core generation matrix: the official reader matches the paired fixture
+# export, and a pose doubt remains a rigc issue answered by rig-c's own gate.
 name: ci
 
 on:
@@ -55,6 +55,16 @@ jobs:
           name: test-results
           path: test-results/
           if-no-files-found: ignore
+      # Retain the measured Linux raster/counter evidence on green runs too.
+      # A passing macOS-derived budget alone is not a Linux calibration record.
+      - if: ${{ success() || failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-oracle-evidence
+          path: |
+            test-results/oracle-*/
+            test-results/bench-oracle-*/
+          if-no-files-found: error
       # The dump is the point of such a run, so it must be uploaded whether the
       # suite ends green or red. Two Actions rules shape the condition:
       #   1. a step `if:` with no status function means `success() && <expr>`,

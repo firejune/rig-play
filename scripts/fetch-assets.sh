@@ -12,8 +12,8 @@
 #
 # Each build lands in `public/rigs/<name>/` with everything side by side:
 # `skeleton.model.json` (what the player loads), the Spine pair `rigc build`
-# writes beside it (`skeleton.json` + `skeleton.atlas`; nothing here reads
-# them) and the pages, whose paths the build writes relative to that directory.
+# writes beside it (`skeleton.json` + `skeleton.atlas`, independently read by
+# the development pixel oracle) and the pages relative to that directory.
 set -euo pipefail
 
 # --- the rigc gallery builds -------------------------------------------------
@@ -138,6 +138,28 @@ test_rig() {
 test_rig figure figure
 test_rig figure figure-packed --pack
 rm -rf "$RIGS_DEST/figure-packed/parts"
+# Independent pixel oracle: the same authored figure compiled against original
+# PMA PNG bytes, not a model/frame modified by the renderer under test.
+ORACLE_PMA_GENERATOR="$ROOT/tests/rigs/make_oracle_pma.ts"
+ORACLE_PMA_SOURCE="$RIGS_DEST/figure-packed"
+ORACLE_PMA_OUT="$RIGS_DEST/figure-pma"
+ORACLE_PMA_STAMP="$RIGC_TAG $(digest "$TEST_RIGS_SRC/figure") $(shasum -a 256 "$ORACLE_PMA_GENERATOR" "$ORACLE_PMA_SOURCE/skeleton.atlas" "$ORACLE_PMA_SOURCE/skeleton.png" | shasum -a 256 | cut -d' ' -f1)"
+if have "$ORACLE_PMA_OUT" && [ -s "$ORACLE_PMA_OUT/art/pma-page.png" ] && [ "$(cat "$ORACLE_PMA_OUT/.source" 2>/dev/null || true)" = "$ORACLE_PMA_STAMP" ]; then
+  echo "have test rig figure-pma"
+else
+  require_rigc
+  ORACLE_PMA_INPUT="$(mktemp -d)"
+  trap 'rm -rf "$ORACLE_PMA_INPUT"' EXIT
+  if ! bun "$ORACLE_PMA_GENERATOR" "$TEST_RIGS_SRC/figure" "$ORACLE_PMA_SOURCE" "$ORACLE_PMA_INPUT"; then
+    rm -rf "$ORACLE_PMA_INPUT"
+    exit 1
+  fi
+  build "$ORACLE_PMA_INPUT" "$ORACLE_PMA_OUT" --atlas-in art/pma.atlas
+  rm -rf "$ORACLE_PMA_INPUT" "$ORACLE_PMA_OUT/parts"
+  trap - EXIT
+  rm -f "$ORACLE_PMA_OUT/art/pma.atlas"
+  printf '%s' "$ORACLE_PMA_STAMP" > "$ORACLE_PMA_OUT/.source"
+fi
 test_rig glow glow
 test_rig glow glow-packed --pack
 rm -rf "$RIGS_DEST/glow-packed/parts"

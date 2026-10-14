@@ -944,23 +944,17 @@ deterministic captures.
 bun run test   # builds + serves the demo, then runs chromium + webkit
 ```
 
-Playwright drives the demo (`tests/`, config in `playwright.config.ts`; CI
-runs the same suite on ubuntu, one job). Every scene is a rig built by
-`rigc build` and posed by `rig-c/core` through `RigPlayer` — rigc's gallery rigs,
-and three test rigs authored in this repository (`tests/rigs/`) for what the
-gallery does not carry: `figure` (clipping attachments in rigc's format —
-convex, inverse, nested, whole-skeleton — rigid parts on turned bones, two grid
-meshes), `glow` (additive slots with slot colours over two weighted meshes) and
-`turned` (a region packed turned 90° on a hand-packed page). No Spine runtime
-is installed or compared against: the pose is rig-c's, held to spine-core at
-tolerance 0 by rig-c's own CI, and a pose doubt is a rigc issue. The visual
-checks are **A/B within one run**: no golden snapshots are committed (they rot
-across platforms/GPUs) — instead the same deterministic pose (`?time` +
-`?timescale=0`) is screenshotted twice in the same engine and the buffers are
-diffed directly with a shift-tolerant comparison, so missing parts, wrong
-colors, and tint/blend/clip divergence fail regardless of platform.
+Playwright drives rigc-built gallery and procedural test rigs through the
+production `RigPlayer`; its pose comes from `rig-c/core`. CI runs the same
+suite on Ubuntu with Chromium and WebKit. Internal parity captures the same
+deterministic pose in two modes/backends within one engine. An independent
+development oracle also reads the paired Spine export through the official
+WebGL runtime. No snapshot goldens are committed. Residue limits are measured
+per engine, case and renderer; an A/B design alone does not make a measured
+budget portable to another platform. Pose discrepancies remain rigc issues;
+the independent oracle checks the resulting raster.
 
-**The picture gate** is the two render modes drawing the same picture: every
+**Internal picture parity** checks the two render modes drawing the same picture: every
 scene captured in the DOM mode and in the canvas mode and diffed — bad pixels at
 most 1.5% of drawn content on the test-rig scenes (measured floors 0.007–0.524%,
 macOS Chromium; each scene's own feature dropped from the canvas mode — tint,
@@ -996,16 +990,54 @@ resolving, so blob ownership — every unpacked URL freed, nothing the caller
 owns touched, nothing stranded by a failed load — is asserted rather than
 assumed.
 
-## Benchmark: DOM mode vs canvas mode
+### Independent official raster oracle
+
+`tests/oracle.spec.ts` compares real DOM WebGL, DOM canvas2d and whole-canvas
+output with `@esotericsoftware/spine-webgl` 4.3.13. The official reader parses
+the same build's Spine JSON, atlas and original PNGs independently; it never
+receives a `PosedFrame` or the player's alpha-corrected textures. JSON SHA-256
+binds the export to the compiled model, and generation/page dimensions fail
+closed. Both posers receive the same fixed-step history, crop, origin, scale
+and DPR 1; world geometry must agree exactly before raster acceptance.
+
+Captures include the actual images, element canvases, CSS transforms, tint
+and clipping. Transparent RGB remains diagnostic, except for additional narrow
+raw checks on the whole-canvas PMA case. Acceptance compares those
+same captured bytes on black and white backgrounds with the shared pixel
+differ, and separately constrains alpha coverage, sum, unequal-pixel count
+and maximum. `tests/oracleLimits.ts` stores measured engine/case/mode floors:
+zero stays exact; nonzero counts receive 10% plus two units, and nonzero byte
+maxima one byte. Tests never regenerate limits from the image under test.
+
+Cases cover geometry, tint, clipping, draw order with multiply/screen,
+rotated/named regions, additive glow and an original-PMA twin. Named UV and
+rotation coverage uses native scale: measured half-scale checker sampling
+has additional residue, so arbitrary-scale pixel identity is not claimed.
+The shared #37 negative control makes the player's loader ignore true PMA
+flags while leaving the input files and official reader unchanged. All three
+own renderers fail on both engines, then pass after restoration. Original PMA
+PNG bytes are encoded before either reader sees them.
+
+The reference uses `antialias:false`, `preserveDrawingBuffer:true` and the
+official `pmaAdditiveBatching:false` option to retain additive coverage in
+transparent captures. Initialization finishes model/region extraction before
+official page uploads, avoiding a measured concurrent WebKit initialization
+artifact. Use the required nova-run guard and a unique `TEST_PORT` for a
+focused `bun run test tests/oracle.spec.ts --workers=1`; full-suite acceptance
+remains CI. Headless results are raster evidence, never device performance.
+
+## Benchmark: DOM, canvas and official WebGL
 
 ```bash
 bun run bench:dev     # the page, for a person to watch (and for Safari)
 bun run bench         # drives it in a headed Chromium and writes a report
+bun run bench --headless # counters only; all timing fields are null
 ```
 
 `bench/` is a separate vite project — not part of the library, and not part of
-what `bun run build` emits — that plays the same rigc gallery build in both
-render modes side by side, each with its own stats line in the demo's style.
+what `bun run build` emits — that compares DOM, whole-canvas and the independent
+official WebGL reader, each with its own stats line. The paired JSON hash must
+match the model before an official comparison can publish readings.
 Scenes by query string: `?scene=mesh` (`portrait-packed` turning its head, the
 deform tier working every frame), `?scene=held` (the same pose frozen, where
 unchanged meshes reuse their raster and an unchanged frame is reused),
@@ -1016,7 +1048,7 @@ something you can see), laid out on one grid whose per-rig scale shrinks with
 the column count, so a step up in count adds rigs rather than cropping the ones
 already there.
 
-**The two sides draw the same picture.** Both place rigs with one derivation and
+**The comparison uses the same framing.** All paths place rigs with one derivation and
 clip each to the same rect — the pane for a grid, the rig's own cell for `many`
 — with `overflow: hidden` on a box, the way a page embeds a player, and then
 *check* it: each side reports `origin Δpx`, the largest gap between where the
@@ -1024,9 +1056,12 @@ grid puts a rig and where that side drew it, and the report table carries it per
 row. (`contain: layout paint` is deliberately not used: paint containment clips
 to the same edge `overflow: hidden` does, and what it adds past the clip — a
 stacking context, a containing block, an independent formatting context —
-changes how one side is composited and buys the comparison nothing.) Both modes
-share the package's single WebGL context however many players there are; the
-canvas side's stats line says how many contexts the page holds.
+changes how one side is composited and buys the comparison nothing.) Production
+modes retain the package's shared WebGL context. Official grid scenes batch
+all skeletons through one context; only `many` uses independent contexts.
+Official surviving contexts and drawn players are counted separately from
+requested players. Production survival counters are null where its public
+API cannot measure them, rather than treating requested counts as survivors.
 
 `scripts/bench.mjs` walks `bench/scenes.json`, opens each scene in a **headed**
 Chromium (a hidden page throttles `requestAnimationFrame`, so a headless
@@ -1034,15 +1069,20 @@ reading would be the browser's power policy rather than either mode's cost),
 runs a fixed number of frames per mode — one at a time, because rAF has a single
 cadence per document — and writes JSON plus a markdown table with the
 conditions attached: browser version, device pixel ratio, window size, GPU
-string, and the load average before and after. Over a threshold it stamps the
+string, and the load average before and after. A software or unidentified GPU
+invalidates a headed timing report. Over a load threshold it stamps the
 whole report `INVALID: load average too high` and exits non-zero, because a
 benchmark on a busy machine measures the machine. `--corpus <dir>` points it at
-local rigc builds that never enter this repository.
+local rigc builds that never enter this repository. `--headless` instead steps
+fixed frames and records counters only: FPS, pose/render timing and GPU fields
+are null, with “측정 불가: 헤드리스” in JSON and the table. The official
+additive-batching and drawing-buffer settings are recorded as conditions.
 
-> **Numbers pending.** No comparison table is published yet. A reading taken on
+> **Performance numbers pending.** Counter reports establish the instrument,
+> not a performance comparison. A timing reading taken on
 > a loaded machine, a CI runner or a headless browser would not be worth
 > printing. The table will be taken the way every other number in this README
-> was: the two stats lines read on a real device, on a quiet machine, per scene
+> was: the stats lines read on a real device, on a quiet machine, per scene
 > and per engine — including Safari, which stays manual because no automation
 > preserves what is being measured there. Until then the instrument exists and
 > the measurement does not.
@@ -1086,12 +1126,16 @@ so here is what is true of this package and this repository, stated plainly:
    `rig-c/core` (MIT), which poses rigc's model document; no part of the
    [Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes) is in it or
    required beside it.
-2. This repository links no Spine runtime either, since #63: no package of Esoteric
-   Software's npm scope is a dependency of any kind, and the lockfile names none.
-   `tests/package.spec.ts` asserts both.
+2. Development tooling pins `@esotericsoftware/spine-webgl` 4.3.13 and its matching
+   spine-core dependency for the independent oracle and comparison/benchmark.
+   The [Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license)
+   covers those runtimes, not this project's MIT license. They remain outside
+   production source, the public API and the library package; package guards
+   and the library-only pack allowlist hold that boundary.
 3. `rigc build`, which this repository runs to make its fixtures, also writes Spine
    skeleton data (`skeleton.json` and `skeleton.atlas`) beside each model document.
-   Nothing here reads it, and it is neither committed nor published.
+   Development tooling reads this paired export independently. Generated fixtures
+   remain gitignored and excluded from the library package. See [NOTICE.md](NOTICE.md).
 4. A product that plays that Spine data with a Spine Runtime has integrated the Spine
    Runtimes, whose licence permits it **under Section 2 of the
    [Spine Editor License Agreement](https://esotericsoftware.com/spine-editor-license)**,

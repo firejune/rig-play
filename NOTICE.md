@@ -11,20 +11,24 @@ document `rigc build` writes. No part of the
 [Spine Runtimes](https://github.com/EsotericSoftware/spine-runtimes) is in it,
 imported by it, or required beside it.
 
-**This repository links no Spine runtime either**, since #63.
-`@esotericsoftware/spine-core` and `@esotericsoftware/spine-webgl` are not
-dependencies of any kind — not `dependencies`, not `peerDependencies`, not
-`devDependencies` — and no lockfile entry names them. The test suite and the
-benchmark compare the package's two render modes with each other; the poses
-are rig-c's, held to the Spine runtime by rig-c's own CI, not here.
-`tests/package.spec.ts` asserts all of that, and that nothing the published
-package contains names an `@esotericsoftware/` package.
+**Development tooling uses the official Spine WebGL runtime.** Issue #39
+reintroduces `@esotericsoftware/spine-webgl` 4.3.13 as a pinned devDependency,
+with its matching `@esotericsoftware/spine-core` dependency, for the independent
+pixel oracle and comparison/benchmark tooling. These are licensed under the
+[Spine Runtimes License Agreement](https://esotericsoftware.com/spine-runtimes-license),
+updated April 5, 2025, copyright 2013–2025 Esoteric Software LLC; they are not
+covered by this project's MIT licence. Their licence and copyright notices
+apply to use and redistribution of that tooling. The earlier removal in #63
+remains the history of the production player: no runtime is added back to its
+public API or published library. `tests/package.spec.ts` checks the exact
+development exception and the runtime-free shipped code and declarations.
 
 One thing in this repository is Spine data, and it is worth stating where it
 sits. `rigc build`, which `scripts/fetch-assets.sh` runs to make the fixtures,
 writes **Spine skeleton data** (`skeleton.json` and `skeleton.atlas`) beside
-each model document, into the gitignored `public/rigs/`. Nothing here reads
-it, and it is neither committed nor published.
+each model document, into the gitignored `public/rigs/`. The development oracle
+and comparison tooling read that paired export independently of the model
+reader. These generated files are neither committed nor published in the package.
 
 ### What that means, as a chain of facts
 
