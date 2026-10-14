@@ -133,13 +133,18 @@ function float32HalfUlp(value: number): number {
 }
 
 /** A translated coordinate may differ only by its Float32 rounding (#130). */
-function sameMeshCoordinate(relative: number, cached: number, world: number, cachedOrigin: number, offset: number): boolean {
+function sameMeshCoordinate(relative: number, cached: number, world: number, offset: number): boolean {
   if (relative === cached) return true;
   // No translation on this axis: a deformation stays an exact comparison,
   // even when the other axis moves. Both origins are integer bbox corners.
   if (offset === 0) return false;
-  const tolerance = Math.max(float32HalfUlp(world), float32HalfUlp(cached + cachedOrigin));
-  return Math.abs(relative - cached) <= tolerance;
+  // The current coordinate defines the available precision: a large old
+  // coordinate must not lend its coarse quantum to new, precise geometry.
+  const tolerance = float32HalfUlp(world);
+  const residual = Math.abs(relative - cached);
+  // A nearest-integer identity is unique only strictly inside half a pixel;
+  // a large Float32 quantum cannot turn integer deformation into translation.
+  return residual < 0.5 && residual <= tolerance;
 }
 
 type SlotKind = 'image' | 'canvas';
@@ -672,8 +677,9 @@ export class DomRenderer {
     // sequence of tolerated changes could keep moving the comparison anchor.
     // Whole-pixel translations can leave a vertex off the integer by Float32
     // rounding at a world-coordinate exponent boundary (#130). Allow at most
-    // max(old,new) half-ULP on a translated axis, rather than a visual epsilon
-    // or the sum of two rounding allowances. The one shared bbox offset keeps
+    // the current coordinate's half-ULP on a translated axis, strictly below
+    // half a pixel. Borrowing an old, larger quantum would erase newly precise
+    // deformation when moving toward zero. The one shared bbox offset keeps
     // a different integer move of one vertex a deformation, not a translate.
     if (view.meshVertices.length < count) {
       view.meshVertices = new Float64Array(count);
@@ -684,8 +690,8 @@ export class DomRenderer {
       const offsetX = minX - view.meshOriginX;
       const offsetY = minY - view.meshOriginY;
       for (let v = 0; v < count && !dirty; v += 2) {
-        dirty = !sameMeshCoordinate(vertices[v] - minX, rel[v], vertices[v], view.meshOriginX, offsetX)
-          || !sameMeshCoordinate(vertices[v + 1] - minY, rel[v + 1], vertices[v + 1], view.meshOriginY, offsetY);
+        dirty = !sameMeshCoordinate(vertices[v] - minX, rel[v], vertices[v], offsetX)
+          || !sameMeshCoordinate(vertices[v + 1] - minY, rel[v + 1], vertices[v + 1], offsetY);
       }
     }
 

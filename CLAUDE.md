@@ -254,8 +254,10 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   permanently re-rastering. Cache the vertices and their integer bbox origin
   together only when rasterized, so tolerated differences cannot accumulate by
   moving the comparison anchor. On a translated axis, compare against that raster
-  within the larger of the old and new world coordinate's Float32 half-ULPs;
-  an untranslated axis stays exact. Every vertex uses the same bbox translation,
+  within the current world coordinate's Float32 half-ULP, strictly below half a
+  pixel. Never borrow the old coordinate's coarser precision: moving toward zero
+  must not hide newly representable deformation. An untranslated axis stays exact.
+  Every vertex uses the same bbox translation,
   and genuine fractional motion still invalidates the raster (#130).
 - Mesh canvas backing is **grow-only, quantized, with 25% slack** — writing
   `canvas.width` recreates the GPU surface, and doing that per frame stalled

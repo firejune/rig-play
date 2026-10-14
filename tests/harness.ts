@@ -1476,6 +1476,12 @@ export interface MeshRoundingDeformProbeResult {
     anchor: MeshContractSnapshot[];
     stationary: MeshContractSnapshot[];
     orthogonal: MeshContractSnapshot[];
+    integerDeform: MeshContractSnapshot[];
+    integerDeformWidths: number[];
+    fractionalDeform: MeshContractSnapshot[];
+    fractionalDeformWidths: number[];
+    halfPixelTie: MeshContractSnapshot[];
+    halfPixelTieWidths: number[];
     shapeChanges: number[][];
   }>;
 }
@@ -1486,13 +1492,14 @@ async function meshRoundingDeformProbe(): Promise<MeshRoundingDeformProbeResult>
   const runs: MeshRoundingDeformProbeResult['runs'] = [];
   try {
     for (const backend of ['canvas2d', 'webgl'] as const) {
-      const sequence = (states: Array<{ x: number; y: number; stretch: number }>): { snapshots: MeshContractSnapshot[]; changes: number[][] } => {
+      const sequence = (states: Array<{ x: number; y: number; stretch: number }>): { snapshots: MeshContractSnapshot[]; changes: number[][]; widths: number[] } => {
         const root = makeGlRoot();
         const player = new RigPlayer(root, assets, { meshBackend: backend });
         const renderer = player.renderer as DomRenderer;
         renderer.pixelRatio = 1;
         const snapshots: MeshContractSnapshot[] = [];
         const changes: number[][] = [];
+        const widths: number[] = [];
         let firstVertices: readonly number[] | null = null;
         try {
           player.play('shift', { loop: false });
@@ -1510,10 +1517,11 @@ async function meshRoundingDeformProbe(): Promise<MeshRoundingDeformProbeResult>
             if (mesh.kind !== 'mesh') throw new Error('duo sheet is not a mesh');
             if (!firstVertices) firstVertices = [...mesh.vertices];
             changes.push(mesh.vertices.map((v, i) => v - firstVertices![i]));
+            widths.push(Math.fround(mesh.vertices[2]) - Math.fround(mesh.vertices[0]));
             player.draw();
             snapshots.push(meshContractSnapshot(renderer, root));
           }
-          return { snapshots, changes };
+          return { snapshots, changes, widths };
         } finally {
           player.dispose();
           root.remove();
@@ -1521,12 +1529,12 @@ async function meshRoundingDeformProbe(): Promise<MeshRoundingDeformProbeResult>
       };
       // Moving farther from zero enlarges the Float32 quantum. Returning
       // with accumulated right-edge stretch must compare with the original
-      // raster's coordinates, not the intervening frame that was reused.
+      // raster's geometry, not the intervening frame that was reused.
       const anchor = sequence([
         { x: -90, y: 100, stretch: 0 },
         { x: -200, y: 100, stretch: 1e-8 },
-        { x: -97, y: 105, stretch: 4e-8 },
-        { x: -97, y: 105, stretch: 4e-8 },
+        { x: -97, y: 105, stretch: 2e-8 },
+        { x: -97, y: 105, stretch: 2e-8 },
       ]);
       // A stationary axis stays exact, even below its half-ULP allowance:
       // these stretches produce a one-ULP change at the x≈-26 corner.
@@ -1538,7 +1546,30 @@ async function meshRoundingDeformProbe(): Promise<MeshRoundingDeformProbeResult>
         { x: -90, y: 100, stretch: 0 },
         { x: -90, y: 105, stretch: 1e-8 },
       ]);
-      runs.push({ backend, anchor: anchor.snapshots, stationary: stationary.snapshots, orthogonal: orthogonal.snapshots, shapeChanges: anchor.changes });
+      // Above 2^24, old half-ULP is a whole pixel. Returning to a small
+      // coordinate with a +1px right-edge deformation must still rasterize:
+      // the shared integer translation cannot absorb a different integer
+      // displacement of one vertex (#130 independent review).
+      const integerDeform = sequence([
+        { x: 2 ** 24 + 64, y: 100, stretch: 0 },
+        { x: 164, y: 100, stretch: 1 / 128 },
+      ]);
+      // Strictly less than half a pixel alone is insufficient: the current
+      // small coordinate must refuse this newly representable quarter pixel.
+      const fractionalDeform = sequence([
+        { x: 2 ** 24 + 64, y: 100, stretch: 0 },
+        { x: 164, y: 100, stretch: 1 / 512 },
+      ]);
+      // At 2^23 the half-ULP is 0.5: a shape exactly half a pixel from
+      // the old raster has no unique nearest-integer offset and must redraw.
+      const halfPixelTie = sequence([
+        { x: 200, y: 0, stretch: 1 / 256 },
+        { x: 2 ** 23 + 64, y: 0, stretch: 1 / 256 },
+      ]);
+      runs.push({ backend, anchor: anchor.snapshots, stationary: stationary.snapshots, orthogonal: orthogonal.snapshots,
+        integerDeform: integerDeform.snapshots, integerDeformWidths: integerDeform.widths,
+        fractionalDeform: fractionalDeform.snapshots, fractionalDeformWidths: fractionalDeform.widths,
+        halfPixelTie: halfPixelTie.snapshots, halfPixelTieWidths: halfPixelTie.widths, shapeChanges: anchor.changes });
     }
     return { runs };
   } finally {

@@ -132,8 +132,8 @@ default stays `dom`.
 - ✅ DPR-aware mesh canvas backing store: `renderer.pixelRatio` (defaults to
   `devicePixelRatio`; if you scale the root element, fold that scale in)
 - ✅ Dirty-skip: a mesh whose canvas-space vertices match the last raster reuses it;
-  whole-pixel translations allow at most half a Float32 ULP at the larger of the
-  old and new world-coordinate magnitudes. CSS still tracks the translation, while
+  whole-pixel translations allow at most half a Float32 ULP at the current world
+  coordinate, strictly less than half a pixel. CSS still tracks the translation, while
   stationary axes stay exact and the comparison anchor changes only on a redraw.
   10 frozen spineboys: WebKit ~141 → ~0.5 ms/frame
 - ✅ Clipping attachments as element-level CSS `clip-path`: spine-core's semantics

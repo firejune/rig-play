@@ -134,6 +134,19 @@ test('rounding allowances stay anchored to the last raster and a stationary axis
     counters(run.anchor[1], 0, 1);
     counters(run.anchor[2], 1, 0);
     counters(run.anchor[3], 0, 1);
+    // Authored width128 gains exactly128*(1/128)=1px at the right edge.
+    expect(run.integerDeformWidths).toEqual([128, 129]);
+    expect(run.integerDeform).toHaveLength(2);
+    counters(run.integerDeform[0], 1, 0, 1);
+    counters(run.integerDeform[1], 1, 0);
+    expect(run.fractionalDeformWidths).toEqual([128, 128.25]);
+    expect(run.fractionalDeform).toHaveLength(2);
+    counters(run.fractionalDeform[0], 1, 0, 1);
+    counters(run.fractionalDeform[1], 1, 0);
+    expect(run.halfPixelTieWidths).toEqual([128.5, 128]);
+    expect(run.halfPixelTie).toHaveLength(2);
+    counters(run.halfPixelTie[0], 1, 0, 1);
+    counters(run.halfPixelTie[1], 1, 0);
     for (const sequence of [run.stationary, run.orthogonal]) {
       expect(sequence).toHaveLength(2);
       counters(sequence[0], 1, 0, 1);
@@ -142,7 +155,7 @@ test('rounding allowances stay anchored to the last raster and a stationary axis
     // The real hook deforms the right edge, not just the whole mesh's
     // position: ±64 plus the matching translation produce 128*stretch.
     expect(run.shapeChanges).toHaveLength(4);
-    for (const [step, stretch] of [[1, 1e-8], [2, 4e-8]] as const) {
+    for (const [step, stretch] of [[1, 1e-8], [2, 2e-8]] as const) {
       const deltas = run.shapeChanges[step];
       const rightMinusLeft = deltas[2] - deltas[0];
       expect(rightMinusLeft).toBeCloseTo(128 * stretch, 10);
