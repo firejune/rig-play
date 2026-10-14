@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/rig-c/play/compare/v1.10.0...v1.10.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* reuse mesh rasters across Float32-rounded integer translations ([9ff9862](https://github.com/rig-c/play/commit/9ff9862a3938103b4789e2a898ff5f493c3e5431))
+
 ## [1.10.0](https://github.com/rig-c/play/compare/v1.9.2...v1.10.0) (2026-10-13)
 
 
