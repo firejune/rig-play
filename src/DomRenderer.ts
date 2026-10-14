@@ -125,6 +125,23 @@ function clipNum(v: number): number {
  */
 const CLIP_COORD_LIMIT = 1e9;
 
+/** Half the Float32 spacing at a world coordinate, including zero/subnormals. */
+function float32HalfUlp(value: number): number {
+  // Invalid coordinates must never acquire an infinite comparison allowance.
+  if (!Number.isFinite(value)) return 0;
+  return 2 ** (Math.max(-149, Math.floor(Math.log2(Math.abs(value))) - 23) - 1);
+}
+
+/** A translated coordinate may differ only by its Float32 rounding (#130). */
+function sameMeshCoordinate(relative: number, cached: number, world: number, cachedOrigin: number, offset: number): boolean {
+  if (relative === cached) return true;
+  // No translation on this axis: a deformation stays an exact comparison,
+  // even when the other axis moves. Both origins are integer bbox corners.
+  if (offset === 0) return false;
+  const tolerance = Math.max(float32HalfUlp(world), float32HalfUlp(cached + cachedOrigin));
+  return Math.abs(relative - cached) <= tolerance;
+}
+
 type SlotKind = 'image' | 'canvas';
 
 interface SlotView {
@@ -174,6 +191,9 @@ interface SlotView {
    * permanently "dirty".
    */
   meshVertices: Float64Array;
+  /** Integer bbox origin of that same last raster, never the last reused frame. */
+  meshOriginX: number;
+  meshOriginY: number;
   /** The render() call that last drew this view — a view not drawn by the current one is hidden. */
   drawnIn: number;
 }
@@ -648,22 +668,25 @@ export class DomRenderer {
       dirty = true;
     }
 
-    // Canvas-space vertices: identical values mean last frame's raster is
-    // still exact (static pose, or the part moved by whole pixels), so the
-    // per-triangle redraw can be skipped — the CSS translate below keeps
-    // tracking the part. This is the main WebKit cost lever: idle skeletons
-    // stop paying the raster entirely.
+    // Compare with the actual last raster, not the last frame: otherwise a
+    // sequence of tolerated changes could keep moving the comparison anchor.
+    // Whole-pixel translations can leave a vertex off the integer by Float32
+    // rounding at a world-coordinate exponent boundary (#130). Allow at most
+    // max(old,new) half-ULP on a translated axis, rather than a visual epsilon
+    // or the sum of two rounding allowances. The one shared bbox offset keeps
+    // a different integer move of one vertex a deformation, not a translate.
     if (view.meshVertices.length < count) {
       view.meshVertices = new Float64Array(count);
       dirty = true;
     }
     const rel = view.meshVertices;
-    for (let v = 0; v < count; v += 2) {
-      const x = vertices[v] - minX;
-      const y = vertices[v + 1] - minY;
-      if (rel[v] !== x || rel[v + 1] !== y) dirty = true;
-      rel[v] = x;
-      rel[v + 1] = y;
+    if (!dirty) {
+      const offsetX = minX - view.meshOriginX;
+      const offsetY = minY - view.meshOriginY;
+      for (let v = 0; v < count && !dirty; v += 2) {
+        dirty = !sameMeshCoordinate(vertices[v] - minX, rel[v], vertices[v], view.meshOriginX, offsetX)
+          || !sameMeshCoordinate(vertices[v + 1] - minY, rel[v + 1], vertices[v + 1], view.meshOriginY, offsetY);
+      }
     }
 
     this.setTransform(view, `translate(${minX}px,${minY}px)`);
@@ -676,6 +699,13 @@ export class DomRenderer {
     if (!dirty) {
       this.meshReuseCount++;
     } else {
+      // Commit geometry and its world origin together only when rasterized.
+      for (let v = 0; v < count; v += 2) {
+        rel[v] = vertices[v] - minX;
+        rel[v + 1] = vertices[v + 1] - minY;
+      }
+      view.meshOriginX = minX;
+      view.meshOriginY = minY;
       view.meshUvs = uvs;
       view.meshTriangles = triangles;
       view.meshPage = page;
@@ -1112,6 +1142,8 @@ export class DomRenderer {
         meshVertexCount: -1,
         meshBackendDrawn: '',
         meshVertices: new Float64Array(0),
+        meshOriginX: 0,
+        meshOriginY: 0,
         drawnIn: 0,
       };
       this.views.set(slot, view);

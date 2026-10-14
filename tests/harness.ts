@@ -223,7 +223,8 @@ export interface RigPlayHarness {
   backingProbe(): Promise<BackingProbeResult>;
   meshSwitchProbe(): Promise<MeshSwitchProbeResult>;
   movingMeshClipProbe(): Promise<MovingMeshClipProbeResult>;
-  heldMeshTranslateProbe(): Promise<HeldMeshTranslateProbeResult>;
+  heldMeshTranslateProbe(options?: { startX?: number; moveX?: number; moveY?: number }): Promise<HeldMeshTranslateProbeResult>;
+  meshRoundingDeformProbe(): Promise<MeshRoundingDeformProbeResult>;
   scaledStageProbe(): Promise<ScaledStageProbeResult>;
   sharedAssetsProbe(): Promise<SharedAssetsProbeResult>;
   cutConcurrencyProbe(): Promise<CutConcurrencyProbeResult>;
@@ -1388,23 +1389,22 @@ export interface HeldMeshTranslateProbeResult {
   }>;
 }
 
-/** #113/18: move duo's held sheet through the core adjust hook, not an invented frame. */
-async function heldMeshTranslateProbe(): Promise<HeldMeshTranslateProbeResult> {
+/** #113/18, #130: move duo's held sheet through the core adjust hook. */
+async function heldMeshTranslateProbe(options: { startX?: number; moveX?: number; moveY?: number } = {}): Promise<HeldMeshTranslateProbeResult> {
   const assets = await loadRig('duo');
   const runs: HeldMeshTranslateProbeResult['runs'] = [];
+  const startX = options.startX ?? 90;
+  const moveX = options.moveX ?? 7;
+  const moveY = options.moveY ?? 5;
   try {
     for (const backend of ['canvas2d', 'webgl'] as const) {
       const root = makeGlRoot();
-      // Keep the sheet's four X coordinates away from Float32 rounding
-      // boundaries: at authored x=90, the left edge's 26→33 crosses an
-      // exponent boundary and the core's cos(90°) residue survives on only
-      // one side. x=200 makes the raster-space translation exactly integral.
-      // known: rig-c/play#130, Float32 off-integer offset. The diagnostic's
-      // one redraw at x=90 is tracked for removal; its expected redraw count
-      // is 0 after #130 is fixed, rather than a contract to preserve.
+      // #130 restores the original x=90 regression: 26→33 crosses a
+      // Float32 exponent boundary and one measured delta is 7 + 2^-19.
+      // It must reuse, as must the x=200 exact-translation control.
       const player = new RigPlayer(root, assets, {
         meshBackend: backend,
-        adjust: (bones) => { bones.bone('sheet').x = 200; },
+        adjust: (bones) => { bones.bone('sheet').x = startX; },
       });
       const renderer = player.renderer as DomRenderer;
       renderer.pixelRatio = 1;
@@ -1418,22 +1418,23 @@ async function heldMeshTranslateProbe(): Promise<HeldMeshTranslateProbeResult> {
         const ctx = canvas.getContext('2d');
         if (!ctx) throw new Error('duo sheet has no 2d blit context');
         const original = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-        const beforeMatrix = new DOMMatrix(getComputedStyle(canvas).transform);
+        // Computed matrix() serialization rounds large coordinates to a few
+        // significant digits; the inline translate retains the exact pixels.
+        const beforeMatrix = new DOMMatrix(canvas.style.transform);
         const beforeBox = canvas.getBoundingClientRect();
         const timeBefore = player.time;
         const beforeMesh = player.posedFrame(['sheet']).order[0];
         if (beforeMesh.kind !== 'mesh') throw new Error('duo sheet is not a mesh');
-        // A whole-pixel (+7,+5) bone adjustment from (200,100) preserves
-        // shape and time; CSS's Y-down movement is -5.
+        // Defaults are the authored setup (90,100) moved (+7,+5).
         player.adjust = (bones) => {
-          bones.bone('sheet').x = 207;
-          bones.bone('sheet').y += 5;
+          bones.bone('sheet').x = startX + moveX;
+          bones.bone('sheet').y += moveY;
         };
         const afterMesh = player.posedFrame(['sheet']).order[0];
         if (afterMesh.kind !== 'mesh') throw new Error('duo sheet is not a mesh after adjust');
         player.draw();
         const moved = meshContractSnapshot(renderer, root);
-        const movedMatrix = new DOMMatrix(getComputedStyle(canvas).transform);
+        const movedMatrix = new DOMMatrix(canvas.style.transform);
         const movedBox = canvas.getBoundingClientRect();
         const raster = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
         let changedRasterChannels = 0;
@@ -1462,6 +1463,82 @@ async function heldMeshTranslateProbe(): Promise<HeldMeshTranslateProbeResult> {
         player.dispose();
         root.remove();
       }
+    }
+    return { runs };
+  } finally {
+    assets.dispose();
+  }
+}
+
+export interface MeshRoundingDeformProbeResult {
+  runs: Array<{
+    backend: 'canvas2d' | 'webgl';
+    anchor: MeshContractSnapshot[];
+    stationary: MeshContractSnapshot[];
+    orthogonal: MeshContractSnapshot[];
+    shapeChanges: number[][];
+  }>;
+}
+
+/** Real core bone scales hold the left edge and deform only the sheet's right edge. */
+async function meshRoundingDeformProbe(): Promise<MeshRoundingDeformProbeResult> {
+  const assets = await loadRig('duo');
+  const runs: MeshRoundingDeformProbeResult['runs'] = [];
+  try {
+    for (const backend of ['canvas2d', 'webgl'] as const) {
+      const sequence = (states: Array<{ x: number; y: number; stretch: number }>): { snapshots: MeshContractSnapshot[]; changes: number[][] } => {
+        const root = makeGlRoot();
+        const player = new RigPlayer(root, assets, { meshBackend: backend });
+        const renderer = player.renderer as DomRenderer;
+        renderer.pixelRatio = 1;
+        const snapshots: MeshContractSnapshot[] = [];
+        const changes: number[][] = [];
+        let firstVertices: readonly number[] | null = null;
+        try {
+          player.play('shift', { loop: false });
+          player.pause();
+          for (const state of states) {
+            player.adjust = (bones) => {
+              const sheet = bones.bone('sheet');
+              // Authored left/right vertices are ±64: translating by 64s
+              // cancels the left edge's -64s and moves the right edge by 128s.
+              sheet.x = state.x + 64 * state.stretch;
+              sheet.y = state.y;
+              sheet.scaleX = 1 + state.stretch;
+            };
+            const mesh = player.posedFrame(['sheet']).order[0];
+            if (mesh.kind !== 'mesh') throw new Error('duo sheet is not a mesh');
+            if (!firstVertices) firstVertices = [...mesh.vertices];
+            changes.push(mesh.vertices.map((v, i) => v - firstVertices![i]));
+            player.draw();
+            snapshots.push(meshContractSnapshot(renderer, root));
+          }
+          return { snapshots, changes };
+        } finally {
+          player.dispose();
+          root.remove();
+        }
+      };
+      // Moving farther from zero enlarges the Float32 quantum. Returning
+      // with accumulated right-edge stretch must compare with the original
+      // raster's coordinates, not the intervening frame that was reused.
+      const anchor = sequence([
+        { x: -90, y: 100, stretch: 0 },
+        { x: -200, y: 100, stretch: 1e-8 },
+        { x: -97, y: 105, stretch: 4e-8 },
+        { x: -97, y: 105, stretch: 4e-8 },
+      ]);
+      // A stationary axis stays exact, even below its half-ULP allowance:
+      // these stretches produce a one-ULP change at the x≈-26 corner.
+      const stationary = sequence([
+        { x: -90, y: 100, stretch: 0 },
+        { x: -90, y: 100, stretch: 1e-8 },
+      ]);
+      const orthogonal = sequence([
+        { x: -90, y: 100, stretch: 0 },
+        { x: -90, y: 105, stretch: 1e-8 },
+      ]);
+      runs.push({ backend, anchor: anchor.snapshots, stationary: stationary.snapshots, orthogonal: orthogonal.snapshots, shapeChanges: anchor.changes });
     }
     return { runs };
   } finally {
@@ -7093,6 +7170,7 @@ window.rigPlayHarness = {
   meshSwitchProbe,
   movingMeshClipProbe,
   heldMeshTranslateProbe,
+  meshRoundingDeformProbe,
   scaledStageProbe,
   sharedAssetsProbe,
   cutConcurrencyProbe,

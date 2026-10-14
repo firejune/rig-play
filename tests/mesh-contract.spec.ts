@@ -64,7 +64,7 @@ test('a moving clip updates CSS while both still meshes reuse their raster', asy
   }
 });
 
-test('dirty-skip CSS translate tracks a held mesh moved by whole pixels', async ({ page }) => {
+test('dirty-skip CSS translate tracks x90 through a Float32 exponent boundary (#130)', async ({ page }) => {
   const result = await page.evaluate(() => window.rigPlayHarness.heldMeshTranslateProbe());
   expect(result.runs.map(({ backend }) => backend)).toEqual(['canvas2d', 'webgl']);
   for (const run of result.runs) {
@@ -72,7 +72,9 @@ test('dirty-skip CSS translate tracks a held mesh moved by whole pixels', async 
     // without advancing shift. CSS and the laid-out canvas must follow (+7,-5).
     expect(run.slots).toEqual(['sheet']);
     expect(run.time).toEqual([0, 0]);
-    expect(run.vertexDeltas).toEqual([7, 5, 7, 5, 7, 5, 7, 5]);
+    // The original regression's fourth X coordinate rounds by one extra
+    // 2^-19 at 26→33. This is the observed rig input, not desired redraw.
+    expect(run.vertexDeltas).toEqual([7, 5, 7, 5, 7, 5, 7 + 2 ** -19, 5]);
     expect(run.cssDelta).toEqual([7, -5]);
     expect(run.screenDelta).toEqual([7, -5]);
     expect(run.screenSizeUnchanged).toBe(true);
@@ -84,5 +86,66 @@ test('dirty-skip CSS translate tracks a held mesh moved by whole pixels', async 
     expect(run.moved.backing).toEqual(run.first.backing);
     expect(run.changedRasterChannels).toBe(0);
     expect(run.centreAlpha).toBe(255);
+  }
+});
+
+test('integer translations reuse at negative offsets, powers of two and large coordinates', async ({ page }) => {
+  for (const options of [
+    { startX: 200, moveX: 7, moveY: 5 },
+    { startX: -90, moveX: -7, moveY: -5 },
+    { startX: 192, moveX: -7, moveY: 5 },
+    { startX: -192, moveX: 7, moveY: -5 },
+    { startX: 2 ** 20 + 64, moveX: 7, moveY: 5 },
+  ]) {
+    const result = await page.evaluate((options) => window.rigPlayHarness.heldMeshTranslateProbe(options), options);
+    for (const run of result.runs) {
+      counters(run.moved, 0, 1);
+      counters(run.held, 0, 1);
+      // Chromium serializes even inline transforms to ~6 significant
+      // digits near 2^20; the layout below retains the actual 7px move.
+      if (Math.abs(options.startX) < 2 ** 20) expect(run.cssDelta).toEqual([options.moveX, -options.moveY]);
+      expect(run.screenDelta).toEqual([options.moveX, -options.moveY]);
+      expect(run.changedRasterChannels).toBe(0);
+      expect(run.moved.backing).toEqual(run.first.backing);
+    }
+  }
+});
+
+test('a genuine quarter-pixel offset still re-rasters including at large representable coordinates', async ({ page }) => {
+  // At 2^20, Float32 spacing is at most 1/8 across this sheet: 1/4
+  // remains representable and exceeds half-ULP. We make no claim about
+  // sub-pixel information already erased by Float32 at magnitudes >=2^23.
+  for (const startX of [90, 200, -90, 2 ** 20 + 64]) {
+    const result = await page.evaluate((startX) => window.rigPlayHarness.heldMeshTranslateProbe({ startX, moveX: 7.25 }), startX);
+    for (const run of result.runs) {
+      counters(run.moved, 1, 0);
+      counters(run.held, 0, 1);
+      expect(run.moved.backing).toEqual(run.first.backing);
+    }
+  }
+});
+
+test('rounding allowances stay anchored to the last raster and a stationary axis stays exact', async ({ page }) => {
+  const result = await page.evaluate(() => window.rigPlayHarness.meshRoundingDeformProbe());
+  expect(result.runs.map(({ backend }) => backend)).toEqual(['canvas2d', 'webgl']);
+  for (const run of result.runs) {
+    expect(run.anchor).toHaveLength(4);
+    counters(run.anchor[0], 1, 0, 1);
+    counters(run.anchor[1], 0, 1);
+    counters(run.anchor[2], 1, 0);
+    counters(run.anchor[3], 0, 1);
+    for (const sequence of [run.stationary, run.orthogonal]) {
+      expect(sequence).toHaveLength(2);
+      counters(sequence[0], 1, 0, 1);
+      counters(sequence[1], 1, 0);
+    }
+    // The real hook deforms the right edge, not just the whole mesh's
+    // position: ±64 plus the matching translation produce 128*stretch.
+    expect(run.shapeChanges).toHaveLength(4);
+    for (const [step, stretch] of [[1, 1e-8], [2, 4e-8]] as const) {
+      const deltas = run.shapeChanges[step];
+      const rightMinusLeft = deltas[2] - deltas[0];
+      expect(rightMinusLeft).toBeCloseTo(128 * stretch, 10);
+    }
   }
 });

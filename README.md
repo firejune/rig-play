@@ -131,9 +131,11 @@ default stays `dom`.
   not expressible this way and stays out of scope
 - ✅ DPR-aware mesh canvas backing store: `renderer.pixelRatio` (defaults to
   `devicePixelRatio`; if you scale the root element, fold that scale in)
-- ✅ Dirty-skip: a mesh whose canvas-space vertices didn't change reuses last frame's
-  raster — the CSS translate still tracks it, so parts that hold a pose (or move by
-  whole pixels) pay zero raster. 10 frozen spineboys: WebKit ~141 → ~0.5 ms/frame
+- ✅ Dirty-skip: a mesh whose canvas-space vertices match the last raster reuses it;
+  whole-pixel translations allow at most half a Float32 ULP at the larger of the
+  old and new world-coordinate magnitudes. CSS still tracks the translation, while
+  stationary axes stay exact and the comparison anchor changes only on a redraw.
+  10 frozen spineboys: WebKit ~141 → ~0.5 ms/frame
 - ✅ Clipping attachments as element-level CSS `clip-path`: spine-core's semantics
   (one active clip at a time, applied from the clip's slot through its end slot
   inclusive), with the polygon expressed in each element's own local frame — the
