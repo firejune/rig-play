@@ -203,6 +203,11 @@ export interface RegionGeometryProbeResult {
 }
 
 export interface RigPlayHarness {
+  seekContractProbe(): Promise<SeekContractProbeResult>;
+  listenerRemovalProbe(): Promise<ListenerRemovalProbeResult>;
+  publicValuesProbe(): Promise<PublicValuesProbeResult>;
+  canvasCountersProbe(): Promise<CanvasCountersProbeResult>;
+  canvasPmaStage(page: 'straight' | 'pma', backend: 'webgl' | 'canvas2d'): Promise<CanvasPmaStageResult>;
   unpackProbe(): Promise<UnpackProbeResult>;
   regionGeometryProbe(): Promise<RegionGeometryProbeResult>;
   passThroughProbe(): Promise<PassThroughProbeResult>;
@@ -245,6 +250,57 @@ export interface RigPlayHarness {
   environmentProbe(): Promise<EnvironmentProbeResult>;
   darkTintProbe(): Promise<DarkTintProbeResult>;
   darkDomPose(time: number): Promise<number>;
+}
+
+export interface SeekContractProbeResult {
+  cases: Array<{
+    tracks: boolean;
+    beforePlay: string;
+    crossedEvents: string[];
+    crossedCompletes: string[];
+    afterSeekEvents: Array<{ name: string; time: number; int: number; track: number | undefined }>;
+    afterSeekCompletes: Array<{ animation: string; track: number }>;
+    seeks: Array<{ requested: number; actual: number }>;
+  }>;
+  schedules: Array<{ tracks: boolean; step: number | null; poses: number; time: number; frameSame: boolean }>;
+  invalidSteps: Array<{ value: string; message: string }>;
+}
+
+export interface ListenerRemovalProbeResult {
+  cases: Array<{
+    tracks: boolean;
+    before: { removedEvents: string[]; keptEvents: string[]; removedCompletes: string[]; keptCompletes: string[] };
+    after: { removedEvents: string[]; keptEvents: string[]; removedCompletes: string[]; keptCompletes: string[] };
+  }>;
+}
+
+export interface PublicValuesProbeResult {
+  loads: Array<{
+    requested: string;
+    regions: string;
+    stage: ModelAssets['stage'];
+    animations: ModelAssets['animations'];
+    imageOrigins: Array<string | null>;
+    originsAtSrc: Array<string | null>;
+  }>;
+  entries: Array<{ tracks: boolean; before: unknown; otherTrack: unknown; loop: unknown; held: unknown }>;
+}
+
+export interface CanvasCountersProbeResult {
+  topology: Array<{ slot: string; blend: string; triangles: number }>;
+  expectedTriangles: number;
+  cases: Array<{ backend: string; active: string; first: { blends: number; triangles: number }; held: { blends: number; triangles: number; reused: number }; changed: { blends: number; triangles: number }; authored: { blends: number; triangles: number } }>;
+}
+
+export interface CanvasPmaStageResult {
+  backend: string;
+  pagePma: boolean;
+  allSlotsPma: boolean;
+  regions: number;
+  meshes: number;
+  triangles: number;
+  expectedTriangles: number;
+  sourceAudit: { sources: number; mismatches: number; alphaMismatches: number; correctedTexels: number } | null;
 }
 
 export interface EnvironmentProbeResult {
@@ -6189,7 +6245,272 @@ async function environmentProbe(): Promise<EnvironmentProbeResult> {
   return { untouched, tips, throughCore, noPhysicsMaxDiff, beforePlay, afterHalf, afterNull };
 }
 
+/** Seek replays its history silently, in both of the player's track modes. */
+async function seekContractProbe(): Promise<SeekContractProbeResult> {
+  const assets = await loadRig('figure', { regions: 'none' });
+  const root = makeGlRoot();
+  const cases: SeekContractProbeResult['cases'] = [];
+  const schedules: SeekContractProbeResult['schedules'] = [];
+  const invalidSteps: SeekContractProbeResult['invalidSteps'] = [];
+  try {
+    for (const tracks of [false, true]) {
+      const player = new RigPlayer(root, assets, { mode: 'canvas', tracks });
+      try {
+        let beforePlay = '';
+        try { player.seek(0.5); } catch (error) { beforePlay = String(error instanceof Error ? error.message : error); }
+        const events: SeekContractProbeResult['cases'][number]['afterSeekEvents'] = [];
+        const completes: SeekContractProbeResult['cases'][number]['afterSeekCompletes'] = [];
+        player.on('event', (e) => events.push({ name: e.name, time: e.time, int: e.int, track: e.track }));
+        player.on('complete', (c) => completes.push({ ...c }));
+        player.play('walk');
+        const seeks: Array<{ requested: number; actual: number }> = [];
+        for (const time of [3.3, 0.2]) {
+          player.seek(time);
+          seeks.push({ requested: time, actual: player.time });
+        }
+        const crossedEvents = events.map((e) => e.name);
+        const crossedCompletes = completes.map((c) => c.animation);
+        player.advance(0.3); // only the 0.4 key, after the backward seek
+        player.seek(1.5); // the 1.2 key is crossed silently too
+        seeks.push({ requested: 1.5, actual: player.time });
+        player.advance(0.2); // the next completion is live, at 1.6
+        cases.push({ tracks, beforePlay, crossedEvents, crossedCompletes, afterSeekEvents: events, afterSeekCompletes: completes, seeks });
+      } finally { player.dispose(); }
+      for (const step of [undefined, 0.25, 0.125]) {
+        let poses = 0;
+        const player = new RigPlayer(root, assets, { mode: 'canvas', tracks, seekStep: step, adjust: () => { poses++; } });
+        try {
+          player.play('walk');
+          poses = 0; // count only the reopened pose and the seek's steps
+          player.seek(0.625);
+          const expected = poseAt(assets, 'walk', 0.625, { step });
+          schedules.push({ tracks, step: step ?? null, poses, time: player.time, frameSame: JSON.stringify(player.posedFrame()) === JSON.stringify(expected.frame) });
+        } finally { player.dispose(); }
+      }
+    }
+    for (const value of [0, -0.1, NaN]) {
+      let message = '';
+      try {
+        const player = new RigPlayer(root, assets, { mode: 'canvas', seekStep: value });
+        player.dispose();
+      } catch (error) { message = String(error instanceof Error ? error.message : error); }
+      invalidSteps.push({ value: String(value), message });
+    }
+  } finally { root.remove(); assets.dispose(); }
+  return { cases, schedules, invalidSteps };
+}
+
+/** Removing one listener preserves another listener of each event type. */
+async function listenerRemovalProbe(): Promise<ListenerRemovalProbeResult> {
+  const assets = await loadRig('figure', { regions: 'none' });
+  const root = makeGlRoot();
+  const cases: ListenerRemovalProbeResult['cases'] = [];
+  try {
+    for (const tracks of [false, true]) {
+      const player = new RigPlayer(root, assets, { mode: 'canvas', tracks });
+      try {
+        const removedEvents: string[] = [], keptEvents: string[] = [], removedCompletes: string[] = [], keptCompletes: string[] = [];
+        const offEvent = player.on('event', (e) => removedEvents.push(e.name));
+        player.on('event', (e) => keptEvents.push(e.name));
+        const offComplete = player.on('complete', (c) => removedCompletes.push(c.animation));
+        player.on('complete', (c) => keptCompletes.push(c.animation));
+        const snapshot = () => ({ removedEvents: [...removedEvents], keptEvents: [...keptEvents], removedCompletes: [...removedCompletes], keptCompletes: [...keptCompletes] });
+        player.play('nudge', { loop: false });
+        player.advance(1.1);
+        const before = snapshot();
+        offEvent(); offEvent(); offComplete(); offComplete();
+        player.play('nudge', { loop: false });
+        player.advance(1.1);
+        cases.push({ tracks, before, after: snapshot() });
+      } finally { player.dispose(); }
+    }
+  } finally { root.remove(); assets.dispose(); }
+  return { cases };
+}
+
+/** Public loader values, and the clocks of a looped and an unlooped entry. */
+async function publicValuesProbe(): Promise<PublicValuesProbeResult> {
+  const loads: PublicValuesProbeResult['loads'] = [];
+  const entries: PublicValuesProbeResult['entries'] = [];
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+  if (!descriptor?.set || !descriptor.get) throw new Error('HTMLImageElement.src has no accessor');
+  const root = makeGlRoot();
+  let originsAtSrc: Array<string | null> = [];
+  Object.defineProperty(HTMLImageElement.prototype, 'src', {
+    ...descriptor,
+    set(this: HTMLImageElement, value: string) {
+      originsAtSrc.push(this.crossOrigin);
+      descriptor.set?.call(this, value);
+    },
+  });
+  try {
+    for (const options of [
+      { requested: 'default', regions: undefined, crossOrigin: undefined },
+      { requested: 'blob', regions: 'blob' as const, crossOrigin: 'anonymous' },
+      { requested: 'data', regions: 'data' as const, crossOrigin: 'use-credentials' },
+      { requested: 'none', regions: 'none' as const, crossOrigin: 'anonymous' },
+    ]) {
+      originsAtSrc = [];
+      const assets = await loadRig('figure-packed', options);
+      try {
+        loads.push({ requested: options.requested, regions: assets.regions, stage: assets.stage, animations: assets.animations.map((a) => ({ ...a })), imageOrigins: [...assets.pageImages.values()].map((image) => image.crossOrigin), originsAtSrc: [...originsAtSrc] });
+        if (options.regions === 'none') {
+          for (const tracks of [false, true]) {
+            const player = new RigPlayer(root, assets, { mode: 'canvas', tracks });
+            try {
+              const before = player.entry();
+              const otherTrack = player.entry(1);
+              player.play('walk');
+              player.advance(0.25);
+              player.advance(1.5);
+              const loop = player.entry();
+              player.play('nudge', { loop: false });
+              player.advance(1.25);
+              entries.push({ tracks, before, otherTrack, loop, held: player.entry() });
+            } finally { player.dispose(); }
+          }
+        }
+      } finally { assets.dispose(); }
+    }
+  } finally {
+    Object.defineProperty(HTMLImageElement.prototype, 'src', descriptor);
+    root.remove();
+  }
+  return { loads, entries };
+}
+
+/** Exact counters over real un-clipped quads and meshes, including a held redraw. */
+async function canvasCountersProbe(): Promise<CanvasCountersProbeResult> {
+  const assets = await loadRig('glow-packed', { regions: 'none' });
+  const frame = frameAt(assets, 'burn', 0.2);
+  const topology = frame.order.map((s) => ({ slot: s.slot, blend: s.blend, triangles: s.kind === 'region' ? 2 : s.triangles.length / 3 }));
+  const expectedTriangles = topology.reduce((sum, s) => sum + s.triangles, 0);
+  const cases: CanvasCountersProbeResult['cases'] = [];
+  try {
+    for (const backend of ['webgl', 'canvas2d'] as const) {
+      const root = makeGlRoot();
+      const renderer = new CanvasRenderer(root, assets.pageImages);
+      renderer.backend = backend;
+      try {
+        renderer.render(frame);
+        const first = { blends: renderer.blendFlushes, triangles: renderer.trianglesDrawn };
+        renderer.render(frame);
+        const held = { blends: renderer.blendFlushes, triangles: renderer.trianglesDrawn, reused: renderer.framesReused };
+        renderer.render(frameAt(assets, 'burn', 0.3));
+        const changed = { blends: renderer.blendFlushes, triangles: renderer.trianglesDrawn };
+        const authored = frameAt(assets, 'canary', 0.2);
+        renderer.render({ order: authored.order.filter((s) => ['halo', 'body', 'plate'].includes(s.slot)) });
+        cases.push({ backend, active: renderer.backendActive, first, held, changed, authored: { blends: renderer.blendFlushes, triangles: renderer.trianglesDrawn } });
+      } finally { renderer.dispose(); root.remove(); }
+    }
+  } finally { assets.dispose(); }
+  return { topology, expectedTriangles, cases };
+}
+
+let publicPmaRenderer: CanvasRenderer | null = null;
+/** The existing premultiplied artwork fixture through the one-canvas mode. */
+async function canvasPmaStage(page: 'straight' | 'pma', backend: 'webgl' | 'canvas2d'): Promise<CanvasPmaStageResult> {
+  publicPmaRenderer?.dispose();
+  const source = await rigidPageSource();
+  const scene = await pmaScene({ page, backend, animation: 'walk', time: 1.2, skeleton: 'pro', pageScale: 1 });
+  const posed = frameAt(source.assets, 'walk', 1.2);
+  const frame = page === 'pma' ? withPmaSlots(posed) : posed;
+  let stage = document.getElementById('public-pma-stage');
+  if (!stage) {
+    stage = document.createElement('div');
+    stage.id = 'public-pma-stage';
+    stage.style.cssText = `position: absolute; left: 0; top: 0; overflow: hidden; width: ${PMA_STAGE.width}px; height: ${PMA_STAGE.height}px; background: ${PMA_STAGE.background};`;
+    document.body.append(stage);
+  }
+  stage.replaceChildren();
+  const root = document.createElement('div');
+  root.style.cssText = `position: absolute; left: ${PMA_STAGE.originX}px; top: ${PMA_STAGE.originY}px; transform-origin: 0 0; transform: scale(${PMA_STAGE.scale});`;
+  stage.append(root);
+  const renderer = new CanvasRenderer(root, scene.pageImages);
+  renderer.backend = backend;
+  renderer.pixelRatio = (window.devicePixelRatio || 1) * PMA_STAGE.scale;
+  const sources = new Set<CanvasImageSource>();
+  const ctx = renderer.canvas.getContext('2d');
+  if (!ctx) throw new Error('canvas renderer has no 2d context');
+  const drawImage = ctx.drawImage;
+  const draw = drawImage.bind(ctx);
+  if (backend === 'canvas2d') {
+    ctx.drawImage = (image: CanvasImageSource, ...coordinates: number[]): void => {
+      sources.add(image);
+      if (coordinates.length === 2) draw(image, coordinates[0], coordinates[1]);
+      else if (coordinates.length === 4) draw(image, coordinates[0], coordinates[1], coordinates[2], coordinates[3]);
+      else if (coordinates.length === 8) draw(image, coordinates[0], coordinates[1], coordinates[2], coordinates[3], coordinates[4], coordinates[5], coordinates[6], coordinates[7]);
+      else throw new Error(`drawImage received ${coordinates.length} coordinates`);
+    };
+  }
+  try { renderer.render(frame); } finally { ctx.drawImage = drawImage; }
+  publicPmaRenderer = renderer;
+  let sourceAudit: CanvasPmaStageResult['sourceAudit'] = null;
+  if (backend === 'canvas2d') {
+    // Independent of straightAlphaSource: read the PMA page through the
+    // library's canvas kind, divide RGB mathematically, then let the same
+    // browser store it. Compare against the source actually passed to
+    // drawImage, rather than a reference drawn by another renderer sharing
+    // the same missed flag. Reading a source canvas directly avoids another
+    // canvas-to-canvas round trip and its platform-specific quantization.
+    const width = scene.image.naturalWidth, height = scene.image.naturalHeight;
+    const raw = libraryKindContext(width, height);
+    raw.drawImage(scene.image, 0, 0);
+    const input = raw.getImageData(0, 0, width, height);
+    const expected = new Uint8ClampedArray(input.data);
+    let correctedTexels = 0;
+    if (page === 'pma') {
+      for (let i = 0; i < expected.length; i += 4) {
+        const alpha = expected[i + 3];
+        let changed = false;
+        for (let c = 0; c < 3; c++) {
+          const before = expected[i + c];
+          expected[i + c] = alpha === 0 ? 0 : Math.round(before * 255 / alpha);
+          changed ||= expected[i + c] !== before;
+        }
+        if (changed) correctedTexels++;
+      }
+    }
+    const scratch = libraryKindContext(width, height);
+    scratch.putImageData(new ImageData(expected, width, height), 0, 0);
+    const stored = page === 'pma' ? scratch.getImageData(0, 0, width, height).data : input.data;
+    let mismatches = 0, alphaMismatches = 0;
+    for (const source of sources) {
+      let actual: Uint8ClampedArray;
+      if (source instanceof HTMLCanvasElement) {
+        const sourceCtx = source.getContext('2d');
+        if (!sourceCtx) throw new Error('PMA source canvas has no 2d context');
+        actual = sourceCtx.getImageData(0, 0, width, height).data;
+      } else {
+        const read = libraryKindContext(width, height);
+        read.drawImage(source, 0, 0);
+        actual = read.getImageData(0, 0, width, height).data;
+      }
+      for (let i = 0; i < actual.length; i++) {
+        if (actual[i] !== stored[i]) mismatches++;
+        if (i % 4 === 3 && actual[i] !== input.data[i]) alphaMismatches++;
+      }
+    }
+    sourceAudit = { sources: sources.size, mismatches, alphaMismatches, correctedTexels };
+  }
+  return {
+    backend: renderer.backendActive,
+    pagePma: scene.layout[0].pma ?? false,
+    allSlotsPma: frame.order.every((s) => s.pma),
+    regions: frame.order.filter((s) => s.kind === 'region').length,
+    meshes: frame.order.filter((s) => s.kind === 'mesh').length,
+    triangles: renderer.trianglesDrawn,
+    expectedTriangles: frame.order.reduce((sum, s) => sum + (s.kind === 'region' ? 2 : s.triangles.length / 3), 0),
+    sourceAudit,
+  };
+}
+
 window.rigPlayHarness = {
+  seekContractProbe,
+  listenerRemovalProbe,
+  publicValuesProbe,
+  canvasCountersProbe,
+  canvasPmaStage,
   environmentProbe,
   physicsClockProbe,
   playerBasicsProbe,
