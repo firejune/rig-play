@@ -208,6 +208,7 @@ export interface RigPlayHarness {
   publicValuesProbe(): Promise<PublicValuesProbeResult>;
   canvasCountersProbe(): Promise<CanvasCountersProbeResult>;
   canvasPmaStage(page: 'straight' | 'pma', backend: 'webgl' | 'canvas2d'): Promise<CanvasPmaStageResult>;
+  canvasContractProbe(): Promise<CanvasContractProbeResult>;
   unpackProbe(): Promise<UnpackProbeResult>;
   regionGeometryProbe(): Promise<RegionGeometryProbeResult>;
   passThroughProbe(): Promise<PassThroughProbeResult>;
@@ -301,6 +302,14 @@ export interface CanvasPmaStageResult {
   triangles: number;
   expectedTriangles: number;
   sourceAudit: { sources: number; mismatches: number; alphaMismatches: number; correctedTexels: number } | null;
+}
+
+export interface CanvasContractProbeResult {
+  swaps: Array<{ mode: string; ratio: number; clipping: boolean; applied: number; skipped: number }>;
+  viewport: Array<{ width: number; height: number; cssWidth: string; cssHeight: string; transform: string; realloc: number }>;
+  reserved: CanvasContractProbeResult['viewport'];
+  clips: Array<{ applied: number; skipped: number; reused: number; changedPixels: number }>;
+  fallback: { backend: string; draws: number; triangles: number; changedPixels: number; samples: number[][]; frameTints: number[][] };
 }
 
 export interface EnvironmentProbeResult {
@@ -6505,12 +6514,139 @@ async function canvasPmaStage(page: 'straight' | 'pma', backend: 'webgl' | 'canv
   };
 }
 
+/** Public canvas contracts left uncovered by the audit's items 6–9. */
+async function canvasContractProbe(): Promise<CanvasContractProbeResult> {
+  const figure = await loadRig('figure');
+  const duo = await loadRig('duo');
+  const roots: HTMLElement[] = [];
+  const renderers: CanvasRenderer[] = [];
+  const root = (): HTMLElement => {
+    const el = makeGlRoot();
+    roots.push(el);
+    return el;
+  };
+  const canvas = (assets: ModelAssets): CanvasRenderer => {
+    const renderer = new CanvasRenderer(root(), assets.pageImages);
+    renderer.backend = 'canvas2d';
+    renderer.pixelRatio = 1;
+    renderers.push(renderer);
+    return renderer;
+  };
+  const player = new RigPlayer(root(), figure);
+  try {
+    player.play('window');
+    player.seek(0.5);
+    player.renderer.pixelRatio = 0.25;
+    player.renderer.clipping = false;
+    player.draw();
+    const swaps: CanvasContractProbeResult['swaps'] = [];
+    const swapRead = (): void => {
+      const r = player.renderer;
+      swaps.push({ mode: player.mode, ratio: r.pixelRatio, clipping: r.clipping, applied: r.clipCount, skipped: r.clipSkipCount });
+    };
+    swapRead();
+    player.mode = 'canvas';
+    swapRead();
+    player.mode = 'dom';
+    swapRead();
+    player.renderer.pixelRatio = 0.5;
+    player.renderer.clipping = true;
+    player.mode = 'canvas';
+    swapRead();
+    player.mode = 'dom';
+    swapRead();
+
+    const snapshot = (r: CanvasRenderer): CanvasContractProbeResult['viewport'][number] => ({
+      width: r.canvas.width, height: r.canvas.height,
+      cssWidth: r.canvas.style.width, cssHeight: r.canvas.style.height,
+      transform: r.canvas.style.transform, realloc: r.canvasReallocCount,
+    });
+    const frame = frameAt(duo, 'shift', 0);
+    const pinned = canvas(duo);
+    pinned.pixelRatio = 2;
+    pinned.viewport = { x: -10.25, y: 20.25, width: 41.5, height: 31.5 };
+    pinned.render(frame);
+    const viewport = [snapshot(pinned)];
+    pinned.render({ order: [] });
+    viewport.push(snapshot(pinned));
+    pinned.viewport = { x: -200, y: 0, width: 400, height: 200 };
+    pinned.render(frame);
+    viewport.push(snapshot(pinned));
+
+    const preallocated = canvas(duo);
+    preallocated.reserve({ x: -200, y: 0, width: 400, height: 200 });
+    preallocated.render(frame);
+    const reserved = [snapshot(preallocated)];
+    preallocated.reserve({ x: 0, y: 90, width: 10, height: 10 });
+    preallocated.render({ order: [] });
+    reserved.push(snapshot(preallocated));
+    preallocated.reserve({ x: -200, y: 0, width: 450, height: 200 });
+    preallocated.render(frame);
+    reserved.push(snapshot(preallocated));
+
+    const pixels = (r: CanvasRenderer): Uint8ClampedArray => {
+      const ctx = r.canvas.getContext('2d');
+      if (!ctx) throw new Error('canvas contract probe needs canvas2d');
+      return ctx.getImageData(0, 0, r.canvas.width, r.canvas.height).data;
+    };
+    const changed = (a: Uint8ClampedArray, b: Uint8ClampedArray): number => {
+      if (a.length !== b.length) throw new Error('canvas contract raster sizes differ');
+      let n = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2] || a[i + 3] !== b[i + 3]) n++;
+      }
+      return n;
+    };
+    const clipping = canvas(figure);
+    const clippedFrame = frameAt(figure, 'window', 0.5);
+    clipping.render(clippedFrame);
+    const clippedPixels = pixels(clipping);
+    const clips: CanvasContractProbeResult['clips'] = [];
+    const clipRead = (): void => {
+      clips.push({ applied: clipping.clipCount, skipped: clipping.clipSkipCount, reused: clipping.framesReused, changedPixels: changed(clippedPixels, pixels(clipping)) });
+    };
+    clipRead();
+    clipping.render(clippedFrame);
+    clipRead();
+    clipping.clipping = false;
+    clipping.render(clippedFrame);
+    clipRead();
+    clipping.render(clippedFrame);
+    clipRead();
+    clipping.clipping = true;
+    clipping.render(clippedFrame);
+    clipRead();
+
+    const fallback = canvas(duo);
+    fallback.viewport = { x: -200, y: 0, width: 400, height: 200 };
+    fallback.render(frame);
+    const untinted = pixels(fallback);
+    const tintedFrame = poseAt(duo, 'shift', 0, { color: [0.25, 0.5, 0.75, 1] }).frame;
+    fallback.render(tintedFrame);
+    const tinted = pixels(fallback);
+    // The authored ramp is opaque grey; sample its centre in each tier, well
+    // inside the silhouettes, at world (-90,100) and (90,100).
+    const samples = [110, 290].map((x) => Array.from(tinted.slice((100 * fallback.canvas.width + x) * 4, (100 * fallback.canvas.width + x) * 4 + 4)));
+    return { swaps, viewport, reserved, clips, fallback: {
+      backend: fallback.backendActive, draws: fallback.drawCalls, triangles: fallback.trianglesDrawn,
+      changedPixels: changed(untinted, tinted), samples, frameTints: tintedFrame.order.map((s) => [...s.tint]),
+    } };
+  } finally {
+    player.dispose();
+    for (const r of renderers) r.dispose();
+    for (const el of roots) el.remove();
+    figure.dispose();
+    duo.dispose();
+  }
+}
+
 window.rigPlayHarness = {
   seekContractProbe,
   listenerRemovalProbe,
   publicValuesProbe,
   canvasCountersProbe,
   canvasPmaStage,
+  canvasContractProbe,
   environmentProbe,
   physicsClockProbe,
   playerBasicsProbe,
