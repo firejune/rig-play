@@ -1,0 +1,34 @@
+{
+  "spec": "rigc-rig/1",
+  "name": "draw",
+  "images": "parts",
+  "skeleton": { "x": -96, "y": -48, "width": 192, "height": 96 },
+  "bones": [
+    { "name": "root" },
+    { "name": "left", "parent": "root", "x": -48 },
+    { "name": "right", "parent": "root", "x": 48 },
+    { "name": "far", "parent": "root", "x": 1000 }
+  ],
+  "slots": [
+    { "name": "clip", "bone": "root", "attachment": null },
+    { "name": "base_mul", "bone": "left", "attachment": "base" },
+    { "name": "ink_mul", "bone": "left", "attachment": "ink", "blend": "multiply" },
+    { "name": "base_screen", "bone": "right", "attachment": "base" },
+    { "name": "ink_screen", "bone": "right", "attachment": "ink", "blend": "screen" },
+    { "name": "hidden", "bone": "far", "attachment": null }
+  ],
+  "skins": {
+    "default": {
+      "clip": {
+        "window": { "type": "clipping", "vertexCount": 4, "vertices": [-70, -10, -30, -10, -30, 10, -70, 10], "end": "clip", "convex": true },
+        "inverse": { "type": "clipping", "vertexCount": 4, "vertices": [900, -10, 920, -10, 920, 10, 900, 10], "end": "clip", "inverse": true, "convex": true }
+      },
+      "base_mul": { "base": { "image": "base.png" } },
+      "base_screen": { "base": { "image": "base.png" } },
+      "ink_screen": { "ink": { "image": "ink.png" } },
+      "hidden": { "hidden": { "image": "alt.png" } }
+    },
+    "base": { "ink_mul": { "ink": { "image": "ink.png" } } },
+    "alt": { "ink_mul": { "ink": { "image": "alt.png" } } }
+  }
+}

@@ -146,5 +146,6 @@ rm -f "$RIGS_DEST/turned/art/turned.atlas"
 test_rig duo duo
 test_rig named named --atlas-in art/named.atlas
 test_rig cloth cloth
+test_rig draw draw
 rm -f "$RIGS_DEST/named/art/named.atlas"
 echo "test rigs ready → $RIGS_DEST"

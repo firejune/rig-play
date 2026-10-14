@@ -438,7 +438,11 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   chain hanging from an anchor, each link answering wind and gravity, with a
   still mesh on the anchor: `tests/environment.spec.ts` (the environment and
   the rig's motion the page sets, #121), the *cloth under a side gust* parity
-  cells and the README's wind example. A premultiplied page
+  cells and the README's wind example. `draw` — opaque colour squares with
+  Multiply/Screen slots, a keyed draw-order swap, named skins changing one
+  region, a small window, a far inverse clip and an undrawn far attachment:
+  `tests/draw-contract.spec.ts`, which pins the blend formula, visible DOM
+  updates and bounds. A premultiplied page
   reaches a rigc build only through `--atlas-in` (its packer writes
   `pma: false`), so `tests/pma.spec.ts` makes its premultiplied twin of the
   figure's page in the harness, as it always has. If a spec needs something

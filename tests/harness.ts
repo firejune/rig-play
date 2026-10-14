@@ -203,6 +203,9 @@ export interface RegionGeometryProbeResult {
 }
 
 export interface RigPlayHarness {
+  drawContractStage(options: DrawContractOptions): Promise<DrawContractStageResult>;
+  drawContractDispose(): void;
+  drawBoundsProbe(): Promise<DrawBoundsProbeResult>;
   unpackProbe(): Promise<UnpackProbeResult>;
   regionGeometryProbe(): Promise<RegionGeometryProbeResult>;
   passThroughProbe(): Promise<PassThroughProbeResult>;
@@ -245,6 +248,37 @@ export interface RigPlayHarness {
   environmentProbe(): Promise<EnvironmentProbeResult>;
   darkTintProbe(): Promise<DarkTintProbeResult>;
   darkDomPose(time: number): Promise<number>;
+}
+
+export interface DrawContractOptions {
+  action: 'start' | 'reorder' | 'alt' | 'default';
+  mode?: 'dom' | 'canvas';
+  backend?: 'webgl' | 'canvas2d';
+}
+
+export interface DrawContractStageResult {
+  order: string[];
+  blends: string[];
+  elements: Array<{ slot: string; z: string; blend: string; region: string; srcMatches: boolean; visible: boolean }>;
+  changedSrc: boolean;
+  sameImage: boolean;
+  backend: string;
+  samples: number[][];
+}
+
+type DrawContractBounds = { x: number; y: number; width: number; height: number } | null;
+
+export interface DrawBoundsProbeResult {
+  bare: DrawContractBounds;
+  window: DrawContractBounds;
+  windowClipBox: DrawContractBounds;
+  inverse: DrawContractBounds;
+  hiddenOn: DrawContractBounds;
+  empty: DrawContractBounds;
+  bareSlots: string[];
+  hiddenSlots: string[];
+  inverseChangedPixels: number;
+  inverseDiff: { interior: number; boundary: number; maxDelta: number; maxInteriorDelta: number; lostInteriorAlpha: number };
 }
 
 export interface EnvironmentProbeResult {
@@ -6189,7 +6223,145 @@ async function environmentProbe(): Promise<EnvironmentProbeResult> {
   return { untouched, tips, throughCore, noPhysicsMaxDiff, beforePlay, afterHalf, afterNull };
 }
 
+let drawContractLive: {
+  assets: ModelAssets;
+  player: RigPlayer;
+  capture: HTMLElement;
+  images: Map<string, HTMLImageElement>;
+  originalInk: HTMLImageElement | null;
+  originalSrc: string;
+} | null = null;
+
+function drawContractDispose(): void {
+  if (!drawContractLive) return;
+  drawContractLive.player.dispose();
+  drawContractLive.assets.dispose();
+  drawContractLive.capture.remove();
+  drawContractLive = null;
+}
+
+/** The authored fixture's two opaque stacks; the spec samples the DOM screenshot. */
+async function drawContractStage(options: DrawContractOptions): Promise<DrawContractStageResult> {
+  if (options.action === 'start') {
+    drawContractDispose();
+    const assets = await loadRig('draw');
+    const capture = document.createElement('div');
+    capture.id = 'draw-contract-stage';
+    capture.style.cssText = 'position:absolute;left:0;top:0;width:192px;height:96px;isolation:isolate';
+    const root = document.createElement('div');
+    root.style.cssText = 'position:absolute;left:96px;top:48px';
+    capture.appendChild(root);
+    document.body.appendChild(capture);
+    const player = new RigPlayer(root, assets, { mode: options.mode ?? 'dom', skin: 'base' });
+    player.renderer.pixelRatio = 1;
+    if (player.renderer instanceof CanvasRenderer) {
+      player.renderer.backend = options.backend ?? 'webgl';
+      player.renderer.viewport = { x: -96, y: -48, width: 192, height: 96 };
+    }
+    player.play('reorder', { loop: false });
+    player.draw();
+    // Element creation follows the initial frame's order. Keep this map so a
+    // z-index bug cannot relabel the element by the wrong z on later frames.
+    const images = new Map<string, HTMLImageElement>();
+    const initialImages = [...root.querySelectorAll('img')];
+    if (player.mode === 'dom') player.posedFrame().order.forEach((slot, i) => images.set(slot.slot, initialImages[i]));
+    const originalInk = images.get('ink_mul') ?? null;
+    drawContractLive = { assets, player, capture, images, originalInk, originalSrc: originalInk?.src ?? '' };
+  }
+  const live = drawContractLive;
+  if (!live) throw new Error('draw contract stage has not started');
+  if (options.action === 'reorder') live.player.seek(0.5);
+  if (options.action === 'alt') live.player.skin = 'alt';
+  if (options.action === 'default') live.player.skin = 'base';
+  live.player.draw();
+  await Promise.all([...live.images.values()].map((image) => image.decode()));
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const frame = live.player.posedFrame();
+  const elements = frame.order.map((slot) => {
+    const image = live.images.get(slot.slot);
+    const region = slot.kind === 'region' ? slot.region : '';
+    return { slot: slot.slot, z: image?.style.zIndex ?? '', blend: image ? getComputedStyle(image).mixBlendMode : '', region,
+      srcMatches: image?.src === live.assets.regionImages.get(region)?.url, visible: image?.style.display === '' };
+  });
+  const ink = live.images.get('ink_mul') ?? null;
+  const renderer = live.player.renderer;
+  let samples: number[][] = [];
+  if (renderer instanceof CanvasRenderer) {
+    const ctx = renderer.canvas.getContext('2d');
+    if (!ctx) throw new Error('draw contract canvas has no 2d context');
+    samples = [48, 144].map((x) => Array.from(ctx.getImageData(x, 48, 1, 1).data));
+  }
+  return { order: frame.order.map((s) => s.slot), blends: frame.order.map((s) => s.blend), elements,
+    changedSrc: ink !== null && ink.src !== live.originalSrc, sameImage: ink !== null && ink === live.originalInk,
+    backend: renderer instanceof CanvasRenderer ? renderer.backendActive : 'dom', samples };
+}
+
+/** Bounds read real compiled attachments, including an authored but undrawn far one. */
+async function drawBoundsProbe(): Promise<DrawBoundsProbeResult> {
+  const assets = await loadRig('draw');
+  const root = makeGlRoot();
+  const player = new RigPlayer(root, assets, { skin: 'base' });
+  const renderer = new CanvasRenderer(root, assets.pageImages);
+  renderer.backend = 'canvas2d';
+  renderer.pixelRatio = 1;
+  renderer.viewport = { x: -96, y: -48, width: 192, height: 96 };
+  try {
+    player.play('reorder', { loop: false });
+    const bare = player.bounds();
+    const bareSlots = player.posedFrame().order.map((s) => s.slot);
+    renderer.render(player.posedFrame());
+    const ctx = renderer.canvas.getContext('2d');
+    if (!ctx) throw new Error('bounds probe needs canvas2d');
+    const before = ctx.getImageData(0, 0, 192, 96).data;
+    player.play('inverse', { loop: false });
+    const inverse = player.bounds();
+    renderer.render(player.posedFrame());
+    const after = ctx.getImageData(0, 0, 192, 96).data;
+    let inverseChangedPixels = 0;
+    const inverseDiff = { interior: 0, boundary: 0, maxDelta: 0, maxInteriorDelta: 0, lostInteriorAlpha: 0 };
+    for (let i = 0; i < before.length; i += 4) {
+      const x = (i / 4) % 192;
+      const y = Math.floor(i / 4 / 192);
+      // Authored 64×64 rectangles are [16,80] and [112,176], Y[16,80].
+      // Exclude the one-pixel silhouette band, independently of the raster.
+      const inside = y >= 17 && y <= 78 && ((x >= 17 && x <= 78) || (x >= 113 && x <= 174));
+      const delta = Math.max(...[0, 1, 2, 3].map((k) => Math.abs(before[i + k] - after[i + k])));
+      inverseDiff.maxDelta = Math.max(inverseDiff.maxDelta, delta);
+      if (inside) {
+        inverseDiff.maxInteriorDelta = Math.max(inverseDiff.maxInteriorDelta, delta);
+        if (after[i + 3] < before[i + 3]) inverseDiff.lostInteriorAlpha++;
+      }
+      if (delta !== 0) {
+        inverseChangedPixels++;
+        if (inside) inverseDiff.interior++;
+        else inverseDiff.boundary++;
+      }
+    }
+    player.play('window', { loop: false });
+    const window = player.bounds();
+    const clip = player.posedFrame().order[0]?.clip;
+    if (!clip) throw new Error('window frame carries no clip');
+    const xs = clip.polygon.filter((_, i) => i % 2 === 0);
+    const ys = clip.polygon.filter((_, i) => i % 2 === 1);
+    const windowClipBox = { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+    player.play('hidden', { loop: false });
+    const hiddenOn = player.bounds();
+    const hiddenSlots = player.posedFrame().order.map((s) => s.slot);
+    player.slots = [];
+    const empty = player.bounds();
+    return { bare, window, windowClipBox, inverse, hiddenOn, empty, bareSlots, hiddenSlots, inverseChangedPixels, inverseDiff };
+  } finally {
+    renderer.dispose();
+    player.dispose();
+    root.remove();
+    assets.dispose();
+  }
+}
+
 window.rigPlayHarness = {
+  drawContractStage,
+  drawContractDispose,
+  drawBoundsProbe,
   environmentProbe,
   physicsClockProbe,
   playerBasicsProbe,
