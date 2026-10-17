@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/rig-c/play/compare/v1.10.1...v1.11.0) (2026-10-17)
+
+
+### Features
+
+* **player:** read sets.json and expose sets() / setSet() ([#134](https://github.com/rig-c/play/issues/134), [#135](https://github.com/rig-c/play/issues/135)) ([defe097](https://github.com/rig-c/play/commit/defe097340a9dc70bbde64ac0c8a73a4594c3d23))
+
 ## [1.10.1](https://github.com/rig-c/play/compare/v1.10.0...v1.10.1) (2026-10-14)
 
 
