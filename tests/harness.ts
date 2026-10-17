@@ -1,4 +1,4 @@
-import { type LiveTrack, openTrack, openTracks, physicsClockStep, type RawPose, regionPageUvs, underNoSkin } from 'rig-c/core';
+import { type LiveTrack, openTrack, openTracks, physicsClockStep, poseRawSetup, type RawPose, regionPageUvs, underNoSkin } from 'rig-c/core';
 
 import {
   type AdjustableBones,
@@ -258,6 +258,34 @@ export interface RigPlayHarness {
   environmentProbe(): Promise<EnvironmentProbeResult>;
   darkTintProbe(): Promise<DarkTintProbeResult>;
   darkDomPose(time: number): Promise<number>;
+  setsProbe(): Promise<SetsProbeResult>;
+}
+
+export interface SetsProbeResult {
+  declaredSets: Array<{ name: string; slots: Record<string, string>; hides: string[] }>;
+  emptySetsOnWalk: number;
+  nullSetsUrlCount: number;
+  spineSpecArraySets: Array<{ name: string; slots: Record<string, string>; hides: string[] }>;
+  invalidSpecError: string;
+  unknownSlotError: string;
+  unknownAttachmentError: string;
+  noSetsSetError: string;
+  unknownSetError: string;
+  setAfterUnknownError: string | null;
+  setupBaseRegions: Array<{ slot: string; kind: string; region: string }>;
+  setupSmileRegions: Array<{ slot: string; kind: string; region: string }>;
+  setupWinkRegions: Array<{ slot: string; kind: string; region: string }>;
+  setupRestoredByteIdentical: boolean;
+  setupSmileMatchesDirectPose: boolean;
+  setupCanvasRestoredPixelIdentical: boolean;
+  setupCanvasSmileMatchesDirectPixels: boolean;
+  midTrackBaseRegions: Array<{ slot: string; kind: string; region: string }>;
+  midTrackSmileRegions: Array<{ slot: string; kind: string; region: string }>;
+  midTrackWinkRegions: Array<{ slot: string; kind: string; region: string }>;
+  midTrackClearedRegions: Array<{ slot: string; kind: string; region: string }>;
+  midTrackClearedNextFrameByteIdentical: boolean;
+  tracksModeMidTrackByteIdentical: boolean;
+  inactiveSetZeroPoseDiffs: number;
 }
 
 export interface DrawContractOptions {
@@ -7163,6 +7191,252 @@ async function canvasContractProbe(): Promise<CanvasContractProbeResult> {
   }
 }
 
+async function setsProbe(): Promise<SetsProbeResult> {
+  const setsAssets = await loadRig('sets-packed');
+  const walkAssets = await loadRig('walk');
+  const nullSetsAssets = await loadModel({
+    modelUrl: '/rigs/sets-packed/skeleton.model.json',
+    setsUrl: null,
+    regions: 'none',
+  });
+  const spineSpecArrayAssets = await loadModel({
+    modelUrl: '/rigs/sets-packed/skeleton.model.json',
+    setsUrl: '/rigs/sets-packed/sets-spine-array.json',
+    regions: 'none',
+    fetch: (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith('/sets-spine-array.json')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              spec: 'spine-parts-sets/1',
+              sets: [
+                { name: 'smile', slots: { face: 'face_smile', prop: 'prop_star' }, hides: [] },
+                { name: 'wink', slots: { face: 'face_wink' }, hides: ['prop'] },
+              ],
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return fetch(input, init);
+    },
+  });
+
+  const catchLoadError = async (body: unknown): Promise<string> => {
+    try {
+      const a = await loadModel({
+        modelUrl: '/rigs/sets-packed/skeleton.model.json',
+        setsUrl: '/rigs/sets-packed/bad-sets.json',
+        regions: 'none',
+        fetch: (input, init) => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (url.endsWith('/bad-sets.json')) {
+            return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+          }
+          return fetch(input, init);
+        },
+      });
+      a.dispose();
+      return '';
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+
+  const invalidSpecError = await catchLoadError({ spec: 'wrong-spec/1', sets: {} });
+  const unknownSlotError = await catchLoadError({
+    spec: 'rig-parts-sets/1',
+    sets: { bad: { slots: { no_such_slot: 'face_smile' } } },
+  });
+  const unknownAttachmentError = await catchLoadError({
+    spec: 'rig-parts-sets/1',
+    sets: { bad: { slots: { face: 'no_such_attachment' } } },
+  });
+
+  const root = makeGlRoot();
+  const walkPlayer = new RigPlayer(root, walkAssets);
+  let noSetsSetError = '';
+  try {
+    walkPlayer.setSet('smile');
+  } catch (e) {
+    noSetsSetError = (e as Error).message;
+  }
+  walkPlayer.dispose();
+
+  const slotSummary = (frame: PosedFrame): Array<{ slot: string; kind: string; region: string }> =>
+    frame.order.map((s) => ({
+      slot: s.slot,
+      kind: s.kind,
+      region: s.kind === 'region' ? s.region : `mesh:${s.page}`,
+    }));
+
+  const player = new RigPlayer(root, setsAssets, { mode: 'canvas' });
+  const canvasRenderer = player.renderer as CanvasRenderer;
+  canvasRenderer.backend = 'canvas2d';
+  canvasRenderer.pixelRatio = 1;
+  canvasRenderer.viewport = { x: -120, y: 0, width: 240, height: 260 };
+
+  const readPixels = (): Uint8ClampedArray => {
+    const ctx = canvasRenderer.canvas.getContext('2d');
+    if (!ctx) throw new Error('no 2d context');
+    return new Uint8ClampedArray(
+      ctx.getImageData(0, 0, canvasRenderer.canvas.width, canvasRenderer.canvas.height).data,
+    );
+  };
+  const sameBytes = (a: Uint8ClampedArray, b: Uint8ClampedArray): boolean => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  };
+
+  try {
+    // Setup pose before play:
+    player.setSet(null);
+    player.draw();
+    const setupBaseFrame = player.posedFrame();
+    const setupBaseJson = JSON.stringify(setupBaseFrame);
+    const setupBasePixels = readPixels();
+    const setupBaseRegions = slotSummary(setupBaseFrame);
+
+    player.setSet('smile');
+    player.draw();
+    const setupSmileFrame = player.posedFrame();
+    const setupSmilePixels = readPixels();
+    const setupSmileRegions = slotSummary(setupSmileFrame);
+
+    // Direct setup pose oracle with smile's slot overrides:
+    const read = setsAssets.document as ReadDocument;
+    const directSmileView = underNoSkin({
+      ...read.doc,
+      slots: read.doc.slots.map((s) => {
+        if (s.name === 'face') return { ...s, setup: 'face_smile' };
+        if (s.name === 'prop') return { ...s, setup: 'prop_star' };
+        if (s.name === 'face_still') return { ...s, setup: null };
+        return s;
+      }),
+    });
+    const directSmilePose = poseRawSetup(directSmileView);
+    const directSmileFrame = frameOf(frameSource(directSmileView, read.parsed), directSmilePose);
+    const setupSmileMatchesDirectPose = JSON.stringify(setupSmileFrame) === JSON.stringify(directSmileFrame);
+    canvasRenderer.render(directSmileFrame);
+    const directSmilePixels = readPixels();
+    const setupCanvasSmileMatchesDirectPixels = sameBytes(setupSmilePixels, directSmilePixels);
+
+    player.setSet('wink');
+    const setupWinkRegions = slotSummary(player.posedFrame());
+
+    let unknownSetError = '';
+    try {
+      player.setSet('no_such_set');
+    } catch (e) {
+      unknownSetError = (e as Error).message;
+    }
+    const setAfterUnknownError = player.set;
+
+    player.setSet(null);
+    player.draw();
+    const setupRestoredFrame = player.posedFrame();
+    const setupRestoredPixels = readPixels();
+    const setupRestoredByteIdentical = JSON.stringify(setupRestoredFrame) === setupBaseJson;
+    const setupCanvasRestoredPixelIdentical = sameBytes(setupRestoredPixels, setupBasePixels);
+
+    // Mid-track switching (Bar 2):
+    const control = new RigPlayer(makeGlRoot(), setsAssets, { mode: 'canvas' });
+    player.play('dance');
+    control.play('dance');
+    player.advance(0.5);
+    control.advance(0.5);
+    const midTrackBaseRegions = slotSummary(player.posedFrame());
+
+    player.setSet('smile');
+    const midTrackSmileRegions = slotSummary(player.posedFrame());
+
+    player.setSet('wink');
+    const midTrackWinkRegions = slotSummary(player.posedFrame());
+
+    player.setSet(null);
+    const midTrackClearedRegions = slotSummary(player.posedFrame());
+    player.advance(1 / 60);
+    control.advance(1 / 60);
+    const midTrackClearedNextFrameByteIdentical =
+      JSON.stringify(player.posedFrame()) === JSON.stringify(control.posedFrame());
+    control.dispose();
+
+    // Multi-track mode (tracks: true):
+    const tracksPlayer = new RigPlayer(makeGlRoot(), setsAssets, { mode: 'canvas', tracks: true });
+    const tracksControl = new RigPlayer(makeGlRoot(), setsAssets, { mode: 'canvas', tracks: true });
+    tracksPlayer.play('dance');
+    tracksControl.play('dance');
+    tracksPlayer.advance(0.5);
+    tracksControl.advance(0.5);
+    tracksPlayer.setSet('smile');
+    tracksPlayer.advance(1 / 60);
+    tracksControl.advance(1 / 60);
+    tracksPlayer.setSet(null);
+    tracksPlayer.advance(1 / 60);
+    tracksControl.advance(1 / 60);
+    const tracksModeMidTrackByteIdentical =
+      JSON.stringify(tracksPlayer.posedFrame()) === JSON.stringify(tracksControl.posedFrame());
+    tracksPlayer.dispose();
+    tracksControl.dispose();
+
+    // Bar 4: zero pose diff across 60 steps when no set is active
+    const pA = new RigPlayer(makeGlRoot(), setsAssets, { mode: 'canvas' });
+    const pB = new RigPlayer(makeGlRoot(), setsAssets, { mode: 'canvas' });
+    pA.play('dance');
+    pB.play('dance');
+    let inactiveSetZeroPoseDiffs = 0;
+    for (let i = 0; i < 60; i++) {
+      pA.advance(1 / 60);
+      pB.advance(1 / 60);
+      if (JSON.stringify(pA.posedFrame()) !== JSON.stringify(pB.posedFrame())) {
+        inactiveSetZeroPoseDiffs++;
+      }
+    }
+    pA.dispose();
+    pB.dispose();
+
+    return {
+      declaredSets: player.sets().map((s) => ({ name: s.name, slots: { ...s.slots }, hides: [...s.hides] })),
+      emptySetsOnWalk: walkAssets.sets.length,
+      nullSetsUrlCount: nullSetsAssets.sets.length,
+      spineSpecArraySets: spineSpecArrayAssets.sets.map((s) => ({
+        name: s.name,
+        slots: { ...s.slots },
+        hides: [...s.hides],
+      })),
+      invalidSpecError,
+      unknownSlotError,
+      unknownAttachmentError,
+      noSetsSetError,
+      unknownSetError,
+      setAfterUnknownError,
+      setupBaseRegions,
+      setupSmileRegions,
+      setupWinkRegions,
+      setupRestoredByteIdentical,
+      setupSmileMatchesDirectPose,
+      setupCanvasRestoredPixelIdentical,
+      setupCanvasSmileMatchesDirectPixels,
+      midTrackBaseRegions,
+      midTrackSmileRegions,
+      midTrackWinkRegions,
+      midTrackClearedRegions,
+      midTrackClearedNextFrameByteIdentical,
+      tracksModeMidTrackByteIdentical,
+      inactiveSetZeroPoseDiffs,
+    };
+  } finally {
+    player.dispose();
+    root.remove();
+    setsAssets.dispose();
+    walkAssets.dispose();
+    nullSetsAssets.dispose();
+    spineSpecArrayAssets.dispose();
+  }
+}
+
 window.rigPlayHarness = {
   drawContractStage,
   drawContractDispose,
@@ -7219,4 +7493,5 @@ window.rigPlayHarness = {
   pmaCutProbe,
   pmaDerivationProbe,
   pmaStage,
+  setsProbe,
 };

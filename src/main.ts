@@ -18,7 +18,7 @@ const RIGS = GALLERY.flatMap((rig) => [rig, `${rig}-packed`]);
  * turned on its page. Reachable by `?rig=` for the parity and invariant
  * scenes, and left out of the picker, which shows the gallery.
  */
-const TEST_RIGS = ['figure', 'figure-packed', 'glow', 'glow-packed', 'turned', 'named', 'cloth'];
+const TEST_RIGS = ['figure', 'figure-packed', 'glow', 'glow-packed', 'turned', 'named', 'cloth', 'sets', 'sets-packed'];
 type RigName = string;
 const STAGE_SCALE = 0.4;
 
@@ -114,6 +114,8 @@ function main(firstRig: RigName, firstAssets: ModelAssets): void {
         mode: modeSelect.value as RenderMode,
       });
       if (tint) player.color = tint;
+      const setParam = params.get('set');
+      if (setParam !== null) player.setSet(setParam || null);
       player.play(animSelect.value, { loop: true });
       // ?wind=x,y sets the physics environment's wind (spine-core's skeleton
       // windX, windY: x right, y down) before the seek, so the seek's steps

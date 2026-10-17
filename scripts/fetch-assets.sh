@@ -55,6 +55,7 @@ build() {
   rm -rf "$out"
   mkdir -p "$out"
   cp "$src/rig.json" "$src/motion.json" "$out/"
+  if [ -f "$src/sets.json" ]; then cp "$src/sets.json" "$out/sets.json"; fi
   for dir in parts art; do
     if [ -d "$src/$dir" ]; then cp -R "$src/$dir" "$out/$dir"; fi
   done
@@ -169,5 +170,8 @@ test_rig duo duo
 test_rig named named --atlas-in art/named.atlas
 test_rig cloth cloth
 test_rig draw draw
+test_rig sets sets
+test_rig sets sets-packed --pack
+rm -rf "$RIGS_DEST/sets-packed/parts"
 rm -f "$RIGS_DEST/named/art/named.atlas"
 echo "test rigs ready → $RIGS_DEST"

@@ -1,0 +1,51 @@
+{
+  "spec": "rigc-motion/1",
+  "archetype": "sets",
+  "cut": "test-sets",
+  "easings": {},
+  "animations": {
+    "dance": {
+      "duration": 1,
+      "loop": true,
+      "note": "Keys both the uncovered body slot and the set-covered face slot at t=0.5, while swaying the torso and head.",
+      "tracks": [
+        {
+          "bone": "torso",
+          "property": "translate",
+          "keys": [
+            { "t": 0, "v": [0, 0] },
+            { "t": 0.5, "v": [12, 6] },
+            { "t": 1, "v": [0, 0] }
+          ]
+        },
+        {
+          "bone": "head",
+          "property": "rotate",
+          "keys": [
+            { "t": 0, "v": [0] },
+            { "t": 0.5, "v": [10] },
+            { "t": 1, "v": [0] }
+          ]
+        },
+        {
+          "slot": "body",
+          "property": "attachment",
+          "keys": [
+            { "t": 0, "v": "body_base" },
+            { "t": 0.5, "v": "body_track" },
+            { "t": 1, "v": "body_base" }
+          ]
+        },
+        {
+          "slot": "face",
+          "property": "attachment",
+          "keys": [
+            { "t": 0, "v": "face_neutral" },
+            { "t": 0.5, "v": "face_track" },
+            { "t": 1, "v": "face_neutral" }
+          ]
+        }
+      ]
+    }
+  }
+}

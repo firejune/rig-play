@@ -101,6 +101,9 @@ const SCENES = [
   // A physics chain under a side gust (#121): the environment the page sets, posed by
   // the seek's steps; both modes draw the same lean.
   { name: 'cloth under a side gust', kind: 'test', query: `rig=cloth&anim=hang&wind=-1,0&${POSE}` },
+  // An attachment set switched at runtime (#134): overrides covered slots and hides
+  // `<base>_still` while uncovered slots keep their track key; both modes draw the same set.
+  { name: 'sets switch (attachment set)', kind: 'test', query: `rig=sets-packed&anim=dance&set=smile&${POSE}` },
   // Contour meshes waved by bones and rippled by a deform.
   { name: 'gallery flex (contour meshes)', kind: 'gallery', query: `rig=flex&anim=wave&${POSE}` },
   // The same rig packed: every mesh samples a shared page through page UVs.

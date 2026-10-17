@@ -1,0 +1,131 @@
+{
+  "spec": "rigc-rig/1",
+  "name": "sets",
+  "images": "parts",
+  "skeleton": {
+    "x": -200,
+    "y": 0,
+    "width": 400,
+    "height": 420
+  },
+  "bones": [
+    {
+      "name": "root"
+    },
+    {
+      "name": "torso",
+      "parent": "root",
+      "x": 0,
+      "y": 110
+    },
+    {
+      "name": "head",
+      "parent": "torso",
+      "x": 0,
+      "y": 160
+    },
+    {
+      "name": "hand",
+      "parent": "torso",
+      "x": 110,
+      "y": 30
+    }
+  ],
+  "invariants": {
+    "meshSlots": 1,
+    "meshTriangles": 2
+  },
+  "slots": [
+    {
+      "name": "body",
+      "bone": "torso",
+      "attachment": "body_base"
+    },
+    {
+      "name": "face",
+      "bone": "head",
+      "attachment": "face_neutral"
+    },
+    {
+      "name": "face_still",
+      "bone": "head",
+      "attachment": "face_still"
+    },
+    {
+      "name": "prop",
+      "bone": "hand",
+      "attachment": "prop_wand"
+    }
+  ],
+  "skins": {
+    "default": {
+      "body": {
+        "body_base": {
+          "image": "body_base.png"
+        },
+        "body_track": {
+          "image": "body_track.png"
+        }
+      },
+      "face": {
+        "face_neutral": {
+          "image": "face_neutral.png"
+        },
+        "face_track": {
+          "image": "face_track.png"
+        },
+        "face_smile": {
+          "type": "mesh",
+          "image": "face_smile.png",
+          "hull": 4,
+          "uvs": [
+            0,
+            0,
+            1,
+            0,
+            1,
+            1,
+            0,
+            1
+          ],
+          "vertices": [
+            -70,
+            70,
+            70,
+            70,
+            70,
+            -70,
+            -70,
+            -70
+          ],
+          "triangles": [
+            0,
+            1,
+            2,
+            0,
+            2,
+            3
+          ]
+        },
+        "face_wink": {
+          "image": "face_wink.png"
+        }
+      },
+      "face_still": {
+        "face_still": {
+          "image": "face_still.png",
+          "x": 60,
+          "y": 60
+        }
+      },
+      "prop": {
+        "prop_wand": {
+          "image": "prop_wand.png"
+        },
+        "prop_star": {
+          "image": "prop_star.png"
+        }
+      }
+    }
+  }
+}

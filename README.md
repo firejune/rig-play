@@ -399,6 +399,52 @@ const front = new DomRenderer(frontRoot, assets.regionImages, assets.pageImages)
 front.render(player.posedFrame(['hand_f', 'arm_f_lo']));
 ```
 
+### Attachment sets (`sets.json`)
+
+A build from `@rig-c/parts` (or authored alongside a rig) may ship a `sets.json`
+sidecar beside `skeleton.model.json` declaring named attachment sets — an
+expression, a viseme, a side view — under spec `"rig-parts-sets/1"` or
+`"spine-parts-sets/1"`:
+
+```json
+{
+  "spec": "rig-parts-sets/1",
+  "sets": {
+    "smile": {
+      "slots": { "face": "face_smile", "prop": "prop_star" },
+      "hides": []
+    },
+    "wink": {
+      "slots": { "face": "face_wink" },
+      "hides": ["prop"]
+    }
+  }
+}
+```
+
+`loadModel` probes `sets.json` in the model document's directory by default
+(treating a 404 as "no sets"; pass `setsUrl: null` to skip the probe, or a URL
+string to require one at another path) and validates every slot and attachment
+name against the model document. `player.sets()` (and `assets.sets`) returns the
+declared `readonly RigSet[]` (`{ name, slots, hides }`), and `player.setSet(name)`
+switches the active set at runtime (#134):
+
+```ts
+player.sets();          // [{ name: 'smile', slots: { ... }, hides: [] }, ...]
+player.setSet('smile'); // covered slots take the set's attachments; <slot>_still and hides are hidden
+player.set;             // 'smile'
+player.setSet(null);    // restore base / track attachments
+```
+
+The active set is applied immediately to the held pose (including the setup pose
+before `play`) and after track evaluation on every subsequent `advance`, so a
+track key on a covered slot is overridden while the set is active and restored
+on the next frame when cleared with `setSet(null)`. Uncovered slots keep their
+track attachments, mesh deforms and sequence frames untouched; when no set is
+active (`null`), track evaluation runs with zero extra work and produces
+byte-identical poses. An unknown set name throws by name; on a build without
+`sets.json`, `sets()` is empty (`[]`) and `setSet` throws.
+
 ### Several tracks
 
 A base on track 0, a layer over it, a one-shot played once and mixed back out —

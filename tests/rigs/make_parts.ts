@@ -341,3 +341,17 @@ function paintDrawParts(): void {
   }
 }
 paintDrawParts();
+
+// --- sets: two attachment sets (smile, wink), a companion _still slot and a hidden prop (#134) ---
+
+console.log('sets:');
+write('sets', 'body_base.png', 161, 209, paint(161, 209, roundedRect(161, 209, 6, 28), look([70, 110, 190], { period: 14 })));
+write('sets', 'body_track.png', 161, 209, paint(161, 209, roundedRect(161, 209, 6, 28), look([40, 165, 150], { period: 12 })));
+write('sets', 'face_neutral.png', 141, 141, paint(141, 141, ellipse(141, 141, 6), look([235, 195, 155], { stripe: 14, period: 12 })));
+write('sets', 'face_track.png', 141, 141, paint(141, 141, ellipse(141, 141, 6), look([225, 95, 95], { stripe: 18, period: 10 })));
+write('sets', 'face_smile.png', 141, 141, paint(141, 141, ellipse(141, 141, 6), look([245, 210, 65], { stripe: 22, period: 10 })));
+write('sets', 'face_wink.png', 141, 141, paint(141, 141, ellipse(141, 141, 6), look([155, 95, 220], { stripe: 20, period: 10 })));
+write('sets', 'face_still.png', 57, 57, paint(57, 57, ellipse(57, 57, 4), look([210, 50, 70], { stripe: 16, period: 8 })));
+write('sets', 'prop_wand.png', 65, 145, paint(65, 145, roundedRect(65, 145, 5, 16), look([70, 185, 95], { period: 10 })));
+write('sets', 'prop_star.png', 97, 97, paint(97, 97, ellipse(97, 97, 5), look([250, 150, 45], { stripe: 24, period: 8 })));
+

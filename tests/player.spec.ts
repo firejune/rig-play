@@ -61,3 +61,65 @@ test('skin can change on a live player: the pose re-resolves, the track keeps it
   expect(probe.skinAfterUnknown).toBe('alt');
   expect(probe.emblemAfterUnknown).toBe('visor');
 });
+
+test('sets() reads sets.json and setSet(name | null) switches attachment sets at setup and mid-track (#134)', async ({ page }) => {
+  const probe = await page.evaluate(() => window.rigPlayHarness.setsProbe());
+
+  expect(probe.declaredSets).toEqual([
+    { name: 'smile', slots: { face: 'face_smile', prop: 'prop_star' }, hides: [] },
+    { name: 'wink', slots: { face: 'face_wink' }, hides: ['prop'] },
+  ]);
+  expect(probe.emptySetsOnWalk).toBe(0);
+  expect(probe.nullSetsUrlCount).toBe(0);
+  expect(probe.spineSpecArraySets).toEqual(probe.declaredSets);
+
+  expect(probe.invalidSpecError).toContain('spine-parts-sets/1');
+  expect(probe.unknownSlotError).toContain('no_such_slot');
+  expect(probe.unknownAttachmentError).toContain('no_such_attachment');
+  expect(probe.noSetsSetError).toContain('no sets.json');
+  expect(probe.unknownSetError).toContain('no_such_set');
+  expect(probe.setAfterUnknownError).toBe('wink');
+
+  // Setup pose before play:
+  expect(probe.setupBaseRegions).toEqual([
+    { slot: 'body', kind: 'region', region: 'body_base' },
+    { slot: 'face', kind: 'region', region: 'face_neutral' },
+    { slot: 'face_still', kind: 'region', region: 'face_still' },
+    { slot: 'prop', kind: 'region', region: 'prop_wand' },
+  ]);
+  expect(probe.setupSmileRegions).toEqual([
+    { slot: 'body', kind: 'region', region: 'body_base' },
+    { slot: 'face', kind: 'mesh', region: 'mesh:skeleton.png' },
+    { slot: 'prop', kind: 'region', region: 'prop_star' },
+  ]);
+  expect(probe.setupWinkRegions).toEqual([
+    { slot: 'body', kind: 'region', region: 'body_base' },
+    { slot: 'face', kind: 'region', region: 'face_wink' },
+  ]);
+  expect(probe.setupSmileMatchesDirectPose).toBe(true);
+  expect(probe.setupCanvasSmileMatchesDirectPixels).toBe(true);
+  expect(probe.setupRestoredByteIdentical).toBe(true);
+  expect(probe.setupCanvasRestoredPixelIdentical).toBe(true);
+
+  // Mid-track switching at t = 0.5 (track keys body -> body_track, face -> face_track):
+  expect(probe.midTrackBaseRegions).toEqual([
+    { slot: 'body', kind: 'region', region: 'body_track' },
+    { slot: 'face', kind: 'region', region: 'face_track' },
+    { slot: 'face_still', kind: 'region', region: 'face_still' },
+    { slot: 'prop', kind: 'region', region: 'prop_wand' },
+  ]);
+  expect(probe.midTrackSmileRegions).toEqual([
+    { slot: 'body', kind: 'region', region: 'body_track' },
+    { slot: 'face', kind: 'mesh', region: 'mesh:skeleton.png' },
+    { slot: 'prop', kind: 'region', region: 'prop_star' },
+  ]);
+  expect(probe.midTrackWinkRegions).toEqual([
+    { slot: 'body', kind: 'region', region: 'body_track' },
+    { slot: 'face', kind: 'region', region: 'face_wink' },
+  ]);
+  expect(probe.midTrackClearedRegions).toEqual(probe.midTrackBaseRegions);
+  expect(probe.midTrackClearedNextFrameByteIdentical).toBe(true);
+  expect(probe.tracksModeMidTrackByteIdentical).toBe(true);
+  expect(probe.inactiveSetZeroPoseDiffs).toBe(0);
+});
+
