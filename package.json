@@ -1,6 +1,6 @@
 {
   "name": "@rig-c/play",
-  "version": "1.10.1",
+  "version": "1.11.0",
   "description": "Plays skeleton.model.json written by rigc build as plain DOM elements — rigid slots as <img> posed by CSS matrix, deform meshes on small per-part canvases — or as one canvas.",
   "type": "module",
   "license": "MIT",
