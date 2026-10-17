@@ -459,7 +459,11 @@ numbers. `rig-play` and `spine-html` are the same package under earlier names.
   Multiply/Screen slots, a keyed draw-order swap, named skins changing one
   region, a small window, a far inverse clip and an undrawn far attachment:
   `tests/draw-contract.spec.ts`, which pins the blend formula, visible DOM
-  updates and bounds. A premultiplied page
+  updates and bounds. `sets` — two attachment sets (`smile`, `wink`) in
+  `sets.json` (`rig-parts-sets/1`), a mesh base slot with a companion
+  `face_still` slot, an uncovered `body` slot keyed by the track, and a `prop`
+  slot replaced by one set and hidden by the other: `setsProbe` in
+  `tests/player.spec.ts` and the *sets switch* parity cells (#134). A premultiplied page
   reaches a rigc build only through `--atlas-in` (its packer writes
   `pma: false`), so `tests/pma.spec.ts` makes its premultiplied twin of the
   figure's page in the harness, as it always has. If a spec needs something

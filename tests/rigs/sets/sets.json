@@ -1,0 +1,20 @@
+{
+  "spec": "rig-parts-sets/1",
+  "sets": {
+    "smile": {
+      "slots": {
+        "face": "face_smile",
+        "prop": "prop_star"
+      },
+      "hides": []
+    },
+    "wink": {
+      "slots": {
+        "face": "face_wink"
+      },
+      "hides": [
+        "prop"
+      ]
+    }
+  }
+}

@@ -41,10 +41,30 @@ export interface LoadModelOptions {
    * assets is refused by name.
    */
   regions?: RegionLoading;
+  /**
+   * URL of the attachment-sets sidecar (`sets.json`, spec `spine-parts-sets/1`
+   * or `rig-parts-sets/1`). When omitted, `loadModel` probes `sets.json` in
+   * the model document's directory and treats a 404 as "no sets". Pass `null`
+   * to skip the probe, or a string URL to require a `sets.json` at that path.
+   */
+  setsUrl?: string | null;
 }
 
 /** `LoadModelOptions.regions`: how, or whether, the regions are cut. */
 export type RegionLoading = 'blob' | 'data' | 'none';
+
+/**
+ * One attachment set read from `sets.json` (`spine-parts-sets/1` or
+ * `rig-parts-sets/1`): the slots it replaces (`slots`, slot name → attachment
+ * name) and the slots it clears (`hides`).
+ */
+export interface RigSet {
+  readonly name: string;
+  /** Map from slot name to the attachment name the set puts on that slot. */
+  readonly slots: Readonly<Record<string, string>>;
+  /** Slots the set hides (`null` attachment while the set is active). */
+  readonly hides: readonly string[];
+}
 
 /**
  * What `new RigPlayer(root, assets)` draws from. The caller owns it: one load
@@ -57,6 +77,12 @@ export interface ModelAssets {
   readonly animations: ReadonlyArray<{ readonly name: string; readonly duration: number }>;
   /** Every skin the document declares, in its order. */
   readonly skins: readonly string[];
+  /**
+   * Every attachment set read from `sets.json` (`spine-parts-sets/1` or
+   * `rig-parts-sets/1`), in declaration order; empty when the build has no
+   * `sets.json`.
+   */
+  readonly sets: readonly RigSet[];
   /**
    * The document's `stage` section, in world units (Y up): the stage the
    * build declared — the rig's own framing, for laying out a stage — or null
@@ -98,6 +124,156 @@ export interface ReadDocument extends ModelDocument {
   readonly doc: CompiledDocument;
   /** The document's parsed JSON — the sequences' `start`/`digits`, which `readModel` does not keep, are read off it. */
   readonly parsed: unknown;
+}
+
+const SETS_SPECS = ['spine-parts-sets/1', 'rig-parts-sets/1'] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Parses and validates a `sets.json` sidecar (`spine-parts-sets/1` or
+ * `rig-parts-sets/1`) against `doc`'s slots and skin attachments.
+ *
+ * @internal Shared with the loader below; not part of the package API.
+ */
+export function readSetsText(text: string, where: string, doc: CompiledDocument): readonly RigSet[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${where}: not JSON — ${(error as Error).message}`);
+  }
+  if (!isRecord(raw)) {
+    throw new Error(`${where}: sets document must be a JSON object`);
+  }
+  if (raw.spec !== SETS_SPECS[0] && raw.spec !== SETS_SPECS[1]) {
+    throw new Error(
+      `${where}: spec is ${JSON.stringify(raw.spec)}, not "${SETS_SPECS[0]}" or "${SETS_SPECS[1]}"`,
+    );
+  }
+  if (!isRecord(raw.sets) && !Array.isArray(raw.sets)) {
+    throw new Error(`${where}: "sets" must be an object or an array`);
+  }
+  const knownSlots = new Set(doc.slots.map((slot) => slot.name));
+  const attachmentsBySlot = new Map<string, Set<string>>();
+  for (const skin of doc.skins) {
+    for (const [slotName, table] of Object.entries(skin.attachments)) {
+      let set = attachmentsBySlot.get(slotName);
+      if (!set) {
+        set = new Set<string>();
+        attachmentsBySlot.set(slotName, set);
+      }
+      for (const attName of Object.keys(table)) set.add(attName);
+    }
+  }
+
+  const entries: Array<[string, Record<string, unknown>]> = [];
+  if (Array.isArray(raw.sets)) {
+    for (let i = 0; i < raw.sets.length; i++) {
+      const item = raw.sets[i];
+      if (!isRecord(item) || typeof item.name !== 'string' || item.name.length === 0) {
+        throw new Error(`${where}: sets[${i}] must be an object with a non-empty "name"`);
+      }
+      entries.push([item.name, item]);
+    }
+  } else {
+    for (const [name, item] of Object.entries(raw.sets)) {
+      if (name.length === 0 || !isRecord(item)) {
+        throw new Error(`${where}: set "${name}" must be an object`);
+      }
+      entries.push([name, item]);
+    }
+  }
+
+  const out: RigSet[] = [];
+  const seenNames = new Set<string>();
+  for (const [name, item] of entries) {
+    if (seenNames.has(name)) {
+      throw new Error(`${where}: duplicate set "${name}"`);
+    }
+    seenNames.add(name);
+    if (!isRecord(item.slots)) {
+      throw new Error(`${where}: set "${name}" must have a "slots" object`);
+    }
+    const slots: Record<string, string> = {};
+    for (const [slotName, attName] of Object.entries(item.slots)) {
+      if (!knownSlots.has(slotName)) {
+        throw new Error(`${where}: set "${name}" names unknown slot "${slotName}"`);
+      }
+      if (typeof attName !== 'string' || attName.length === 0) {
+        throw new Error(`${where}: set "${name}" slot "${slotName}" attachment must be a non-empty string`);
+      }
+      if (!attachmentsBySlot.get(slotName)?.has(attName)) {
+        throw new Error(`${where}: set "${name}" maps slot "${slotName}" to unknown attachment "${attName}"`);
+      }
+      slots[slotName] = attName;
+    }
+    const hides: string[] = [];
+    if (item.hides !== undefined) {
+      if (!Array.isArray(item.hides)) {
+        throw new Error(`${where}: set "${name}" "hides" must be an array of slot names`);
+      }
+      for (const hidden of item.hides) {
+        if (typeof hidden !== 'string' || hidden.length === 0) {
+          throw new Error(`${where}: set "${name}" "hides" entries must be non-empty strings`);
+        }
+        if (!knownSlots.has(hidden)) {
+          throw new Error(`${where}: set "${name}" hides unknown slot "${hidden}"`);
+        }
+        if (Object.prototype.hasOwnProperty.call(slots, hidden)) {
+          throw new Error(`${where}: set "${name}" both replaces and hides slot "${hidden}"`);
+        }
+        if (!hides.includes(hidden)) hides.push(hidden);
+      }
+    }
+    out.push(
+      Object.freeze({
+        name,
+        slots: Object.freeze(slots),
+        hides: Object.freeze(hides),
+      }),
+    );
+  }
+  return Object.freeze(out);
+}
+
+async function loadSets(
+  fetchImpl: typeof globalThis.fetch,
+  modelUrl: string,
+  setsUrlOption: string | null | undefined,
+  doc: CompiledDocument,
+): Promise<readonly RigSet[]> {
+  if (setsUrlOption === null) return Object.freeze([]);
+  if (typeof setsUrlOption === 'string') {
+    const text = await fetchText(fetchImpl, setsUrlOption);
+    return readSetsText(text, setsUrlOption, doc);
+  }
+  const url = resolveAgainstModel('sets.json', modelUrl);
+  let response: Response;
+  try {
+    response = await fetchImpl(url);
+  } catch {
+    return Object.freeze([]);
+  }
+  if (!response.ok) return Object.freeze([]);
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('text/html')) return Object.freeze([]);
+  const text = await response.text();
+  const trimmed = text.trimStart();
+  if (trimmed.length === 0 || trimmed.startsWith('<')) return Object.freeze([]);
+  // When an unconfigured fetch double echoes the model document back for every URL,
+  // ignore it rather than mistaking the model document for sets.json.
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (isRecord(parsed) && typeof parsed.spec === 'string' && parsed.spec.startsWith('rigc-compiled/')) {
+      return Object.freeze([]);
+    }
+  } catch {
+    // Let readSetsText report malformed JSON in a real sets.json.
+  }
+  return readSetsText(text, url, doc);
 }
 
 function stageOf(doc: CompiledDocument): ModelAssets['stage'] {
@@ -193,6 +369,7 @@ export async function loadModel(options: LoadModelOptions): Promise<ModelAssets>
     }),
   );
 
+  const sets = await loadSets(fetchImpl, modelUrl, options.setsUrl, read.doc);
   const regionImages = regions === 'none' ? new Map<string, RegionImage>() : await unpackRegions(pages, pageImages, { encoding: regions });
 
   let disposed = false;
@@ -200,6 +377,7 @@ export async function loadModel(options: LoadModelOptions): Promise<ModelAssets>
     spec: read.spec,
     animations: read.doc.animations.map((a) => ({ name: a.name, duration: a.timelines.duration })),
     skins: read.doc.skins.map((s) => s.name),
+    sets,
     stage: stageOf(read.doc),
     regions,
     regionImages,

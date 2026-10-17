@@ -1,7 +1,7 @@
-import { type CompiledDocument, eventsFired, type LiveTrack, type LiveTracks, type LocalAdjust as CoreLocalAdjust, openTrack, openTracks, physicsClockStep, poseRawSetup, type RawPose, type TrackEntryView, underNoSkin, underSkin } from 'rig-c/core';
+import { type CompiledDocument, type CoreSlotRow, eventsFired, type LiveTrack, type LiveTracks, type LocalAdjust as CoreLocalAdjust, openTrack, openTracks, physicsClockStep, poseRawSetup, type RawClip, type RawDrawn, type RawPose, type TrackEntryView, underNoSkin, underSkin } from 'rig-c/core';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { DomRenderer, type MeshBackend } from './DomRenderer.js';
-import type { ModelAssets, ReadDocument } from './loadModel.js';
+import type { ModelAssets, ReadDocument, RigSet } from './loadModel.js';
 import { type FrameSource, frameOf, frameSource, type PosedFrame } from './posedFrame.js';
 
 /**
@@ -235,6 +235,97 @@ function predicateOf(names: readonly string[]): (slot: string) => boolean {
   return (slot) => allowed.has(slot);
 }
 
+/**
+ * Applies `set` to `raw` over `view`: every slot the set covers takes the set's
+ * attachment posed against `raw.bones` (keeping the slot's animated colour and
+ * dark tint from `raw.slots`); every slot the set `hides` (plus any `<base>_still`
+ * slot of a covered or hidden base slot) takes `attachment: null` and is removed
+ * from `shown` / `drawn` / `clips`; every uncovered slot keeps its exact `raw.slots`
+ * row, `shown` entry and `drawn` geometry (including any track attachment,
+ * mesh deform or sequence frame).
+ */
+function applySetToPose(view: CompiledDocument, raw: RawPose, set: RigSet): RawPose {
+  const coveredNames = new Set(Object.keys(set.slots));
+  const hiddenNames = new Set(set.hides);
+  const overrideSlots = view.slots.flatMap((slot) => {
+    const setup = set.slots[slot.name];
+    return setup !== undefined ? [{ ...slot, setup }] : [];
+  });
+  const world = new Map(
+    raw.bones.map((bone) => [
+      bone.name,
+      { a: bone.a, b: bone.b, c: bone.c, d: bone.d, worldX: bone.worldX, worldY: bone.worldY },
+    ]),
+  );
+  const overridePose =
+    overrideSlots.length > 0
+      ? poseRawSetup(
+          { ...view, slots: overrideSlots, constraints: [] },
+          { evaluate: () => world, constraints: () => [] },
+        )
+      : null;
+  const overRowBySlot = new Map<string, CoreSlotRow>();
+  const overShownBySlot = new Map<string, RawPose['shown'][number]>();
+  const overDrawnBySlot = new Map<string, RawDrawn>();
+  const overClipBySlot = new Map<string, RawClip>();
+  if (overridePose !== null) {
+    for (const row of overridePose.slots) overRowBySlot.set(row[0], row);
+    for (const s of overridePose.shown) overShownBySlot.set(s.slot, s);
+    for (const d of overridePose.drawn) overDrawnBySlot.set(d.slot, d);
+    for (const c of overridePose.clips) overClipBySlot.set(c[0], c);
+  }
+  const rawShownBySlot = new Map(raw.shown.map((s) => [s.slot, s]));
+  const rawDrawnBySlot = new Map(raw.drawn.map((d) => [d.slot, d]));
+  const rawClipBySlot = new Map(raw.clips.map((c) => [c[0], c]));
+  const hiddenSlot = (slotName: string): boolean => {
+    if (hiddenNames.has(slotName)) return true;
+    if (slotName.endsWith('_still') && !coveredNames.has(slotName)) {
+      const base = slotName.slice(0, -'_still'.length);
+      if (coveredNames.has(base) || hiddenNames.has(base)) return true;
+    }
+    return false;
+  };
+  const slots: CoreSlotRow[] = raw.slots.map((rawRow): CoreSlotRow => {
+    const slotName = rawRow[0];
+    if (hiddenSlot(slotName)) {
+      return [slotName, null, rawRow[2], rawRow[3], rawRow[4], rawRow[5], rawRow[6], null, rawRow[8]];
+    }
+    const overRow = overRowBySlot.get(slotName);
+    if (overRow !== undefined) {
+      return [slotName, overRow[1], rawRow[2], rawRow[3], rawRow[4], rawRow[5], rawRow[6], overRow[7], rawRow[8]];
+    }
+    return rawRow;
+  });
+  const shown: RawPose['shown'][number][] = [];
+  const drawn: RawDrawn[] = [];
+  const clips: RawClip[] = [];
+  for (const slotName of raw.drawOrder) {
+    if (hiddenSlot(slotName)) continue;
+    if (coveredNames.has(slotName)) {
+      const s = overShownBySlot.get(slotName);
+      if (s !== undefined) shown.push(s);
+      const d = overDrawnBySlot.get(slotName);
+      if (d !== undefined) drawn.push(d);
+      const c = overClipBySlot.get(slotName);
+      if (c !== undefined) clips.push(c);
+    } else {
+      const s = rawShownBySlot.get(slotName);
+      if (s !== undefined) shown.push(s);
+      const d = rawDrawnBySlot.get(slotName);
+      if (d !== undefined) drawn.push(d);
+      const c = rawClipBySlot.get(slotName);
+      if (c !== undefined) clips.push(c);
+    }
+  }
+  return {
+    ...raw,
+    slots,
+    shown,
+    drawn,
+    clips,
+  };
+}
+
 export class RigPlayer {
   /**
    * The renderer this player draws through — its knobs and counters are the
@@ -287,7 +378,12 @@ export class RigPlayer {
   private beyondBase = false;
   private paused = false;
   private pose: RawPose | null = null;
+  /** The un-overridden pose from the track/tracks (or setup pose when `setSet` is called before `play`). */
+  private rawPose: RawPose | null = null;
   private setup: RawPose | null = null;
+  private readonly setList: readonly RigSet[];
+  private readonly setsByName: ReadonlyMap<string, RigSet>;
+  private activeSet: RigSet | null = null;
   private adjustFn: BoneAdjust | null = null;
   private slotFilter: SlotFilter | null = null;
   /** `slotFilter` as a predicate; every slot when null. */
@@ -312,6 +408,8 @@ export class RigPlayer {
     if (!(this.seekStep > 0)) throw new Error(`seekStep must be a positive number of seconds, got ${String(options.seekStep)}`);
     this.root = root;
     this.assets = assets;
+    this.setList = assets.sets ?? [];
+    this.setsByName = new Map(this.setList.map((s) => [s.name, s]));
     this.meshBackend = options.meshBackend;
     this.adjustFn = options.adjust ?? null;
     if (options.slots !== undefined && options.slots !== null) this.slots = options.slots;
@@ -397,7 +495,7 @@ export class RigPlayer {
       this.animation = name;
       this.loop = loop;
       this.track = openTrack(this.view, name, { loop, reset: 'animation', adjust: this.adjustHook, clock: physicsClockStep });
-      this.pose = this.track.first;
+      this.setRawPose(this.track.first);
       this.applyEnvironment(this.track);
       return;
     }
@@ -408,7 +506,7 @@ export class RigPlayer {
       this.animation = name;
       this.loop = loop;
     }
-    this.pose = tracks.step(0);
+    this.setRawPose(tracks.step(0));
   }
 
   /**
@@ -423,7 +521,7 @@ export class RigPlayer {
     const tracks = this.compose();
     tracks.addAnimation(track, name, { loop: options.loop ?? true, mixDuration: options.mix ?? 0, delay: options.delay ?? 0, alpha: options.alpha ?? 1, additive: options.additive ?? false });
     this.trackCount = Math.max(this.trackCount, track + 1);
-    this.pose = tracks.step(0);
+    this.setRawPose(tracks.step(0));
   }
 
   /**
@@ -436,7 +534,7 @@ export class RigPlayer {
     const tracks = this.compose();
     tracks.setEmptyAnimation(track, options.mix ?? 0);
     this.trackCount = Math.max(this.trackCount, track + 1);
-    this.pose = tracks.step(0);
+    this.setRawPose(tracks.step(0));
   }
 
   /**
@@ -450,7 +548,7 @@ export class RigPlayer {
     const tracks = this.compose();
     tracks.addEmptyAnimation(track, options.mix ?? 0, options.delay ?? 0);
     this.trackCount = Math.max(this.trackCount, track + 1);
-    this.pose = tracks.step(0);
+    this.setRawPose(tracks.step(0));
   }
 
   /**
@@ -464,7 +562,7 @@ export class RigPlayer {
     this.beyondBase = true;
     const tracks = this.compose();
     tracks.setAlpha(track, alpha);
-    this.pose = tracks.step(0);
+    this.setRawPose(tracks.step(0));
   }
 
   /** `track`'s current entry, or null where it plays nothing (and before `play`). */
@@ -506,10 +604,16 @@ export class RigPlayer {
     }
     this.tracks = tracks;
     this.track = null;
-    this.pose = tracks.start();
+    this.setRawPose(tracks.start());
     this.applyEnvironment(tracks);
     if (time > 0) this.stepTo(time);
     return tracks;
+  }
+
+  /** Stores `raw` and applies `activeSet` when one is active. Zero work when `activeSet === null`. */
+  private setRawPose(raw: RawPose): void {
+    this.rawPose = raw;
+    this.pose = this.activeSet === null ? raw : applySetToPose(this.view, raw, this.activeSet);
   }
 
   /**
@@ -596,12 +700,12 @@ export class RigPlayer {
       tracks.setAnimation(0, this.animation as string, { loop: this.loop, mixDuration: 0 });
       this.trackCount = 1;
       this.tracks = tracks;
-      this.pose = tracks.start();
+      this.setRawPose(tracks.start());
       this.applyEnvironment(tracks);
       return;
     }
     this.track = openTrack(this.view, this.animation as string, { loop: this.loop, reset: 'animation', adjust: this.adjustHook, clock: physicsClockStep });
-    this.pose = this.track.first;
+    this.setRawPose(this.track.first);
     this.applyEnvironment(this.track);
   }
 
@@ -619,9 +723,10 @@ export class RigPlayer {
   private stepTo(time: number): void {
     const stepper = this.tracks ?? (this.track as LiveTrack);
     const steps = Math.floor(time / this.seekStep);
-    for (let i = 0; i < steps; i++) this.pose = stepper.step(this.seekStep);
+    for (let i = 0; i < steps; i++) this.rawPose = stepper.step(this.seekStep);
     const rest = time - stepper.trackTime;
-    if (rest > 0) this.pose = stepper.step(rest);
+    if (rest > 0) this.rawPose = stepper.step(rest);
+    if (this.rawPose !== null) this.setRawPose(this.rawPose);
   }
 
   /** Adds a listener; returns a function that removes it. */
@@ -660,15 +765,17 @@ export class RigPlayer {
     if (tracks !== null) {
       const before: Array<TrackEntryView | null> = [];
       for (let t = 0; t < this.trackCount; t++) before.push(tracks.current(t));
-      this.pose = tracks.step(step);
-      this.dispatch(this.pose, before, tracks);
+      const raw = tracks.step(step);
+      this.setRawPose(raw);
+      this.dispatch(raw, before, tracks);
       return;
     }
     const track = this.track;
     if (track === null) return;
     const before = track.trackTime;
-    this.pose = track.step(step);
-    this.dispatchSingle(this.pose, before, track);
+    const raw = track.step(step);
+    this.setRawPose(raw);
+    this.dispatchSingle(raw, before, track);
   }
 
   /** Draws the pose the player holds. */
@@ -703,7 +810,62 @@ export class RigPlayer {
       const time = this.time;
       this.reopen();
       this.stepTo(time);
+    } else if (this.rawPose !== null) {
+      this.setup = poseRawSetup(this.view);
+      this.setRawPose(this.setup);
     }
+  }
+
+  /**
+   * The named attachment sets declared in `sets.json` (`ModelAssets.sets`),
+   * with the slots each covers (`slots`) and hides (`hides`). Empty (`[]`)
+   * when the build has no `sets.json`.
+   */
+  sets(): readonly RigSet[] {
+    return this.setList;
+  }
+
+  /** The currently active attachment set's name, or `null` when the base attachments are active. */
+  get set(): string | null {
+    return this.activeSet?.name ?? null;
+  }
+
+  /**
+   * Switches the active attachment set (#134): every slot the set covers takes
+   * the set's attachment (`null` restores the base / track attachments), and
+   * every slot the set `hides` (plus any `<base>_still` slot of a covered or
+   * hidden base slot) is hidden. Applied immediately to the pose the player
+   * holds (including the setup pose before `play`) and after track evaluation
+   * on every subsequent `advance`, so a track key on a covered slot is
+   * overridden while the set is active and restored when cleared (`setSet(null)`).
+   * Uncovered slots keep their track attachments, mesh deforms and sequence
+   * frames untouched; when no set is active (`null`), track evaluation runs
+   * with zero overhead and produces byte-identical poses.
+   *
+   * A name not in `sets.json` throws by name; a build without `sets.json` has
+   * `sets()` empty and `setSet` throws.
+   */
+  setSet(name: string | null): void {
+    if (this.setList.length === 0) {
+      throw new Error(`cannot setSet(${JSON.stringify(name)}): this model has no sets.json`);
+    }
+    if (name === null) {
+      this.activeSet = null;
+      const base = this.rawPose ?? (this.setup ?? (this.setup = poseRawSetup(this.view)));
+      this.rawPose = base;
+      this.pose = base;
+      return;
+    }
+    const found = this.setsByName.get(name);
+    if (found === undefined) {
+      throw new Error(
+        `no set named ${JSON.stringify(name)} in sets.json (available: ${this.setList.map((s) => s.name).join(', ')})`,
+      );
+    }
+    this.activeSet = found;
+    const base = this.rawPose ?? (this.setup ?? (this.setup = poseRawSetup(this.view)));
+    this.rawPose = base;
+    this.pose = applySetToPose(this.view, base, found);
   }
 
   /**
@@ -767,7 +929,7 @@ export class RigPlayer {
   repose(): void {
     const stepper = this.tracks ?? this.track;
     if (stepper === null || this.pose === null) return;
-    this.pose = stepper.step(0);
+    this.setRawPose(stepper.step(0));
   }
 
   /**
@@ -840,7 +1002,7 @@ export class RigPlayer {
   private posed(): RawPose {
     if (this.pose !== null) return this.pose;
     if (this.setup === null) this.setup = poseRawSetup(this.view);
-    return this.setup;
+    return this.activeSet === null ? this.setup : applySetToPose(this.view, this.setup, this.activeSet);
   }
 
   /**
@@ -862,6 +1024,7 @@ export class RigPlayer {
     this.tracks = null;
     this.track = null;
     this.pose = null;
+    this.rawPose = null;
   }
 
   /** The single track's step: its events (track 0) and its complete, as every 1.x player fired them. */
